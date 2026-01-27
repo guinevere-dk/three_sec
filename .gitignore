@@ -1,0 +1,58 @@
+# --- Miscellaneous ---
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# --- IDE 관련 (IntelliJ, VS Code) ---
+*.iml
+*.ipr
+*.iws
+.idea/
+.vscode/
+
+# --- Flutter/Dart 관련 ---
+**/doc/api/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# --- iOS/macOS 관련 ---
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+**/ios/Flutter/.last_build_id
+ios/ServiceDefinitions.json
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+
+# --- Android 관련 ---
+/android/app/debug
+/android/app/profile
+/android/app/release
+**/android/key.properties
+*.jks
+*.keystore
+
+# --- Symbolication/Obfuscation ---
+app.*.symbols
+app.*.map.json
+
+# --- Environment Secrets ---
+.env*
