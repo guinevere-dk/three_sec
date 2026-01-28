@@ -55,24 +55,20 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   late CameraController _controller;
   late Future<void> _initializeControllerFuture;
 
-  // 💡 VideoManager 인스턴스
   final VideoManager videoManager = VideoManager();
 
-  // 촬영 및 포커스 상태
   bool _isRecording = false;
   int _remainingTime = 3;
   Timer? _recordingTimer;
   Offset? _tapPosition;
   late AnimationController _focusAnimController;
 
-  // 노출 제어 상태
   double _exposureOffset = 0.0;
   double _minExposure = 0.0;
   double _maxExposure = 0.0;
   bool _showExposureSlider = false;
   Timer? _exposureTimer;
 
-  // UI 제어 상태
   bool _isInAlbumDetail = false;
   bool _isClipSelectionMode = false;
   bool _isAlbumSelectionMode = false;
@@ -88,7 +84,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   final GlobalKey _clipGridKey = GlobalKey(debugLabel: 'clipGrid');
   final GlobalKey _albumGridKey = GlobalKey(debugLabel: 'albumGrid');
 
-  Set<String> _selectedClipPaths = {};
+  // 💡 수정: Set에서 List로 데이터 구조 변경 (선택 순서 보장)
+  List<String> _selectedClipPaths = [];
   Set<String> _selectedAlbumNames = {};
   int _cameraIndex = 0;
 
@@ -108,7 +105,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     });
   }
 
-  // 💡 에러 수리: 데이터 갱신 및 클립 로드 함수 정의
   Future<void> _refreshData() async {
     await videoManager.initAlbumSystem();
     if (_isInAlbumDetail) await _loadClipsFromCurrentAlbum();
@@ -149,7 +145,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     hapticFeedback();
   }
 
-  // --- [💡 통합 워크플로우: 병합 -> 저장 -> 알림 -> 공유] ---
+  // --- [💡 순서 그대로 병합하는 로직] ---
 
   Future<void> _handleMerge() async {
     if (_selectedClipPaths.length < 2) return;
@@ -160,14 +156,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       builder: (context) => const Center(child: CircularProgressIndicator()),
     );
 
-    List<String> paths = _selectedClipPaths.toList();
-    paths.sort((a, b) {
-      bool favA = videoManager.favorites.contains(a);
-      bool favB = videoManager.favorites.contains(b);
-      if (favA && !favB) return -1;
-      if (!favA && favB) return 1;
-      return 0;
-    });
+    // 💡 수정: 별표 우선 정렬 삭제, 리스트에 담긴 '순서 그대로' paths 유지
+    List<String> paths = List.from(_selectedClipPaths);
 
     try {
       final docDir = await getApplicationDocumentsDirectory();
@@ -177,14 +167,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       final String? mergedPath = await platform.invokeMethod('mergeVideos', {'inputPaths': paths, 'outputPath': outputPath});
       
       if (mergedPath != null) {
-        // Step 1: 갤러리 저장
         try {
           bool hasAccess = await Gal.hasAccess();
           if (!hasAccess) hasAccess = await Gal.requestAccess();
 
           if (hasAccess) {
             await Gal.putVideo(mergedPath);
-            // Step 2: 저장 성공 알림
             Fluttertoast.showToast(msg: "갤러리에 저장되었습니다!", gravity: ToastGravity.BOTTOM);
           } else {
             Fluttertoast.showToast(msg: "갤러리 접근 권한이 없습니다.", gravity: ToastGravity.BOTTOM);
@@ -194,7 +182,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
           Fluttertoast.showToast(msg: "갤러리 저장 실패 (공유로 이동)", gravity: ToastGravity.BOTTOM);
         }
 
-        // Step 3: 시스템 공유 창 자동 실행
         await Share.shareXFiles([XFile(mergedPath)], text: '3s Vlog');
       }
       
@@ -220,9 +207,14 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       if (ok != true) return;
       for (var path in _selectedClipPaths) await File(path).delete();
     } else {
-      await videoManager.deleteClipsBatch(_selectedClipPaths.toList());
+      await videoManager.deleteClipsBatch(_selectedClipPaths);
     }
     await _loadClipsFromCurrentAlbum();
+    
+    setState(() {
+      _isClipSelectionMode = false;
+      _selectedClipPaths.clear();
+    });
     hapticFeedback();
   }
 
@@ -286,7 +278,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     }
   }
 
-  // --- [매직 브러시 & 핀치 줌 로직] ---
+  // --- [💡 순서 선택이 가능한 매직 브러시 & 핀치 줌] ---
 
   void _startDragSelection(Offset position, bool isClip) {
     final rb = (isClip ? _clipGridKey : _albumGridKey).currentContext?.findRenderObject() as RenderBox?;
@@ -294,17 +286,22 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     final lp = rb.globalToLocal(position);
     final double size = rb.size.width / _gridColumnCount;
     final int idx = ((lp.dy / size).floor() * _gridColumnCount) + (lp.dx / size).floor();
+    
     final int max = isClip ? videoManager.recordedVideoPaths.length : videoManager.albums.length;
     if (idx >= 0 && idx < max) {
       final String item = isClip ? videoManager.recordedVideoPaths[idx] : videoManager.albums[idx];
       _lastProcessedIndex = idx;
-      _isDragAdding = isClip ? !_selectedClipPaths.contains(item) : !_selectedAlbumNames.contains(item);
+      _isDragAdding = isClip
+          ? !_selectedClipPaths.contains(item)
+          : !_selectedAlbumNames.contains(item);
       setState(() {
         if (isClip) {
-          if (_isDragAdding) _selectedClipPaths.add(item); else _selectedClipPaths.remove(item);
+          if (_isDragAdding) _selectedClipPaths.add(item);
+          else _selectedClipPaths.remove(item);
         } else {
           if (item != "일상" && item != "휴지통") {
-            if (_isDragAdding) _selectedAlbumNames.add(item); else _selectedAlbumNames.remove(item);
+            if (_isDragAdding) _selectedAlbumNames.add(item);
+            else _selectedAlbumNames.remove(item);
           }
         }
       });
@@ -338,10 +335,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         final String item = isClip ? videoManager.recordedVideoPaths[idx] : videoManager.albums[idx];
         setState(() {
           if (isClip) {
-            if (_isDragAdding) _selectedClipPaths.add(item); else _selectedClipPaths.remove(item);
+            if (_isDragAdding) _selectedClipPaths.add(item);
+            else _selectedClipPaths.remove(item);
           } else {
             if (item != "일상" && item != "휴지통") {
-              if (_isDragAdding) _selectedAlbumNames.add(item); else _selectedAlbumNames.remove(item);
+              if (_isDragAdding) _selectedAlbumNames.add(item);
+              else _selectedAlbumNames.remove(item);
             }
           }
         });
@@ -349,8 +348,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       }
     }
   }
-
-  // --- [💡 에러 수리: 촬영 및 초점 관련 핵심 메서드] ---
 
   Future<void> _handleFocus(TapDownDetails d, BoxConstraints c) async {
     if (d.localPosition.dy > c.maxHeight - 150) return;
@@ -387,8 +384,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     await videoManager.saveRecordedVideo(video);
     if (mounted) setState(() { _isRecording = false; _remainingTime = 3; });
   }
-
-  // --- [UI 빌더] ---
 
   @override
   Widget build(BuildContext context) {
@@ -510,14 +505,50 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                             final path = videoManager.recordedVideoPaths[index];
                             final isS = _selectedClipPaths.contains(path);
                             final isFav = videoManager.favorites.contains(path);
+                            // 💡 번호 계산 (List 내 인덱스 기반)
+                            final int selectIdx = _selectedClipPaths.indexOf(path);
+
                             return GestureDetector(
-                              onLongPress: () { setState(() { _isClipSelectionMode = true; _lastProcessedIndex = index; _isDragAdding = !isS; _selectedClipPaths.add(path); }); hapticFeedback(); },
-                              onTap: () { if (_isClipSelectionMode) setState(() => isS ? _selectedClipPaths.remove(path) : _selectedClipPaths.add(path)); else setState(() => _previewingPath = path); },
+                              onLongPress: () { 
+                                setState(() { 
+                                  _isClipSelectionMode = true; 
+                                  _lastProcessedIndex = index; 
+                                  _isDragAdding = !isS; 
+                                  if (_isDragAdding) _selectedClipPaths.add(path);
+                                  else _selectedClipPaths.remove(path);
+                                }); 
+                                hapticFeedback(); 
+                              },
+                              onTap: () { 
+                                if (_isClipSelectionMode) {
+                                  setState(() {
+                                    if (isS) _selectedClipPaths.remove(path);
+                                    else _selectedClipPaths.add(path);
+                                  });
+                                } else {
+                                  setState(() => _previewingPath = path);
+                                }
+                              },
                               child: Stack(fit: StackFit.expand, children: [
                                 _buildThumbnailWidget(path),
                                 if (isFav) Positioned(bottom: 4, left: 4, child: const Icon(Icons.favorite, color: Colors.white, size: 16)),
                                 if (isS) Container(color: Colors.white54),
-                                if (_isClipSelectionMode) Positioned(bottom: 4, right: 4, child: Icon(isS ? Icons.check_circle : Icons.radio_button_unchecked, color: isS ? Colors.blueAccent : Colors.white70, size: 20)),
+                                // 💡 수정: 체크 아이콘 대신 번호 배지 표시
+                                if (_isClipSelectionMode && isS) 
+                                  Positioned(
+                                    bottom: 6, right: 6, 
+                                    child: Container(
+                                      width: 20, height: 20,
+                                      decoration: const BoxDecoration(color: Colors.blueAccent, shape: BoxShape.circle),
+                                      alignment: Alignment.center,
+                                      child: Text(
+                                        '${selectIdx + 1}', 
+                                        style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)
+                                      ),
+                                    )
+                                  )
+                                else if (_isClipSelectionMode)
+                                  const Positioned(bottom: 4, right: 4, child: Icon(Icons.radio_button_unchecked, color: Colors.white70, size: 20)),
                               ]),
                             );
                           },
@@ -546,11 +577,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: isTrash
             ? [
-                IconButton(icon: const Icon(Icons.settings_backup_restore, color: Colors.blueAccent), onPressed: () async { for (var p in _selectedClipPaths) await videoManager.restoreClip(p); await _loadClipsFromCurrentAlbum(); setState(() => _isClipSelectionMode = false); hapticFeedback(); }),
+                IconButton(icon: const Icon(Icons.settings_backup_restore, color: Colors.blueAccent), onPressed: () async { for (var p in _selectedClipPaths) await videoManager.restoreClip(p); await videoManager.loadClipsFromCurrentAlbum(); setState(() => _isClipSelectionMode = false); hapticFeedback(); }),
                 IconButton(icon: const Icon(Icons.delete_forever, color: Colors.redAccent), onPressed: _handleClipBatchDelete),
               ]
             : [
-                IconButton(icon: const Icon(Icons.favorite, color: Colors.pink), onPressed: () { videoManager.toggleFavoritesBatch(_selectedClipPaths.toList()); setState(() { _isClipSelectionMode = false; _selectedClipPaths.clear(); }); hapticFeedback(); }),
+                IconButton(icon: const Icon(Icons.favorite, color: Colors.pink), onPressed: () { videoManager.toggleFavoritesBatch(_selectedClipPaths); setState(() { _isClipSelectionMode = false; _selectedClipPaths.clear(); }); hapticFeedback(); }),
                 IconButton(icon: const Icon(Icons.drive_file_move, color: Colors.blue), onPressed: () => _handleMoveOrCopy(true)),
                 IconButton(icon: const Icon(Icons.content_copy, color: Colors.blue), onPressed: () => _handleMoveOrCopy(false)),
                 IconButton(icon: const Icon(Icons.delete, color: Colors.redAccent), onPressed: _handleClipBatchDelete),
@@ -585,7 +616,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
               onLongPress: () { if (!isP) { setState(() { _isAlbumSelectionMode = true; _lastProcessedIndex = index; _isDragAdding = !isS; _selectedAlbumNames.add(name); }); hapticFeedback(); } },
               onTap: () {
                 if (_isAlbumSelectionMode) { if (!isP) setState(() => isS ? _selectedAlbumNames.remove(name) : _selectedAlbumNames.add(name)); }
-                else { setState(() { videoManager.currentAlbum = name; _isInAlbumDetail = true; }); _loadClipsFromCurrentAlbum(); }
+                else { setState(() { videoManager.currentAlbum = name; _isInAlbumDetail = true; }); videoManager.loadClipsFromCurrentAlbum(); }
               },
               child: Container(
                 decoration: BoxDecoration(color: name == "휴지통" ? const Color(0xFFF2F2F7) : Colors.grey[200], borderRadius: BorderRadius.circular(20), boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 6, offset: Offset(0, 3))]),
@@ -606,11 +637,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     );
   }
 
-  // --- [헬퍼 UI 메서드] ---
-
   void _toggleSelectAll(bool isClip) {
     setState(() {
-      if (isClip) { if (_selectedClipPaths.length == videoManager.recordedVideoPaths.length) _selectedClipPaths.clear(); else _selectedClipPaths = Set.from(videoManager.recordedVideoPaths); }
+      if (isClip) { 
+        if (_selectedClipPaths.length == videoManager.recordedVideoPaths.length) _selectedClipPaths.clear(); 
+        else _selectedClipPaths = List.from(videoManager.recordedVideoPaths); 
+      }
       else { final selectable = videoManager.albums.where((a) => a != "일상" && a != "휴지통").toList(); if (_selectedAlbumNames.length == selectable.length) _selectedAlbumNames.clear(); else _selectedAlbumNames = Set.from(selectable); }
     });
     hapticFeedback();
@@ -649,7 +681,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       child: Column(children: [
           SizedBox(height: headerHeight, child: Center(child: IconButton(icon: const Icon(Icons.grid_view_rounded, size: 22), onPressed: () => setState(() => _isInAlbumDetail = false)))),
           const Divider(height: 1, thickness: 1, color: Colors.black12),
-          Expanded(child: ListView.builder(itemCount: videoManager.albums.length, itemBuilder: (context, index) { final name = videoManager.albums[index]; bool isS = videoManager.currentAlbum == name; return GestureDetector(onTap: () { setState(() => videoManager.currentAlbum = name); _loadClipsFromCurrentAlbum(); }, child: Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Column(children: [Icon(name == "휴지통" ? Icons.delete_outline : Icons.folder_rounded, color: isS ? Colors.blueAccent : Colors.black26, size: 26), const SizedBox(height: 2), Text(name, textAlign: TextAlign.center, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 9))]))); })),
+          Expanded(child: ListView.builder(itemCount: videoManager.albums.length, itemBuilder: (context, index) { final name = videoManager.albums[index]; bool isS = videoManager.currentAlbum == name; return GestureDetector(onTap: () { setState(() => videoManager.currentAlbum = name); videoManager.loadClipsFromCurrentAlbum(); }, child: Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Column(children: [Icon(name == "휴지통" ? Icons.delete_outline : Icons.folder_rounded, color: isS ? Colors.blueAccent : Colors.black26, size: 26), const SizedBox(height: 2), Text(name, textAlign: TextAlign.center, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 9))]))); })),
       ]),
     );
   }
