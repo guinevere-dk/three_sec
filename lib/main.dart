@@ -49,9 +49,9 @@ class MainNavigationScreen extends StatefulWidget {
 
 class _MainNavigationScreenState extends State<MainNavigationScreen>
     with TickerProviderStateMixin {
-  int _selectedIndex = 0; //
-  late CameraController _controller; //
-  late Future<void> _initializeControllerFuture; //
+  int _selectedIndex = 0;
+  late CameraController _controller;
+  late Future<void> _initializeControllerFuture;
 
   // 💡 VideoManager 인스턴스 생성
   final VideoManager videoManager = VideoManager();
@@ -86,18 +86,15 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   final GlobalKey _clipGridKey = GlobalKey(debugLabel: 'clipGrid');
   final GlobalKey _albumGridKey = GlobalKey(debugLabel: 'albumGrid');
 
-  Set<String> _selectedClipPaths = {}; //
-  Set<String> _selectedAlbumNames = {}; //
-  int _cameraIndex = 0; //
+  Set<String> _selectedClipPaths = {};
+  Set<String> _selectedAlbumNames = {};
+  int _cameraIndex = 0;
 
   @override
   void initState() {
     super.initState();
-    // 💡 요청하신 구조대로 카메라 초기화 연동
     _initCamera();
     _focusAnimController = AnimationController(vsync: this, duration: const Duration(milliseconds: 400));
-    
-    // 초기 데이터 로드
     _refreshData();
   }
 
@@ -109,7 +106,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     });
   }
 
-  // 💡 데이터 갱신 보조 함수
   Future<void> _refreshData() async {
     await videoManager.initAlbumSystem();
     if (_isInAlbumDetail) await videoManager.loadClipsFromCurrentAlbum();
@@ -257,8 +253,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     }
   }
 
-  // --- [매직 브러시 및 핀치 줌 로직] ---
-
   void _startDragSelection(Offset position, bool isClip) {
     final rb = (isClip ? _clipGridKey : _albumGridKey).currentContext?.findRenderObject() as RenderBox?;
     if (rb == null) return;
@@ -325,8 +319,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     }
   }
 
-  // --- [UI 빌더] ---
-
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -348,7 +340,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
             setState(() {
               _selectedIndex = i;
               if (i == 0 && videoManager.currentAlbum == "휴지통") videoManager.currentAlbum = "일상";
-              if (i == 1) _refreshData(); //
+              if (i == 1) _refreshData();
             });
           },
           items: const [
@@ -485,24 +477,53 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     return _buildAlbumGridView();
   }
 
+  // 💡 라이브러리 상세 보기 (디자인 정밀 수정 버전)
   Widget _buildDetailView() {
+    const double headerHeight = 60.0; // 사이드바와 AppBar의 높이 동기화 기준값
+
     return Row(
       children: [
-        AnimatedContainer(duration: const Duration(milliseconds: 250), width: _isSidebarOpen ? _narrowSidebarWidth : 0, color: const Color(0xFFFBFBFC), child: _buildNarrowSidebar()),
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 250),
+          width: _isSidebarOpen ? _narrowSidebarWidth : 0,
+          color: const Color(0xFFFBFBFC),
+          child: _buildNarrowSidebar(headerHeight), // 💡 높이 전달
+        ),
         Expanded(
           child: Scaffold(
+            backgroundColor: Colors.white,
             appBar: AppBar(
-              backgroundColor: Colors.white, elevation: 0,
-              leading: _isClipSelectionMode ? IconButton(icon: const Icon(Icons.close, color: Colors.black), onPressed: () => setState(() { _isClipSelectionMode = false; _selectedClipPaths.clear(); })) : IconButton(icon: const Icon(Icons.menu_open), onPressed: () => setState(() => _isSidebarOpen = !_isSidebarOpen)),
-              title: Text(_isClipSelectionMode ? "${_selectedClipPaths.length}개 선택" : "${videoManager.currentAlbum} (${videoManager.recordedVideoPaths.length})"),
+              backgroundColor: Colors.white,
+              elevation: 0,
+              scrolledUnderElevation: 0,
+              toolbarHeight: headerHeight, // 💡 사이드바와 높이 일치
+              leading: _isClipSelectionMode
+                  ? IconButton(
+                      icon: const Icon(Icons.close, color: Colors.black),
+                      onPressed: () => setState(() {
+                        _isClipSelectionMode = false;
+                        _selectedClipPaths.clear();
+                      }),
+                    )
+                  : IconButton(
+                      icon: const Icon(Icons.menu_open),
+                      onPressed: () => setState(() => _isSidebarOpen = !_isSidebarOpen),
+                    ),
+              title: Text(
+                _isClipSelectionMode
+                    ? "${_selectedClipPaths.length}개 선택"
+                    : "${videoManager.currentAlbum} (${videoManager.recordedVideoPaths.length})",
+                style: const TextStyle(fontSize: 16, color: Colors.black),
+              ),
               actions: [
                 if (_isClipSelectionMode)
                   Padding(
-                    padding: const EdgeInsets.only(right: 12.0, top: 8.0, bottom: 8.0),
+                    padding: const EdgeInsets.only(right: 12.0),
                     child: ElevatedButton.icon(
                       onPressed: _selectedClipPaths.length >= 2 ? _handleMerge : null,
                       icon: const Icon(Icons.auto_awesome, color: Colors.white, size: 16),
-                      label: const Text('Vlog 생성', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                      label: const Text('Vlog 생성',
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.blueAccent,
                         disabledBackgroundColor: Colors.grey[300],
@@ -512,40 +533,90 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                     ),
                   )
                 else
-                  TextButton(onPressed: () => setState(() { _isClipSelectionMode = true; }), child: const Text("선택")),
+                  TextButton(
+                      onPressed: () => setState(() {
+                            _isClipSelectionMode = true;
+                          }),
+                      child: const Text("선택")),
               ],
             ),
-            body: GestureDetector(
-              onScaleStart: (d) { _isZoomingLocked = false; if (_isClipSelectionMode && d.pointerCount == 1) _startDragSelection(d.focalPoint, true); },
-              onScaleUpdate: (d) => _handleScaleUpdate(d, true),
-              child: Stack(
-                children: [
-                  GridView.builder(
-                    key: _clipGridKey, padding: const EdgeInsets.all(2),
-                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: _gridColumnCount, crossAxisSpacing: 2, mainAxisSpacing: 2),
-                    itemCount: videoManager.recordedVideoPaths.length,
-                    itemBuilder: (context, index) {
-                      final path = videoManager.recordedVideoPaths[index];
-                      final isS = _selectedClipPaths.contains(path);
-                      final isFav = videoManager.favorites.contains(path);
-                      return GestureDetector(
-                        onLongPress: () { setState(() { _isClipSelectionMode = true; _lastProcessedIndex = index; _isDragAdding = !isS; _selectedClipPaths.add(path); }); hapticFeedback(); },
-                        onTap: () { if (_isClipSelectionMode) setState(() => isS ? _selectedClipPaths.remove(path) : _selectedClipPaths.add(path)); else setState(() => _previewingPath = path); },
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            _buildThumbnailWidget(path),
-                            if (isFav) Positioned(bottom: 4, left: 4, child: const Icon(Icons.favorite, color: Colors.white, size: 16)),
-                            if (isS) Container(color: Colors.white54),
-                            if (_isClipSelectionMode) Positioned(bottom: 4, right: 4, child: Icon(isS ? Icons.check_circle : Icons.radio_button_unchecked, color: isS ? Colors.blueAccent : Colors.white70, size: 20)),
-                          ],
-                        ),
-                      );
+            body: Column(
+              children: [
+                // 💡 상단 수평 구분선 추가 (사이드바와 높이 및 스타일 일치)
+                const Divider(height: 1, thickness: 1, color: Colors.black12),
+                Expanded(
+                  child: GestureDetector(
+                    onScaleStart: (d) {
+                      _isZoomingLocked = false;
+                      if (_isClipSelectionMode && d.pointerCount == 1) _startDragSelection(d.focalPoint, true);
                     },
+                    onScaleUpdate: (d) => _handleScaleUpdate(d, true),
+                    child: Stack(
+                      children: [
+                        GridView.builder(
+                          key: _clipGridKey,
+                          padding: const EdgeInsets.all(2),
+                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: _gridColumnCount, crossAxisSpacing: 2, mainAxisSpacing: 2),
+                          itemCount: videoManager.recordedVideoPaths.length,
+                          itemBuilder: (context, index) {
+                            final path = videoManager.recordedVideoPaths[index];
+                            final isS = _selectedClipPaths.contains(path);
+                            final isFav = videoManager.favorites.contains(path);
+                            return GestureDetector(
+                              onLongPress: () {
+                                setState(() {
+                                  _isClipSelectionMode = true;
+                                  _lastProcessedIndex = index;
+                                  _isDragAdding = !isS;
+                                  _selectedClipPaths.add(path);
+                                });
+                                hapticFeedback();
+                              },
+                              onTap: () {
+                                if (_isClipSelectionMode)
+                                  setState(() => isS ? _selectedClipPaths.remove(path) : _selectedClipPaths.add(path));
+                                else
+                                  setState(() => _previewingPath = path);
+                              },
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  _buildThumbnailWidget(path),
+                                  if (isFav)
+                                    Positioned(bottom: 4, left: 4, child: const Icon(Icons.favorite, color: Colors.white, size: 16)),
+                                  if (isS) Container(color: Colors.white54),
+                                  if (_isClipSelectionMode)
+                                    Positioned(
+                                        bottom: 4,
+                                        right: 4,
+                                        child: Icon(isS ? Icons.check_circle : Icons.radio_button_unchecked,
+                                            color: isS ? Colors.blueAccent : Colors.white70,
+                                            size: 20)),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                        if (_previewingPath != null)
+                          VideoPreviewWidget(
+                              filePath: _previewingPath!,
+                              favorites: videoManager.favorites,
+                              isTrashMode: videoManager.currentAlbum == "휴지통",
+                              onToggleFav: (p) => setState(() {
+                                    if (videoManager.favorites.contains(p))
+                                      videoManager.favorites.remove(p);
+                                    else
+                                      videoManager.favorites.add(p);
+                                  }),
+                              onRestore: (p) => _handleRestore(p),
+                              onDelete: (p) => _handleSafeSingleDelete(p),
+                              onClose: () => setState(() => _previewingPath = null)),
+                      ],
+                    ),
                   ),
-                  if (_previewingPath != null) VideoPreviewWidget(filePath: _previewingPath!, favorites: videoManager.favorites, isTrashMode: videoManager.currentAlbum == "휴지통", onToggleFav: (p) => setState(() { if (videoManager.favorites.contains(p)) videoManager.favorites.remove(p); else videoManager.favorites.add(p); }), onRestore: (p) => _handleRestore(p), onDelete: (p) => _handleSafeSingleDelete(p), onClose: () => setState(() => _previewingPath = null)),
-                ],
-              ),
+                ),
+              ],
             ),
             floatingActionButton: (_isClipSelectionMode && _selectedClipPaths.isNotEmpty) ? _buildExtendedActionPanel() : null,
             floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
@@ -667,8 +738,53 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     return Stack(alignment: Alignment.center, children: [Container(height: 85, width: 85, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 4))), AnimatedContainer(duration: const Duration(milliseconds: 200), height: _isRecording ? 35 : 70, width: _isRecording ? 35 : 70, decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(_isRecording ? 8 : 40)))]);
   }
 
-  Widget _buildNarrowSidebar() {
-    return SafeArea(child: Column(children: [const SizedBox(height: 12), IconButton(icon: const Icon(Icons.grid_view_rounded, size: 22), onPressed: () => setState(() => _isInAlbumDetail = false)), const Divider(), Expanded(child: ListView.builder(itemCount: videoManager.albums.length, itemBuilder: (context, index) { final name = videoManager.albums[index]; bool isS = videoManager.currentAlbum == name; return GestureDetector(onTap: () { setState(() => videoManager.currentAlbum = name); videoManager.loadClipsFromCurrentAlbum(); }, child: Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Column(children: [Icon(name == "휴지통" ? Icons.delete_outline : Icons.folder_rounded, color: isS ? Colors.blueAccent : Colors.black26, size: 26), const SizedBox(height: 2), Text(name, textAlign: TextAlign.center, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 9))]))); }))]));
+  // 💡 사이드바 (높이 동기화 버전)
+  Widget _buildNarrowSidebar(double headerHeight) {
+    return SafeArea(
+      child: Column(
+        children: [
+          // 💡 상단 아이콘 영역 높이를 AppBar와 일치시킴
+          SizedBox(
+            height: headerHeight,
+            child: Center(
+              child: IconButton(
+                icon: const Icon(Icons.grid_view_rounded, size: 22),
+                onPressed: () => setState(() => _isInAlbumDetail = false),
+              ),
+            ),
+          ),
+          // 💡 오른쪽 Divider와 스타일 일치
+          const Divider(height: 1, thickness: 1, color: Colors.black12),
+          Expanded(
+            child: ListView.builder(
+              itemCount: videoManager.albums.length,
+              itemBuilder: (context, index) {
+                final name = videoManager.albums[index];
+                bool isS = videoManager.currentAlbum == name;
+                return GestureDetector(
+                  onTap: () {
+                    setState(() => videoManager.currentAlbum = name);
+                    videoManager.loadClipsFromCurrentAlbum();
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Column(
+                      children: [
+                        Icon(name == "휴지통" ? Icons.delete_outline : Icons.folder_rounded,
+                            color: isS ? Colors.blueAccent : Colors.black26, size: 26),
+                        const SizedBox(height: 2),
+                        Text(name,
+                            textAlign: TextAlign.center, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 9))
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildAlbumThumbnail(String name) {
