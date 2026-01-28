@@ -41,6 +41,8 @@ dependencies:
   video_player: ^2.8.1
   shared_preferences: ^2.2.2
   video_thumbnail: ^0.5.3
+  gal: 2.3.2
+  fluttertoast: ^8.2.10
 
 dev_dependencies:
   flutter_test:
