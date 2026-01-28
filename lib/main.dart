@@ -50,7 +50,7 @@ class MainNavigationScreen extends StatefulWidget {
 
 class _MainNavigationScreenState extends State<MainNavigationScreen>
     with TickerProviderStateMixin {
-  // 💡 데이터 로직 관리자
+  // 💡 데이터 로직 관리자 (인스턴스 유지)
   final VideoManager videoManager = VideoManager();
   
   int _selectedIndex = 0;
@@ -64,10 +64,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   Offset? _tapPosition;
   late AnimationController _focusAnimController;
 
-  // 💡 기존 로컬 데이터 변수 제거 (videoManager로 대체)
   bool _isInAlbumDetail = false;
 
-  // 선택 및 매직 브러시 상태
+  // 선택 상태
   bool _isClipSelectionMode = false;
   Set<String> _selectedClipPaths = {};
   bool _isAlbumSelectionMode = false;
@@ -75,7 +74,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   bool _isDragAdding = true;
   int? _lastProcessedIndex;
 
-  // 제스처 및 레이아웃
+  // 제스처 및 레이아웃 (수치 보존)
   int _gridColumnCount = 3;
   bool _isZoomingLocked = false;
   double _lastScale = 1.0;
@@ -89,16 +88,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   @override
   void initState() {
     super.initState();
-    _controller = CameraController(
-      cameras[0],
-      ResolutionPreset.high,
-      enableAudio: true,
-    );
+    _controller = CameraController(cameras[0], ResolutionPreset.high, enableAudio: true);
     _initializeControllerFuture = _controller.initialize();
-    _focusAnimController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 400),
-    );
+    _focusAnimController = AnimationController(vsync: this, duration: const Duration(milliseconds: 400));
     _initAlbumSystem();
   }
 
@@ -114,12 +106,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     HapticFeedback.lightImpact();
   }
 
-  // --- [데이터 & 파일 엔진 연동] ---
+  // --- [데이터 엔진 연동 부] ---
 
   Future<void> _initAlbumSystem() async {
     await videoManager.initAlbumSystem();
     if (_isInAlbumDetail) await _loadClipsFromCurrentAlbum();
-    if (mounted) setState(() {}); // 💡 UI 갱신
+    if (mounted) setState(() {});
   }
 
   Future<void> _loadClipsFromCurrentAlbum() async {
@@ -130,32 +122,43 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     });
   }
 
+  // 💡 UI 호출부 수리: _restoreClip 로컬 함수를 제거하고 videoManager로 통합
+  Future<void> _handleRestore(String path) async {
+    await videoManager.restoreClip(path);
+    await _loadClipsFromCurrentAlbum();
+    if (mounted) setState(() {});
+    hapticFeedback();
+  }
+
+  Future<void> _executeTransfer(String target, bool isMove, List<String> list) async {
+    if (isMove) {
+      await videoManager.moveClipsBatch(list, target);
+    } else {
+      await videoManager.executeTransfer(target, isMove, list);
+    }
+    await _loadClipsFromCurrentAlbum();
+    if (mounted) setState(() {});
+  }
+
+  // --- [기존 제스처 및 디자인 로직 (절대 보존)] ---
+
   void _startDragSelection(Offset position, bool isClip) {
-    final rb =
-        (isClip ? _clipGridKey : _albumGridKey).currentContext
-                ?.findRenderObject()
-            as RenderBox?;
+    final rb = (isClip ? _clipGridKey : _albumGridKey).currentContext?.findRenderObject() as RenderBox?;
     if (rb == null) return;
     final lp = rb.globalToLocal(position);
     final double size = rb.size.width / _gridColumnCount;
-    final int idx =
-        ((lp.dy / size).floor() * _gridColumnCount) + (lp.dx / size).floor();
-    
+    final int idx = ((lp.dy / size).floor() * _gridColumnCount) + (lp.dx / size).floor();
     final int max = isClip ? videoManager.recordedVideoPaths.length : videoManager.albums.length;
     if (idx >= 0 && idx < max) {
       final String item = isClip ? videoManager.recordedVideoPaths[idx] : videoManager.albums[idx];
       _lastProcessedIndex = idx;
-      _isDragAdding = isClip
-          ? !_selectedClipPaths.contains(item)
-          : !_selectedAlbumNames.contains(item);
+      _isDragAdding = isClip ? !_selectedClipPaths.contains(item) : !_selectedAlbumNames.contains(item);
       setState(() {
         if (isClip) {
-          if (_isDragAdding) _selectedClipPaths.add(item);
-          else _selectedClipPaths.remove(item);
+          if (_isDragAdding) _selectedClipPaths.add(item); else _selectedClipPaths.remove(item);
         } else {
           if (item != "일상" && item != "휴지통") {
-            if (_isDragAdding) _selectedAlbumNames.add(item);
-            else _selectedAlbumNames.remove(item);
+            if (_isDragAdding) _selectedAlbumNames.add(item); else _selectedAlbumNames.remove(item);
           }
         }
       });
@@ -168,11 +171,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       if (_isZoomingLocked) return;
       if ((d.scale - _lastScale).abs() > 0.1) {
         setState(() {
-          if (d.scale > 1.05) {
-            if (_gridColumnCount > 2) _gridColumnCount = _gridColumnCount == 5 ? 3 : 2;
-          } else if (d.scale < 0.95) {
-            if (_gridColumnCount < 5) _gridColumnCount = _gridColumnCount == 2 ? 3 : 5;
-          }
+          if (d.scale > 1.05) { if (_gridColumnCount > 2) _gridColumnCount = _gridColumnCount == 5 ? 3 : 2; }
+          else if (d.scale < 0.95) { if (_gridColumnCount < 5) _gridColumnCount = _gridColumnCount == 2 ? 3 : 5; }
           _isZoomingLocked = true;
           HapticFeedback.mediumImpact();
         });
@@ -192,29 +192,16 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         final String item = isClip ? videoManager.recordedVideoPaths[idx] : videoManager.albums[idx];
         setState(() {
           if (isClip) {
-            if (_isDragAdding) _selectedClipPaths.add(item);
-            else _selectedClipPaths.remove(item);
+            if (_isDragAdding) _selectedClipPaths.add(item); else _selectedClipPaths.remove(item);
           } else {
             if (item != "일상" && item != "휴지통") {
-              if (_isDragAdding) _selectedAlbumNames.add(item);
-              else _selectedAlbumNames.remove(item);
+              if (_isDragAdding) _selectedAlbumNames.add(item); else _selectedAlbumNames.remove(item);
             }
           }
         });
         HapticFeedback.selectionClick();
       }
     }
-  }
-
-  Future<void> _restoreClip(String trashPath) async {
-    await videoManager.restoreClip(trashPath);
-    await _loadClipsFromCurrentAlbum();
-    hapticFeedback();
-  }
-
-  Future<void> _executeTransfer(String target, bool isMove, List<String> list) async {
-    await videoManager.executeTransfer(target, isMove, list);
-    await _loadClipsFromCurrentAlbum();
   }
 
   // --- [UI 빌더] ---
@@ -266,8 +253,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                   CameraPreview(_controller),
                   if (_tapPosition != null)
                     Positioned(
-                      left: _tapPosition!.dx - 35,
-                      top: _tapPosition!.dy - 35,
+                      left: _tapPosition!.dx - 35, top: _tapPosition!.dy - 35,
                       child: AnimatedBuilder(
                         animation: _focusAnimController,
                         builder: (context, child) => Container(
@@ -283,21 +269,15 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                       child: BackdropFilter(
                         filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
                         child: Container(
-                          height: 42,
-                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          height: 42, padding: const EdgeInsets.symmetric(horizontal: 14),
                           decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(20)),
                           child: DropdownButtonHideUnderline(
                             child: DropdownButton<String>(
-                              // 💡 videoManager 연결
                               value: videoManager.albums.contains(videoManager.currentAlbum) && videoManager.currentAlbum != "휴지통"
-                                  ? videoManager.currentAlbum
-                                  : "일상",
+                                  ? videoManager.currentAlbum : "일상",
                               icon: const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.white),
                               dropdownColor: Colors.black.withOpacity(0.8),
-                              onChanged: (v) {
-                                setState(() => videoManager.currentAlbum = v!);
-                                hapticFeedback();
-                              },
+                              onChanged: (v) { setState(() => videoManager.currentAlbum = v!); hapticFeedback(); },
                               items: videoManager.albums
                                   .where((a) => a != "휴지통")
                                   .map((a) => DropdownMenuItem(value: a, child: Text(a, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14))))
@@ -366,8 +346,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         onScaleStart: (d) { _isZoomingLocked = false; if (_isAlbumSelectionMode && d.pointerCount == 1) _startDragSelection(d.focalPoint, false); },
         onScaleUpdate: (d) => _handleScaleUpdate(d, false),
         child: GridView.builder(
-          key: _albumGridKey,
-          padding: const EdgeInsets.all(16),
+          key: _albumGridKey, padding: const EdgeInsets.all(16),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: _gridColumnCount, crossAxisSpacing: 16, mainAxisSpacing: 16),
           itemCount: videoManager.albums.length,
           itemBuilder: (context, index) {
@@ -436,8 +415,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
               child: Stack(
                 children: [
                   GridView.builder(
-                    key: _clipGridKey,
-                    padding: const EdgeInsets.all(2),
+                    key: _clipGridKey, padding: const EdgeInsets.all(2),
                     gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: _gridColumnCount, crossAxisSpacing: 2, mainAxisSpacing: 2),
                     itemCount: videoManager.recordedVideoPaths.length,
                     itemBuilder: (context, index) {
@@ -465,7 +443,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                       favorites: videoManager.favorites,
                       isTrashMode: videoManager.currentAlbum == "휴지통",
                       onToggleFav: (p) => setState(() { if (videoManager.favorites.contains(p)) videoManager.favorites.remove(p); else videoManager.favorites.add(p); }),
-                      onRestore: (p) { _restoreClip(p); setState(() => _previewingPath = null); },
+                      onRestore: (p) => _handleRestore(p), // 💡 호출부 수리
                       onDelete: (p) => _handleSafeSingleDelete(p),
                       onClose: () => setState(() => _previewingPath = null),
                     ),
@@ -480,6 +458,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     );
   }
 
+  // --- [액션 패널 및 배치 처리 로직 연결] ---
+
   Widget _buildExtendedActionPanel() {
     bool isTrash = videoManager.currentAlbum == "휴지통";
     return Container(
@@ -489,12 +469,21 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: isTrash
             ? [
-                IconButton(icon: const Icon(Icons.settings_backup_restore, color: Colors.blueAccent), onPressed: () { for (var p in _selectedClipPaths) _restoreClip(p); setState(() => _isClipSelectionMode = false); }),
+                IconButton(icon: const Icon(Icons.settings_backup_restore, color: Colors.blueAccent), onPressed: () async {
+                   for (var p in _selectedClipPaths) await videoManager.restoreClip(p);
+                   await _loadClipsFromCurrentAlbum();
+                   setState(() => _isClipSelectionMode = false);
+                   hapticFeedback();
+                }),
                 IconButton(icon: const Icon(Icons.delete_forever, color: Colors.redAccent), onPressed: _handleClipBatchDelete),
               ]
             : [
                 if (_selectedClipPaths.length >= 2) IconButton(icon: const Icon(Icons.ios_share, color: Colors.blue), onPressed: () => _handleMerge()),
-                IconButton(icon: const Icon(Icons.favorite, color: Colors.pink), onPressed: () { setState(() { for (var p in _selectedClipPaths) { if (videoManager.favorites.contains(p)) videoManager.favorites.remove(p); else videoManager.favorites.add(p); } _isClipSelectionMode = false; _selectedClipPaths.clear(); }); hapticFeedback(); }),
+                IconButton(icon: const Icon(Icons.favorite, color: Colors.pink), onPressed: () { 
+                  videoManager.toggleFavoritesBatch(_selectedClipPaths.toList()); // 💡 일괄 즐겨찾기
+                  setState(() { _isClipSelectionMode = false; _selectedClipPaths.clear(); }); 
+                  hapticFeedback(); 
+                }),
                 IconButton(icon: const Icon(Icons.drive_file_move, color: Colors.blue), onPressed: () => _handleMoveOrCopy(true)),
                 IconButton(icon: const Icon(Icons.content_copy, color: Colors.blue), onPressed: () => _handleMoveOrCopy(false)),
                 IconButton(icon: const Icon(Icons.delete, color: Colors.redAccent), onPressed: _handleClipBatchDelete),
@@ -503,7 +492,30 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     );
   }
 
-  // --- [로직 실행 및 UI 갱신] ---
+  // --- [스마트 병합 로직] ---
+
+  Future<void> _handleMerge() async {
+    List<String> paths = _selectedClipPaths.toList();
+    
+    // 💡 스마트 병합: 별표(Favorite) 표시된 클립을 리스트 상단(앞쪽)으로 정렬
+    paths.sort((a, b) {
+      bool favA = videoManager.favorites.contains(a);
+      bool favB = videoManager.favorites.contains(b);
+      if (favA && !favB) return -1;
+      if (!favA && favB) return 1;
+      return 0;
+    });
+
+    try {
+      final docDir = await getApplicationDocumentsDirectory();
+      final String outputPath = p.join(docDir.path, 'exports', "vlog_${DateTime.now().millisecondsSinceEpoch}.mp4");
+      const platform = MethodChannel('com.vlog.app/video_merger');
+      final String? mergedPath = await platform.invokeMethod('mergeVideos', { 'inputPaths': paths, 'outputPath': outputPath });
+      if (mergedPath != null) await Share.shareXFiles([XFile(mergedPath)], text: '3s Vlog');
+    } catch (e) { debugPrint("Merge Error: $e"); }
+  }
+
+  // --- [기타 실행부] ---
 
   Future<void> _startRecording() async {
     await _controller.startVideoRecording();
@@ -543,7 +555,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       if (ok != true) return;
       for (var path in _selectedClipPaths) await File(path).delete();
     } else {
-      for (var path in _selectedClipPaths) await videoManager.moveToTrash(path);
+      await videoManager.deleteClipsBatch(_selectedClipPaths.toList()); // 💡 일괄 삭제 연결
     }
     await _loadClipsFromCurrentAlbum();
     hapticFeedback();
@@ -558,17 +570,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     }
   }
 
-  Future<void> _handleMerge() async {
-    List<String> t = List.from(_selectedClipPaths);
-    try {
-      final docDir = await getApplicationDocumentsDirectory();
-      final String outputPath = p.join(docDir.path, 'exports', "vlog_${DateTime.now().millisecondsSinceEpoch}.mp4");
-      const platform = MethodChannel('com.vlog.app/video_merger');
-      final String? mergedPath = await platform.invokeMethod('mergeVideos', { 'inputPaths': t, 'outputPath': outputPath });
-      if (mergedPath != null) await Share.shareXFiles([XFile(mergedPath)], text: '3s Vlog');
-    } catch (e) { debugPrint("Merge Error: $e"); }
-  }
-
   Future<void> _handleMoveOrCopy(bool isMove) async {
     final snapshot = List<String>.from(_selectedClipPaths);
     final String? result = await showDialog<String>(context: context, builder: (c) => AlertDialog(title: Text(isMove ? "이동" : "복사"), content: Column(mainAxisSize: MainAxisSize.min, children: [ListTile(leading: const Icon(Icons.add_circle, color: Colors.blueAccent), title: const Text("새 앨범 만들기"), onTap: () => Navigator.pop(c, "NEW")), const Divider(), ...videoManager.albums.where((a) => a != videoManager.currentAlbum && a != "휴지통").map((a) => ListTile(title: Text(a), onTap: () => Navigator.pop(c, a)))])));
@@ -577,11 +578,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       if (name != null) {
         await videoManager.createNewAlbum(name.trim());
         await _executeTransfer(name.trim(), isMove, snapshot);
-        setState(() {});
       }
     } else if (result != null) {
       await _executeTransfer(result, isMove, snapshot);
-      setState(() {});
     }
   }
 
@@ -632,10 +631,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                 final name = videoManager.albums[index];
                 bool isS = videoManager.currentAlbum == name;
                 return GestureDetector(
-                  onTap: () {
-                    setState(() => videoManager.currentAlbum = name);
-                    _loadClipsFromCurrentAlbum();
-                  },
+                  onTap: () { setState(() => videoManager.currentAlbum = name); _loadClipsFromCurrentAlbum(); },
                   child: Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Column(children: [Icon(name == "휴지통" ? Icons.delete_outline : Icons.folder_rounded, color: isS ? Colors.blueAccent : Colors.black26, size: 26), const SizedBox(height: 2), Text(name, textAlign: TextAlign.center, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 9))])),
                 );
               },
@@ -672,7 +668,7 @@ class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
   }
 }
 
-// --- [💡 VideoManager 클래스: 데이터 로직 완전 이식] ---
+// --- [💡 VideoManager 클래스: 데이터 로직 및 배치 기능 강화] ---
 
 class VideoManager extends ChangeNotifier {
   String currentAlbum = "일상";
@@ -685,26 +681,20 @@ class VideoManager extends ChangeNotifier {
     final docDir = await getApplicationDocumentsDirectory();
     final baseDir = Directory(p.join(docDir.path, 'vlogs'));
     if (!await baseDir.exists()) await baseDir.create(recursive: true);
-    
-    // 기본 폴더 보장
     await Directory(p.join(baseDir.path, '일상')).create();
     await Directory(p.join(baseDir.path, '휴지통')).create();
 
     List<FileSystemEntity> entities = baseDir.listSync().whereType<Directory>().toList();
     List<MapEntry<String, DateTime>> albumWithTime = [];
-    
     for (var entity in entities) {
       String name = p.basename(entity.path);
       FileStat stat = await entity.stat();
       albumWithTime.add(MapEntry(name, stat.changed));
     }
 
-    // 💡 휴지통 강제 노출 및 정렬 보장
     albumWithTime.sort((a, b) {
-      if (a.key == "일상") return -1;
-      if (b.key == "일상") return 1;
-      if (a.key == "휴지통") return 1;
-      if (b.key == "휴지통") return -1;
+      if (a.key == "일상") return -1; if (b.key == "일상") return 1;
+      if (a.key == "휴지통") return 1; if (b.key == "휴지통") return -1;
       return a.value.compareTo(b.value);
     });
 
@@ -716,17 +706,35 @@ class VideoManager extends ChangeNotifier {
     final docDir = await getApplicationDocumentsDirectory();
     final albumDir = Directory(p.join(docDir.path, 'vlogs', currentAlbum));
     if (!await albumDir.exists()) await albumDir.create(recursive: true);
-    
-    final files = albumDir
-        .listSync()
-        .whereType<File>()
-        .where((f) => f.path.endsWith('.mp4'))
-        .map((f) => f.path)
-        .toList();
-
+    final files = albumDir.listSync().whereType<File>().where((f) => f.path.endsWith('.mp4')).map((f) => f.path).toList();
     files.sort((a, b) => File(b).lastModifiedSync().compareTo(File(a).lastModifiedSync()));
     recordedVideoPaths = files;
     notifyListeners();
+  }
+
+  // 💡 확장: 별표 상태 일괄 처리
+  void toggleFavoritesBatch(List<String> paths) {
+    for (var path in paths) {
+      if (favorites.contains(path)) favorites.remove(path);
+      else favorites.add(path);
+    }
+  }
+
+  // 💡 확장: 선택 클립 일괄 폴더 이동 (Rename)
+  Future<void> moveClipsBatch(List<String> paths, String targetAlbum) async {
+    final docDir = await getApplicationDocumentsDirectory();
+    for (var oldPath in paths) {
+      final dest = p.join(docDir.path, 'vlogs', targetAlbum, p.basename(oldPath));
+      try { await File(oldPath).rename(dest); } catch (e) {
+        await File(oldPath).copy(dest);
+        await File(oldPath).delete();
+      }
+    }
+  }
+
+  // 💡 확장: 선택 클립 일괄 삭제 (휴지통 이동)
+  Future<void> deleteClipsBatch(List<String> paths) async {
+    for (var path in paths) { await moveToTrash(path); }
   }
 
   Future<void> saveRecordedVideo(XFile video) async {
