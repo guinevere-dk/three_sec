@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'dart:async';
 import 'dart:io';
-import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui';
 import 'package:path_provider/path_provider.dart';
@@ -50,14 +49,13 @@ class MainNavigationScreen extends StatefulWidget {
 
 class _MainNavigationScreenState extends State<MainNavigationScreen>
     with TickerProviderStateMixin {
-  // 💡 데이터 로직 관리자 (인스턴스 유지)
   final VideoManager videoManager = VideoManager();
   
   int _selectedIndex = 0;
   late CameraController _controller;
   late Future<void> _initializeControllerFuture;
+  int _cameraIndex = 0;
 
-  // 촬영 및 포커스 상태
   bool _isRecording = false;
   int _remainingTime = 3;
   Timer? _recordingTimer;
@@ -65,8 +63,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   late AnimationController _focusAnimController;
 
   bool _isInAlbumDetail = false;
-
-  // 선택 상태
   bool _isClipSelectionMode = false;
   Set<String> _selectedClipPaths = {};
   bool _isAlbumSelectionMode = false;
@@ -74,7 +70,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   bool _isDragAdding = true;
   int? _lastProcessedIndex;
 
-  // 제스처 및 레이아웃 (수치 보존)
   int _gridColumnCount = 3;
   bool _isZoomingLocked = false;
   double _lastScale = 1.0;
@@ -88,7 +83,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   @override
   void initState() {
     super.initState();
-    _controller = CameraController(cameras[0], ResolutionPreset.high, enableAudio: true);
+    _controller = CameraController(cameras[_cameraIndex], ResolutionPreset.high, enableAudio: true);
     _initializeControllerFuture = _controller.initialize();
     _focusAnimController = AnimationController(vsync: this, duration: const Duration(milliseconds: 400));
     _initAlbumSystem();
@@ -106,7 +101,16 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     HapticFeedback.lightImpact();
   }
 
-  // --- [데이터 엔진 연동 부] ---
+  Future<void> _toggleCamera() async {
+    if (cameras.length < 2) return;
+    _cameraIndex = (_cameraIndex == 0) ? 1 : 0;
+    await _controller.dispose();
+    _controller = CameraController(cameras[_cameraIndex], ResolutionPreset.high, enableAudio: true);
+    setState(() {
+      _initializeControllerFuture = _controller.initialize();
+    });
+    hapticFeedback();
+  }
 
   Future<void> _initAlbumSystem() async {
     await videoManager.initAlbumSystem();
@@ -122,7 +126,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     });
   }
 
-  // 💡 UI 호출부 수리: _restoreClip 로컬 함수를 제거하고 videoManager로 통합
   Future<void> _handleRestore(String path) async {
     await videoManager.restoreClip(path);
     await _loadClipsFromCurrentAlbum();
@@ -140,7 +143,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     if (mounted) setState(() {});
   }
 
-  // --- [기존 제스처 및 디자인 로직 (절대 보존)] ---
+  // --- [제스처 및 드래그 선택 로직 복구] ---
 
   void _startDragSelection(Offset position, bool isClip) {
     final rb = (isClip ? _clipGridKey : _albumGridKey).currentContext?.findRenderObject() as RenderBox?;
@@ -264,52 +267,31 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                     ),
                   Positioned(
                     top: 55, left: 20,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(20),
-                      child: BackdropFilter(
-                        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                        child: Container(
-                          height: 42, padding: const EdgeInsets.symmetric(horizontal: 14),
-                          decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(20)),
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButton<String>(
-                              value: videoManager.albums.contains(videoManager.currentAlbum) && videoManager.currentAlbum != "휴지통"
-                                  ? videoManager.currentAlbum : "일상",
-                              icon: const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.white),
-                              dropdownColor: Colors.black.withOpacity(0.8),
-                              onChanged: (v) { setState(() => videoManager.currentAlbum = v!); hapticFeedback(); },
-                              items: videoManager.albums
-                                  .where((a) => a != "휴지통")
-                                  .map((a) => DropdownMenuItem(value: a, child: Text(a, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14))))
-                                  .toList(),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
+                    child: _buildAlbumDropdown(),
                   ),
                   Positioned(
                     bottom: 70, left: 0, right: 0,
                     child: Column(
                       children: [
-                        if (_isRecording)
-                          Container(
-                            margin: const EdgeInsets.only(bottom: 20),
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                            decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(6)),
-                            child: Text('0:0$_remainingTime', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                          ),
-                        GestureDetector(
-                          onTap: _isRecording ? _stopRecording : _startRecording,
+                        if (_isRecording) _buildRecordingTimer(),
+                        SizedBox(
+                          width: constraints.maxWidth,
+                          height: 85,
                           child: Stack(
                             alignment: Alignment.center,
                             children: [
-                              Container(height: 85, width: 85, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 4))),
-                              AnimatedContainer(
-                                duration: const Duration(milliseconds: 200),
-                                height: _isRecording ? 35 : 70, width: _isRecording ? 35 : 70,
-                                decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(_isRecording ? 8 : 40)),
+                              GestureDetector(
+                                onTap: _isRecording ? _stopRecording : _startRecording,
+                                child: _buildRecordButton(),
                               ),
+                              if (!_isRecording)
+                                Positioned(
+                                  right: constraints.maxWidth * 0.15,
+                                  child: IconButton(
+                                    icon: const Icon(Icons.flip_camera_ios_rounded, color: Colors.white, size: 32),
+                                    onPressed: _toggleCamera,
+                                  ),
+                                ),
                             ],
                           ),
                         ),
@@ -331,6 +313,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     return _buildAlbumGridView();
   }
 
+  // --- [복구된 앨범 그리드 뷰] ---
   Widget _buildAlbumGridView() {
     bool isAll = _selectedAlbumNames.length == videoManager.albums.where((a) => a != "일상" && a != "휴지통").length && _selectedAlbumNames.isNotEmpty;
     return Scaffold(
@@ -394,6 +377,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     );
   }
 
+  // --- [복구된 클립 상세 보기 뷰] ---
   Widget _buildDetailView() {
     bool isAll = _selectedClipPaths.length == videoManager.recordedVideoPaths.length && _selectedClipPaths.isNotEmpty;
     return Row(
@@ -443,7 +427,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                       favorites: videoManager.favorites,
                       isTrashMode: videoManager.currentAlbum == "휴지통",
                       onToggleFav: (p) => setState(() { if (videoManager.favorites.contains(p)) videoManager.favorites.remove(p); else videoManager.favorites.add(p); }),
-                      onRestore: (p) => _handleRestore(p), // 💡 호출부 수리
+                      onRestore: (p) => _handleRestore(p),
                       onDelete: (p) => _handleSafeSingleDelete(p),
                       onClose: () => setState(() => _previewingPath = null),
                     ),
@@ -458,7 +442,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     );
   }
 
-  // --- [액션 패널 및 배치 처리 로직 연결] ---
+  // --- [액션 패널 및 기타 로직 복구] ---
 
   Widget _buildExtendedActionPanel() {
     bool isTrash = videoManager.currentAlbum == "휴지통";
@@ -480,7 +464,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
             : [
                 if (_selectedClipPaths.length >= 2) IconButton(icon: const Icon(Icons.ios_share, color: Colors.blue), onPressed: () => _handleMerge()),
                 IconButton(icon: const Icon(Icons.favorite, color: Colors.pink), onPressed: () { 
-                  videoManager.toggleFavoritesBatch(_selectedClipPaths.toList()); // 💡 일괄 즐겨찾기
+                  videoManager.toggleFavoritesBatch(_selectedClipPaths.toList());
                   setState(() { _isClipSelectionMode = false; _selectedClipPaths.clear(); }); 
                   hapticFeedback(); 
                 }),
@@ -491,31 +475,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       ),
     );
   }
-
-  // --- [스마트 병합 로직] ---
-
-  Future<void> _handleMerge() async {
-    List<String> paths = _selectedClipPaths.toList();
-    
-    // 💡 스마트 병합: 별표(Favorite) 표시된 클립을 리스트 상단(앞쪽)으로 정렬
-    paths.sort((a, b) {
-      bool favA = videoManager.favorites.contains(a);
-      bool favB = videoManager.favorites.contains(b);
-      if (favA && !favB) return -1;
-      if (!favA && favB) return 1;
-      return 0;
-    });
-
-    try {
-      final docDir = await getApplicationDocumentsDirectory();
-      final String outputPath = p.join(docDir.path, 'exports', "vlog_${DateTime.now().millisecondsSinceEpoch}.mp4");
-      const platform = MethodChannel('com.vlog.app/video_merger');
-      final String? mergedPath = await platform.invokeMethod('mergeVideos', { 'inputPaths': paths, 'outputPath': outputPath });
-      if (mergedPath != null) await Share.shareXFiles([XFile(mergedPath)], text: '3s Vlog');
-    } catch (e) { debugPrint("Merge Error: $e"); }
-  }
-
-  // --- [기타 실행부] ---
 
   Future<void> _startRecording() async {
     await _controller.startVideoRecording();
@@ -555,7 +514,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       if (ok != true) return;
       for (var path in _selectedClipPaths) await File(path).delete();
     } else {
-      await videoManager.deleteClipsBatch(_selectedClipPaths.toList()); // 💡 일괄 삭제 연결
+      await videoManager.deleteClipsBatch(_selectedClipPaths.toList());
     }
     await _loadClipsFromCurrentAlbum();
     hapticFeedback();
@@ -568,6 +527,24 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       setState(() { _isAlbumSelectionMode = false; _selectedAlbumNames.clear(); });
       await _initAlbumSystem();
     }
+  }
+
+  Future<void> _handleMerge() async {
+    List<String> paths = _selectedClipPaths.toList();
+    paths.sort((a, b) {
+      bool favA = videoManager.favorites.contains(a);
+      bool favB = videoManager.favorites.contains(b);
+      if (favA && !favB) return -1;
+      if (!favA && favB) return 1;
+      return 0;
+    });
+    try {
+      final docDir = await getApplicationDocumentsDirectory();
+      final String outputPath = p.join(docDir.path, 'exports', "vlog_${DateTime.now().millisecondsSinceEpoch}.mp4");
+      const platform = MethodChannel('com.vlog.app/video_merger');
+      final String? mergedPath = await platform.invokeMethod('mergeVideos', { 'inputPaths': paths, 'outputPath': outputPath });
+      if (mergedPath != null) await Share.shareXFiles([XFile(mergedPath)], text: '3s Vlog');
+    } catch (e) { debugPrint("Merge Error: $e"); }
   }
 
   Future<void> _handleMoveOrCopy(bool isMove) async {
@@ -617,6 +594,57 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     Future.delayed(const Duration(milliseconds: 500), () { if (mounted) setState(() => _tapPosition = null); });
   }
 
+  // --- [디자인 보존 헬퍼] ---
+
+  Widget _buildAlbumDropdown() {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(20),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+        child: Container(
+          height: 42, padding: const EdgeInsets.symmetric(horizontal: 14),
+          decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(20)),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: videoManager.albums.contains(videoManager.currentAlbum) && videoManager.currentAlbum != "휴지통"
+                  ? videoManager.currentAlbum : "일상",
+              icon: const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.white),
+              dropdownColor: Colors.black.withOpacity(0.8),
+              onChanged: (v) { setState(() => videoManager.currentAlbum = v!); hapticFeedback(); },
+              items: videoManager.albums
+                  .where((a) => a != "휴지통")
+                  .map((a) => DropdownMenuItem(value: a, child: Text(a, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14))))
+                  .toList(),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRecordingTimer() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(6)),
+      child: Text('0:0$_remainingTime', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+    );
+  }
+
+  Widget _buildRecordButton() {
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        Container(height: 85, width: 85, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 4))),
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          height: _isRecording ? 35 : 70, width: _isRecording ? 35 : 70,
+          decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(_isRecording ? 8 : 40)),
+        ),
+      ],
+    );
+  }
+
   Widget _buildNarrowSidebar() {
     return SafeArea(
       child: Column(
@@ -651,6 +679,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   }
 }
 
+// --- [VideoPlayer 프리뷰 위젯] ---
 class VideoPreviewWidget extends StatefulWidget {
   final String filePath; final Set<String> favorites; final bool isTrashMode;
   final Function(String) onToggleFav; final Function(String) onRestore; final Function(String) onDelete; final VoidCallback onClose;
@@ -668,8 +697,7 @@ class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
   }
 }
 
-// --- [💡 VideoManager 클래스: 데이터 로직 및 배치 기능 강화] ---
-
+// --- [VideoManager 데이터 핸들러] ---
 class VideoManager extends ChangeNotifier {
   String currentAlbum = "일상";
   List<String> albums = ["일상", "휴지통"];
@@ -683,7 +711,6 @@ class VideoManager extends ChangeNotifier {
     if (!await baseDir.exists()) await baseDir.create(recursive: true);
     await Directory(p.join(baseDir.path, '일상')).create();
     await Directory(p.join(baseDir.path, '휴지통')).create();
-
     List<FileSystemEntity> entities = baseDir.listSync().whereType<Directory>().toList();
     List<MapEntry<String, DateTime>> albumWithTime = [];
     for (var entity in entities) {
@@ -691,13 +718,11 @@ class VideoManager extends ChangeNotifier {
       FileStat stat = await entity.stat();
       albumWithTime.add(MapEntry(name, stat.changed));
     }
-
     albumWithTime.sort((a, b) {
       if (a.key == "일상") return -1; if (b.key == "일상") return 1;
       if (a.key == "휴지통") return 1; if (b.key == "휴지통") return -1;
       return a.value.compareTo(b.value);
     });
-
     albums = albumWithTime.map((e) => e.key).toList();
     notifyListeners();
   }
@@ -712,7 +737,6 @@ class VideoManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  // 💡 확장: 별표 상태 일괄 처리
   void toggleFavoritesBatch(List<String> paths) {
     for (var path in paths) {
       if (favorites.contains(path)) favorites.remove(path);
@@ -720,7 +744,6 @@ class VideoManager extends ChangeNotifier {
     }
   }
 
-  // 💡 확장: 선택 클립 일괄 폴더 이동 (Rename)
   Future<void> moveClipsBatch(List<String> paths, String targetAlbum) async {
     final docDir = await getApplicationDocumentsDirectory();
     for (var oldPath in paths) {
@@ -732,7 +755,6 @@ class VideoManager extends ChangeNotifier {
     }
   }
 
-  // 💡 확장: 선택 클립 일괄 삭제 (휴지통 이동)
   Future<void> deleteClipsBatch(List<String> paths) async {
     for (var path in paths) { await moveToTrash(path); }
   }
