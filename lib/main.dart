@@ -384,6 +384,10 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   // --- [Vlog 병합] ---
 
   Future<void> _handleMerge() async {
+    if (videoManager.currentAlbum == "휴지통") {
+      Fluttertoast.showToast(msg: "휴지통의 영상으로는 Vlog를 만들 수 없습니다.");
+      return;
+    }
     if (_selectedClipPaths.length < 2) return;
 
     showDialog(
@@ -796,15 +800,26 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                   : IconButton(icon: const Icon(Icons.menu_open), onPressed: () => setState(() => _isSidebarOpen = !_isSidebarOpen)),
               title: Text(_isClipSelectionMode ? "${_selectedClipPaths.length}개 선택" : "${videoManager.currentAlbum} (${videoManager.recordedVideoPaths.length})"),
               actions: [
-                if (_isClipSelectionMode) 
-                  Padding(padding: const EdgeInsets.only(right: 12.0), child: ElevatedButton.icon(onPressed: _selectedClipPaths.length >= 2 ? _handleMerge : null, icon: const Icon(Icons.auto_awesome, color: Colors.white, size: 16), label: const Text('Vlog 생성', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)), style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent, disabledBackgroundColor: Colors.grey[300], shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)), elevation: 0)))
+                if (_isClipSelectionMode)
+                  // PM 지시 사항: 휴지통 내 Vlog 생성 금지 로직 (SizedBox.shrink() 처리)
+                  (videoManager.currentAlbum == "휴지통"
+                      ? const SizedBox.shrink()
+                      : Padding(
+                          padding: const EdgeInsets.only(right: 12.0),
+                          child: ElevatedButton.icon(
+                            onPressed: _selectedClipPaths.length >= 2 ? _handleMerge : null,
+                            icon: const Icon(Icons.auto_awesome, color: Colors.white, size: 16),
+                            label: const Text('Vlog 생성',
+                                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                            style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.blueAccent,
+                                disabledBackgroundColor: Colors.grey[300],
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                                elevation: 0),
+                          ),
+                        ))
                 else ...[
-                  IconButton(
-                    key: keyPickMedia,
-                    icon: const Icon(Icons.add_photo_alternate_outlined), 
-                    onPressed: _pickMedia
-                  ),
-                  // 텍스트 버튼 영구 제거
+                  IconButton(key: keyPickMedia, icon: const Icon(Icons.add_photo_alternate_outlined), onPressed: _pickMedia),
                 ]
               ],
             ),
