@@ -4,12 +4,16 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.graphics.Color
+import android.text.SpannableString
+import android.text.style.ForegroundColorSpan
+import android.text.style.AbsoluteSizeSpan
 import androidx.annotation.NonNull
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
-// 💡 Media3 (Native Engine) Imports
+// 💡 Media3 & Guava Imports
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.transformer.Composition
@@ -18,10 +22,14 @@ import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.Transformer
+import androidx.media3.transformer.Effects
+import androidx.media3.effect.OverlayEffect
+import androidx.media3.effect.TextOverlay
+import androidx.media3.effect.StaticOverlaySettings
+import com.google.common.collect.ImmutableList
 import java.io.File
 
 class MainActivity: FlutterActivity() {
-    // 💡 Flutter와 통신할 채널명 (main.dart와 일치해야 함)
     private val CHANNEL = "com.dk.three_sec/video_engine"
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
@@ -32,15 +40,15 @@ class MainActivity: FlutterActivity() {
                 "mergeVideos" -> {
                     val paths = call.argument<List<String>>("paths")
                     val outputPath = call.argument<String>("outputPath")
+                    val watermarkText = call.argument<String>("watermarkText") ?: "made with 3s"
                     
                     if (paths != null && outputPath != null && paths.isNotEmpty()) {
-                        mergeVideos(paths, outputPath, result)
+                        mergeVideos(paths, outputPath, watermarkText, result)
                     } else {
                         result.error("INVALID_ARGS", "파일 경로가 비어있습니다.", null)
                     }
                 }
                 "convertImageToVideo" -> {
-                    // 추후 사진 -> 영상 변환 로직 구현 공간 (현재는 미구현 응답)
                     result.notImplemented()
                 }
                 else -> result.notImplemented()
@@ -48,48 +56,72 @@ class MainActivity: FlutterActivity() {
         }
     }
 
-    // 🎥 [핵심] Media3 Transformer를 이용한 초고속 병합 엔진
-    private fun mergeVideos(paths: List<String>, outputPath: String, result: MethodChannel.Result) {
-        // 1. 입력 파일들을 MediaItem으로 변환
+    // 🎥 Media3 Transformer + Watermark Effect Engine (수정됨)
+    private fun mergeVideos(paths: List<String>, outputPath: String, watermarkText: String, result: MethodChannel.Result) {
+        
+        // 1. [수정] 텍스트 디자인 및 투명도 설정 (setAlpha 대체)
+        val span = SpannableString(watermarkText)
+        // ARGB(178, 255, 255, 255) -> 약 70% 투명도의 흰색
+        span.setSpan(ForegroundColorSpan(Color.argb(178, 255, 255, 255)), 0, span.length, 0)
+
+        // 2. [수정] 위치 설정 (setAlpha 제거, 위치만 지정)
+        val overlaySettings = StaticOverlaySettings.Builder()
+            .setOverlayFrameAnchor(0.9f, -0.9f) // 우측 하단
+            .setBackgroundFrameAnchor(0.9f, -0.9f)
+            .build()
+            
+        // 3. [핵심 수정] TextOverlay 생성 시 설정(Settings)을 함께 전달
+        val textOverlay = TextOverlay.createStaticTextOverlay(span, overlaySettings)
+
+        // 4. [수정] 타입 불일치 해결 (ImmutableList -> Kotlin List)
+        // TextureOverlay 타입으로 명시적 리스트 생성
+        val overlayEffect = OverlayEffect(listOf(textOverlay))
+
         val editedMediaItems = ArrayList<EditedMediaItem>()
         for (path in paths) {
             val mediaItem = MediaItem.fromUri(Uri.parse(path))
-            // 필요 시 여기서 Effects(워터마크, 필터 등)를 추가할 수 있습니다.
-            editedMediaItems.add(EditedMediaItem.Builder(mediaItem).build())
+            
+            // 5. [수정] Effects 리스트도 Kotlin 표준 리스트 사용
+            val effects = Effects(
+                listOf(), // Audio effects
+                listOf(overlayEffect) // Video effects
+            )
+
+            editedMediaItems.add(
+                EditedMediaItem.Builder(mediaItem)
+                    .setEffects(effects)
+                    .build()
+            )
         }
 
-        // 2. 시퀀스 생성 (영상들을 순서대로 배열)
+        // 6. 시퀀스 및 컴포지션 생성
         val sequence = EditedMediaItemSequence(editedMediaItems)
         val composition = Composition.Builder(listOf(sequence)).build()
 
-        // 3. Transformer 설정 (하드웨어 가속 자동 사용)
+        // 7. Transformer 설정 및 실행
         val transformer = Transformer.Builder(context)
-            .setVideoMimeType(MimeTypes.VIDEO_H264) // 호환성이 좋은 H.264 코덱 사용
+            .setVideoMimeType(MimeTypes.VIDEO_H264)
             .setAudioMimeType(MimeTypes.AUDIO_AAC)
             .addListener(object : Transformer.Listener {
                 override fun onCompleted(composition: Composition, exportResult: ExportResult) {
-                    // 💡 성공 시 UI 스레드에서 응답 전송
                     Handler(Looper.getMainLooper()).post {
                         result.success("SUCCESS")
                     }
                 }
 
                 override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
-                    // 💡 실패 시 에러 로그 전송
                     Handler(Looper.getMainLooper()).post {
-                        result.error("EXPORT_FAILED", exportException.message, null)
+                        result.error("EXPORT_FAILED", "Media3 Error: ${exportException.message}", null)
                     }
                 }
             })
             .build()
 
-        // 4. 기존 파일이 있다면 삭제 후 시작
+        // 파일 정리
         val file = File(outputPath)
-        if (file.exists()) {
-            file.delete()
-        }
+        if (file.exists()) file.delete()
 
-        // 5. 엔진 시동
+        // 엔진 가동
         transformer.start(composition, outputPath)
     }
 }
