@@ -1,158 +1,95 @@
 package com.dk.three_sec
 
-import android.media.MediaCodec
-import android.media.MediaExtractor
-import android.media.MediaFormat
-import android.media.MediaMuxer
-import android.util.Log
+import android.net.Uri
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import androidx.annotation.NonNull
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+
+// 💡 Media3 (Native Engine) Imports
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.EditedMediaItemSequence
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.Transformer
 import java.io.File
-import java.nio.ByteBuffer
 
-class MainActivity : FlutterActivity() {
-    private val CHANNEL = "com.vlog.app/video_merger"
-    private val TAG = "VideoMerger"
+class MainActivity: FlutterActivity() {
+    // 💡 Flutter와 통신할 채널명 (main.dart와 일치해야 함)
+    private val CHANNEL = "com.dk.three_sec/video_engine"
 
-    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+    override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        
+
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "mergeVideos" -> {
-                    try {
-                        val inputPaths = call.argument<List<String>>("inputPaths")
-                        val outputPath = call.argument<String>("outputPath")
-                        
-                        if (inputPaths == null || outputPath == null) {
-                            result.error("INVALID_ARGS", "Input paths or output path is null", null)
-                            return@setMethodCallHandler
-                        }
-                        
-                        val mergedPath = mergeVideos(inputPaths, outputPath)
-                        result.success(mergedPath)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error merging videos", e)
-                        // 에러 메시지에 CLIP_ERROR_INDEX_ 가 포함되어 있으면 그대로 전달
-                        result.error("MERGE_ERROR", e.message, e.stackTraceToString())
+                    val paths = call.argument<List<String>>("paths")
+                    val outputPath = call.argument<String>("outputPath")
+                    
+                    if (paths != null && outputPath != null && paths.isNotEmpty()) {
+                        mergeVideos(paths, outputPath, result)
+                    } else {
+                        result.error("INVALID_ARGS", "파일 경로가 비어있습니다.", null)
                     }
+                }
+                "convertImageToVideo" -> {
+                    // 추후 사진 -> 영상 변환 로직 구현 공간 (현재는 미구현 응답)
+                    result.notImplemented()
                 }
                 else -> result.notImplemented()
             }
         }
     }
 
-    private fun mergeVideos(inputPaths: List<String>, outputPath: String): String {
-        val outputFile = File(outputPath)
-        outputFile.parentFile?.mkdirs()
-        
-        if (outputFile.exists()) outputFile.delete()
+    // 🎥 [핵심] Media3 Transformer를 이용한 초고속 병합 엔진
+    private fun mergeVideos(paths: List<String>, outputPath: String, result: MethodChannel.Result) {
+        // 1. 입력 파일들을 MediaItem으로 변환
+        val editedMediaItems = ArrayList<EditedMediaItem>()
+        for (path in paths) {
+            val mediaItem = MediaItem.fromUri(Uri.parse(path))
+            // 필요 시 여기서 Effects(워터마크, 필터 등)를 추가할 수 있습니다.
+            editedMediaItems.add(EditedMediaItem.Builder(mediaItem).build())
+        }
 
-        var muxer: MediaMuxer? = null
-        val extractors = mutableListOf<MediaExtractor>()
-        
-        try {
-            muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            muxer.setOrientationHint(90) // 세로 모드 고정
-            
-            var videoTrackIndex = -1
-            var audioTrackIndex = -1
-            var currentPositionUs = 0L
-            
-            // 트랙 포맷 설정을 위한 첫 번째 유효한 추출기 준비
-            val firstExtractor = MediaExtractor()
-            try {
-                firstExtractor.setDataSource(inputPaths[0])
-            } catch (e: Exception) {
-                throw Exception("CLIP_ERROR_INDEX_0")
-            }
-            
-            for (i in 0 until firstExtractor.trackCount) {
-                val format = firstExtractor.getTrackFormat(i)
-                val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
-                if (mime.startsWith("video/") && videoTrackIndex == -1) videoTrackIndex = muxer.addTrack(format)
-                if (mime.startsWith("audio/") && audioTrackIndex == -1) audioTrackIndex = muxer.addTrack(format)
-            }
-            firstExtractor.release()
-            
-            muxer.start()
-            
-            // 각 파일 순차 병합
-            for ((index, inputPath) in inputPaths.withIndex()) {
-                val extractor = MediaExtractor()
-                try {
-                    extractor.setDataSource(inputPath)
-                } catch (e: Exception) {
-                    throw Exception("CLIP_ERROR_INDEX_$index")
-                }
-                
-                // 비디오 트랙 복사
-                if (videoTrackIndex >= 0) {
-                    val videoIdx = findTrackIndex(extractor, "video/")
-                    if (videoIdx >= 0) {
-                        extractor.selectTrack(videoIdx)
-                        copyTrack(extractor, muxer, videoTrackIndex, currentPositionUs)
-                        extractor.unselectTrack(videoIdx)
+        // 2. 시퀀스 생성 (영상들을 순서대로 배열)
+        val sequence = EditedMediaItemSequence(editedMediaItems)
+        val composition = Composition.Builder(listOf(sequence)).build()
+
+        // 3. Transformer 설정 (하드웨어 가속 자동 사용)
+        val transformer = Transformer.Builder(context)
+            .setVideoMimeType(MimeTypes.VIDEO_H264) // 호환성이 좋은 H.264 코덱 사용
+            .setAudioMimeType(MimeTypes.AUDIO_AAC)
+            .addListener(object : Transformer.Listener {
+                override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                    // 💡 성공 시 UI 스레드에서 응답 전송
+                    Handler(Looper.getMainLooper()).post {
+                        result.success("SUCCESS")
                     }
                 }
-                
-                // 오디오 트랙 복사
-                if (audioTrackIndex >= 0) {
-                    val audioIdx = findTrackIndex(extractor, "audio/")
-                    if (audioIdx >= 0) {
-                        extractor.selectTrack(audioIdx)
-                        extractor.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
-                        copyTrack(extractor, muxer, audioTrackIndex, currentPositionUs)
-                        extractor.unselectTrack(audioIdx)
+
+                override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
+                    // 💡 실패 시 에러 로그 전송
+                    Handler(Looper.getMainLooper()).post {
+                        result.error("EXPORT_FAILED", exportException.message, null)
                     }
                 }
-                
-                currentPositionUs += getVideoDuration(inputPath)
-                extractor.release()
-            }
-            
-            muxer.stop()
-            muxer.release()
-            return outputPath
-            
-        } catch (e: Exception) {
-            muxer?.release()
-            throw e
+            })
+            .build()
+
+        // 4. 기존 파일이 있다면 삭제 후 시작
+        val file = File(outputPath)
+        if (file.exists()) {
+            file.delete()
         }
-    }
-    
-    private fun findTrackIndex(extractor: MediaExtractor, mimePrefix: String): Int {
-        for (i in 0 until extractor.trackCount) {
-            val format = extractor.getTrackFormat(i)
-            val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
-            if (mime.startsWith(mimePrefix)) return i
-        }
-        return -1
-    }
-    
-    private fun copyTrack(extractor: MediaExtractor, muxer: MediaMuxer, trackIndex: Int, startTimeUs: Long) {
-        val buffer = ByteBuffer.allocate(1024 * 1024)
-        val bufferInfo = MediaCodec.BufferInfo()
-        extractor.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
-        while (true) {
-            val sampleSize = extractor.readSampleData(buffer, 0)
-            if (sampleSize < 0) break
-            bufferInfo.offset = 0
-            bufferInfo.size = sampleSize
-            bufferInfo.presentationTimeUs = startTimeUs + extractor.sampleTime
-            bufferInfo.flags = extractor.sampleFlags
-            muxer.writeSampleData(trackIndex, buffer, bufferInfo)
-            extractor.advance()
-        }
-    }
-    
-    private fun getVideoDuration(path: String): Long {
-        val extractor = MediaExtractor()
-        try {
-            extractor.setDataSource(path)
-            val videoIdx = findTrackIndex(extractor, "video/")
-            return if (videoIdx >= 0) extractor.getTrackFormat(videoIdx).getLong(MediaFormat.KEY_DURATION) else 0L
-        } catch (e: Exception) { return 0L } finally { extractor.release() }
+
+        // 5. 엔진 시동
+        transformer.start(composition, outputPath)
     }
 }
