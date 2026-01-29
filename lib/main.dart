@@ -383,6 +383,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     }
     if (_selectedClipPaths.length < 2) return;
 
+    // 1. 심플한 로딩 다이얼로그 (불필요한 텍스트 제거)
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -395,48 +396,17 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
             decoration: BoxDecoration(
               color: Colors.white.withOpacity(0.9),
               borderRadius: BorderRadius.circular(28),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.1),
-                  blurRadius: 20,
-                  spreadRadius: 5,
-                )
-              ],
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 const SizedBox(
-                  width: 45,
-                  height: 45,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 5,
-                    color: Colors.blueAccent,
-                    backgroundColor: Color(0xFFE0E0E0),
-                  ),
+                  width: 45, height: 45,
+                  child: CircularProgressIndicator(strokeWidth: 5, color: Colors.blueAccent),
                 ),
                 const SizedBox(height: 24),
-                const Text(
-                  "Vlog 생성 중",
-                  style: TextStyle(
-                    color: Colors.black87,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -0.5,
-                    decoration: TextDecoration.none,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                // 💡 네이티브 엔진 가동 안내
-                const Text(
-                  "초고속 네이티브 엔진 가동",
-                  style: TextStyle(
-                    color: Colors.black45,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w400,
-                    decoration: TextDecoration.none,
-                  ),
-                ),
+                const Text("Vlog 생성 중", 
+                  style: TextStyle(color: Colors.black87, fontSize: 18, fontWeight: FontWeight.w700, decoration: TextDecoration.none)),
               ],
             ),
           ),
@@ -451,7 +421,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       final exportDir = Directory(p.join(docDir.path, 'exports'));
       if (!await exportDir.exists()) await exportDir.create(recursive: true);
 
-      // 💡 [Native Bridge] FFmpeg 대신 네이티브 메서드 호출
+      // 💡 네이티브 병합 호출
       final String result = await platform.invokeMethod('mergeVideos', {
         'paths': _selectedClipPaths,
         'outputPath': outputPath,
@@ -459,18 +429,14 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         'quality': '1080p',
       });
 
-      if (mounted) Navigator.pop(context); // 로딩 닫기
+      // 💡 [중요] 여기서 딱 한 번만 팝하여 로딩창을 닫습니다.
+      if (mounted) Navigator.pop(context);
 
       if (result == "SUCCESS") {
-        // 1. 갤러리 저장 (기존 유지)
-        bool hasAccess = await Gal.hasAccess();
-        if (!hasAccess) hasAccess = await Gal.requestAccess();
-        if (hasAccess) {
-          await Gal.putVideo(outputPath);
-        }
+        // 갤러리 저장
+        await Gal.putVideo(outputPath);
 
-        // 2. 💡 [전략적 자산화] 완성된 영상을 앱 내 'Vlog' 전용 앨범으로 복사
-        final docDir = await getApplicationDocumentsDirectory();
+        // Vlog 전용 앨범으로 복사 (전략적 자산화)
         final vlogAlbumDir = Directory(p.join(docDir.path, 'vlogs', 'Vlog'));
         if (!await vlogAlbumDir.exists()) await vlogAlbumDir.create(recursive: true);
         
@@ -478,26 +444,19 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         await File(outputPath).copy(internalSavePath);
 
         if (mounted) {
-          Navigator.pop(context); // 기존 로딩 다이얼로그 닫기
-
-          // 3. 💡 [UX 진화] 즉시 확인 프리뷰 모달 호출
-          showModalBottomSheet(
-            context: context,
-            isScrollControlled: true,
-            backgroundColor: Colors.transparent, // 위젯에서 직접 배경 처리
-            builder: (context) => ResultPreviewWidget(
-              videoPath: outputPath,
-              onShare: () => Share.shareXFiles([XFile(outputPath)], text: 'Made with 3S Vlog'),
-              onEdit: () {
-                // 💡 수익화 포석: 향후 편집 화면 이동 로직
-                Fluttertoast.showToast(msg: "프리미엄 편집 기능 준비 중입니다.");
-              },
+          // 💡 [Ver 2.8.7] 모달 대신 안정적인 페이지 이동으로 프리뷰 노출
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => ResultPreviewWidget(
+                videoPath: outputPath,
+                onShare: () => Share.shareXFiles([XFile(outputPath)], text: 'Made with 3S Vlog'),
+                onEdit: () => Fluttertoast.showToast(msg: "프리미엄 편집 기능 준비 중입니다."),
+              ),
             ),
           );
           
-          // 데이터 새로고침 (Vlog 앨범 반영)
-          _refreshData(); 
-
+          _refreshData(); // 데이터 새로고침
           setState(() {
             _isClipSelectionMode = false;
             _selectedClipPaths.clear();
@@ -507,12 +466,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         throw Exception("Native Error: $result");
       }
 
-    } on PlatformException catch (e) {
-      if (mounted) Navigator.pop(context);
-      debugPrint("네이티브 병합 실패: ${e.message}");
-      Fluttertoast.showToast(msg: "병합 실패: ${e.message}");
     } catch (e) {
-      if (mounted) Navigator.pop(context);
+      if (mounted) Navigator.pop(context); // 에러 발생 시에도 로딩창은 닫아야 함
       Fluttertoast.showToast(msg: "오류 발생: $e");
     }
   }
@@ -918,7 +873,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   }
 
   Widget _buildAlbumGridView() {
-    bool isAll = _selectedAlbumNames.length == videoManager.albums.where((a) => a != "일상" && a != "휴지통").length && _selectedAlbumNames.isNotEmpty;
+    bool isAll = _selectedAlbumNames.length == videoManager.albums.where((a) => a != "일상" && a != "휴지통" && a != "Vlog").length && _selectedAlbumNames.isNotEmpty;
+    
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Colors.white, elevation: 0,
@@ -941,8 +897,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: _gridColumnCount, crossAxisSpacing: 16, mainAxisSpacing: 16),
           itemCount: videoManager.albums.length,
           itemBuilder: (context, index) {
-            final name = videoManager.albums[index]; final isS = _selectedAlbumNames.contains(name); final isP = name == "일상" || name == "휴지통";
-            
+            final name = videoManager.albums[index]; 
+            final isS = _selectedAlbumNames.contains(name); 
+            // 💡 [시스템 폴더 보호] Vlog 추가
+            final bool isP = name == "일상" || name == "휴지통" || name == "Vlog";
+            final bool isVlog = name == "Vlog";
+
             return GestureDetector(
               onLongPress: () { if (!isP) { setState(() { _isAlbumSelectionMode = true; _lastProcessedIndex = index; _isDragAdding = !isS; _selectedAlbumNames.add(name); }); hapticFeedback(); } },
               onTap: () async {
@@ -959,9 +919,13 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                 tag: 'album_art_$name',
                 child: Container(
                   decoration: BoxDecoration(
-                    color: name == "휴지통" ? const Color(0xFFF2F2F7) : Colors.grey[200], 
+                    // 💡 [Vlog 프리미엄 컬러 적용]
+                    color: isVlog ? Colors.amber[50] : (name == "휴지통" ? const Color(0xFFF2F2F7) : Colors.grey[200]), 
                     borderRadius: BorderRadius.circular(20), 
-                    border: Border.all(color: Colors.black.withOpacity(0.05), width: 0.5),
+                    border: Border.all(
+                      color: isVlog ? Colors.amber.withOpacity(0.3) : Colors.black.withOpacity(0.05), 
+                      width: isVlog ? 2 : 0.5
+                    ),
                     boxShadow: [
                       BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 12, offset: const Offset(0, 4))
                     ],
@@ -971,9 +935,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
-                        name == "휴지통" 
-                            ? const Center(child: Icon(Icons.delete_outline, size: 40, color: Colors.black26)) 
-                            : _buildAlbumThumbnail(name),
+                        // 💡 [Vlog 전용 아이콘 적용]
+                        isVlog 
+                            ? const Center(child: Icon(Icons.stars, size: 40, color: Colors.amber))
+                            : (name == "휴지통" 
+                                ? const Center(child: Icon(Icons.delete_outline, size: 40, color: Colors.black26)) 
+                                : _buildAlbumThumbnail(name)),
                         if (isS) Container(color: Colors.white60),
                         Container(
                           decoration: const BoxDecoration(
@@ -990,7 +957,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                             future: videoManager.getClipCount(name), 
                             builder: (context, snapshot) => Text(
                               "$name (${snapshot.data ?? 0})", 
-                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14), 
+                              style: TextStyle(
+                                color: isVlog ? Colors.orange[900] : Colors.white, 
+                                fontWeight: FontWeight.bold, 
+                                fontSize: 14
+                              ), 
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
@@ -1228,11 +1199,17 @@ class VideoManager extends ChangeNotifier {
     if (!await baseDir.exists()) await baseDir.create(recursive: true);
     await Directory(p.join(baseDir.path, '일상')).create();
     await Directory(p.join(baseDir.path, '휴지통')).create();
+    await Directory(p.join(baseDir.path, 'Vlog')).create();
     await Directory(p.join(docDir.path, 'thumbnails')).create();
     List<FileSystemEntity> entities = baseDir.listSync().whereType<Directory>().toList();
     List<MapEntry<String, DateTime>> albumWithTime = [];
     for (var entity in entities) { String name = p.basename(entity.path); FileStat stat = await entity.stat(); albumWithTime.add(MapEntry(name, stat.changed)); }
-    albumWithTime.sort((a, b) { if (a.key == "일상") return -1; if (b.key == "일상") return 1; if (a.key == "휴지통") return 1; if (b.key == "휴지통") return -1; return a.value.compareTo(b.value); });
+    albumWithTime.sort((a, b) { 
+      if (a.key == "일상") return -1; if (b.key == "일상") return 1; 
+      if (a.key == "휴지통") return 1; if (b.key == "휴지통") return -1; 
+      if (a.key == "Vlog") return 1; if (b.key == "Vlog") return -1;
+      return a.value.compareTo(b.value); 
+    });
     albums = albumWithTime.map((e) => e.key).toList();
     notifyListeners();
   }
@@ -1262,7 +1239,18 @@ class VideoManager extends ChangeNotifier {
   Future<void> deleteClipsBatch(List<String> paths) async { for (var path in paths) await moveToTrash(path); }
   Future<void> saveRecordedVideo(XFile video) async { final docDir = await getApplicationDocumentsDirectory(); final savePath = p.join(docDir.path, 'vlogs', currentAlbum, "clip_${DateTime.now().millisecondsSinceEpoch}.mp4"); await File(video.path).copy(savePath); await loadClipsFromCurrentAlbum(); }
   Future<void> createNewAlbum(String name) async { final d = await getApplicationDocumentsDirectory(); await Directory(p.join(d.path, 'vlogs', name)).create(recursive: true); await initAlbumSystem(); }
-  Future<void> deleteAlbums(Set<String> names) async { final docDir = await getApplicationDocumentsDirectory(); for (var name in names) { if (name == "일상" || name == "휴지통") continue; final dir = Directory(p.join(docDir.path, 'vlogs', name)); if (await dir.exists()) { for (var f in dir.listSync().whereType<File>()) await f.rename(p.join(docDir.path, 'vlogs', '휴지통', "${name}__${p.basename(f.path)}")); await dir.delete(recursive: true); } } }
+  Future<void> deleteAlbums(Set<String> names) async { 
+    final docDir = await getApplicationDocumentsDirectory(); 
+    for (var name in names) { 
+      if (name == "일상" || name == "휴지통" || name == "Vlog") continue; 
+      final dir = Directory(p.join(docDir.path, 'vlogs', name));
+      if (await dir.exists()) { 
+        for (var f in dir.listSync().whereType<File>()) 
+        await f.rename(p.join(docDir.path, 'vlogs', '휴지통', "${name}__${p.basename(f.path)}")); 
+        await dir.delete(recursive: true); 
+      } 
+    } 
+  }
   Future<void> moveToTrash(String path) async {
     final docDir = await getApplicationDocumentsDirectory();
     final destPath = p.join(docDir.path, 'vlogs', '휴지통', "${currentAlbum}__${p.basename(path)}");
@@ -1333,7 +1321,7 @@ class ResultPreviewWidget extends StatefulWidget {
 
 class _ResultPreviewWidgetState extends State<ResultPreviewWidget> {
   late VideoPlayerController _controller;
-  bool _showControls = true; // 💡 컨트롤러 표시 여부 토글용
+  bool _showControls = true;
 
   @override
   void initState() {
@@ -1346,25 +1334,18 @@ class _ResultPreviewWidgetState extends State<ResultPreviewWidget> {
           _controller.setLooping(true);
         }
       });
-    
-    // 💡 [핵심] 재생 상태 실시간 감지 리스너 추가
-    _controller.addListener(() {
-      if (mounted) setState(() {});
-    });
+    _controller.addListener(() { if (mounted) setState(() {}); });
   }
 
   @override
   void dispose() {
-    // 리스너는 자동으로 해제되지만 명시적 관리를 위해 유지
     _controller.dispose();
     super.dispose();
   }
 
-  // 시간 포맷팅 헬퍼 (예: 0:12)
-  String _formatDuration(Duration duration) {
+  String _formatDuration(Duration d) {
     String twoDigits(int n) => n.toString().padLeft(2, '0');
-    String twoDigitSeconds = twoDigits(duration.inSeconds.remainder(60));
-    return "${duration.inMinutes}:$twoDigitSeconds";
+    return "${d.inMinutes}:${twoDigits(d.inSeconds.remainder(60))}";
   }
 
   @override
@@ -1372,87 +1353,59 @@ class _ResultPreviewWidgetState extends State<ResultPreviewWidget> {
     final duration = _controller.value.duration;
     final position = _controller.value.position;
 
-    return Scaffold( 
-      // 💡 [수정] Scaffold로 감싸서 안정적인 네비게이션 구조 확보
+    return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
         child: Stack(
-          fit: StackFit.expand, // 💡 [수정] 전체 화면을 꽉 채우도록 설정
+          fit: StackFit.expand,
           children: [
-            // 1. 비디오 영역 (완벽한 중앙 정렬)
             GestureDetector(
               onTap: () => setState(() => _showControls = !_showControls),
               child: Center(
                 child: _controller.value.isInitialized
-                    ? AspectRatio(
-                        aspectRatio: _controller.value.aspectRatio, 
-                        child: VideoPlayer(_controller)
-                      )
+                    ? AspectRatio(aspectRatio: _controller.value.aspectRatio, child: VideoPlayer(_controller))
                     : const CircularProgressIndicator(color: Colors.white24),
               ),
             ),
-
-            // 2. 컨트롤러 오버레이
             if (_showControls) ...[
-              // 상단 닫기 버튼
               Positioned(
-                top: 20, 
-                right: 20,
+                top: 20, right: 20,
                 child: IconButton(
                   icon: const Icon(Icons.close, color: Colors.white, size: 30),
-                  onPressed: () => Navigator.pop(context), 
+                  onPressed: () => Navigator.pop(context),
                 ),
               ),
-
-              // 💡 [핵심] 하단 컨트롤 패널 (시간 + 슬라이더 + 액션버튼)
               Positioned(
-                bottom: 0, 
-                left: 0, 
-                right: 0,
+                bottom: 0, left: 0, right: 0,
                 child: Container(
-                  padding: const EdgeInsets.fromLTRB(20, 40, 20, 40),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [Colors.transparent, Colors.black.withOpacity(0.8)], 
-                      begin: Alignment.topCenter, 
-                      end: Alignment.bottomCenter
-                    )
+                  padding: const EdgeInsets.all(20),
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(colors: [Colors.transparent, Colors.black87], begin: Alignment.topCenter, end: Alignment.bottomCenter)
                   ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      // 진행 바 (Seek Bar) 및 시간 표시
                       Row(
                         children: [
-                          Text(
-                            _formatDuration(position), 
-                            style: const TextStyle(color: Colors.white, fontSize: 12)
-                          ),
+                          Text(_formatDuration(position), style: const TextStyle(color: Colors.white, fontSize: 12)),
                           Expanded(
                             child: Slider(
                               value: position.inMilliseconds.toDouble().clamp(0, duration.inMilliseconds.toDouble()),
                               min: 0.0,
                               max: duration.inMilliseconds.toDouble(),
                               activeColor: Colors.redAccent,
-                              inactiveColor: Colors.white24,
-                              onChanged: (value) {
-                                _controller.seekTo(Duration(milliseconds: value.toInt()));
-                              },
+                              onChanged: (v) => _controller.seekTo(Duration(milliseconds: v.toInt())),
                             ),
                           ),
-                          Text(
-                            _formatDuration(duration), 
-                            style: const TextStyle(color: Colors.white, fontSize: 12)
-                          ),
+                          Text(_formatDuration(duration), style: const TextStyle(color: Colors.white, fontSize: 12)),
                         ],
                       ),
-                      const SizedBox(height: 30),
-                      // 액션 버튼
+                      const SizedBox(height: 20),
                       Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          _buildActionButton(Icons.share_rounded, "공유", Colors.blueAccent, widget.onShare),
-                          _buildActionButton(Icons.auto_awesome, "편집", Colors.amber, widget.onEdit),
+                          _buildPremiumActionButton(Icons.share_rounded, "공유", widget.onShare),
+                          // _buildPremiumActionButton(Icons.auto_awesome, "편집", widget.onEdit), // 💡 뱃지 제외 버전
                         ],
                       ),
                     ],
@@ -1466,21 +1419,19 @@ class _ResultPreviewWidgetState extends State<ResultPreviewWidget> {
     );
   }
 
-  Widget _buildActionButton(IconData icon, String label, Color color, VoidCallback onTap) {
+  // 💡 [Ver 2.8.6] 세련된 화이트 액션 버튼 위젯
+  Widget _buildPremiumActionButton(IconData icon, String label, VoidCallback onTap) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         FloatingActionButton(
-          onPressed: onTap, 
-          backgroundColor: color, 
+          onPressed: onTap,
+          backgroundColor: Colors.white, // 💡 화이트 배경
           elevation: 0,
-          child: Icon(icon, color: Colors.white)
+          child: Icon(icon, color: Colors.black87), // 💡 블랙 아이콘
         ),
-        const SizedBox(height: 12),
-        Text(
-          label, 
-          style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500)
-        ),
+        const SizedBox(height: 8),
+        Text(label, style: const TextStyle(color: Colors.white70, fontSize: 12)),
       ],
     );
   }
