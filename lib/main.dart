@@ -464,14 +464,17 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       // 1. 모든 클립을 표준 포맷(hflip/transpose 대응)으로 정렬하여 concat 합니다.
       StringBuffer inputs = StringBuffer();
       StringBuffer filters = StringBuffer();
-      
-      // [수정 위치: main.dart 내 _handleMerge 함수 중간 루프]
 
       for (int i = 0; i < _selectedClipPaths.length; i++) {
         inputs.write("-i \"${_selectedClipPaths[i]}\" ");
         
-        // PM 지시 사항: v$i - 1080x1920 스케일링 + 30fps 고정 + 가로세로비 유지(pad)
-        filters.write("[$i:v]fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1[v$i]; ");
+        // PM 지시 사항: 자연스러운 고유 미감 구현 (안개 현상 제거 및 왜곡 억제)
+        filters.write(
+          "[$i:v]fps=30,"
+          "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1," // 중앙 크롭으로 주변부 왜곡 억제
+          "eq=contrast=1.05:brightness=0.01:gamma=1.1:saturation=1.1," // 감마 조절로 맑은 느낌 구현
+          "unsharp=3:3:0.5:3:3:0.0[v$i]; " // 샤프니스는 미세하게 하향 조정
+        );
         
         // a$i: 오디오 샘플링 레이트(44100Hz) 및 스테레오 채널 통일
         filters.write("[$i:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a$i]; ");
@@ -771,7 +774,39 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                   if (_showExposureSlider && _tapPosition != null)
                     Positioned(left: _tapPosition!.dx + 45, top: _tapPosition!.dy - 60, child: SizedBox(height: 120, child: RotatedBox(quarterTurns: 3, child: SliderTheme(data: SliderTheme.of(context).copyWith(trackHeight: 2, thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6), overlayShape: const RoundSliderOverlayShape(overlayRadius: 14), activeTrackColor: Colors.yellow, inactiveTrackColor: Colors.white30, thumbColor: Colors.yellow), child: Slider(value: _exposureOffset, min: _minExposure, max: _maxExposure, onChanged: (v) async { setState(() => _exposureOffset = v); await _controller.setExposureOffset(v); _startExposureTimer(); }))))),
                   Positioned(top: 55, left: 20, child: _buildAlbumDropdown()),
-                  Positioned(bottom: 70, left: 0, right: 0, child: Column(children: [if (_isRecording) _buildRecordingTimer(), SizedBox(width: constraints.maxWidth, height: 85, child: Stack(alignment: Alignment.center, children: [GestureDetector(onTap: _isRecording ? _stopRecording : _startRecording, child: _buildRecordButton()), if (!_isRecording) Positioned(right: constraints.maxWidth * 0.15, child: IconButton(icon: const Icon(Icons.flip_camera_ios_rounded, color: Colors.white, size: 32), onPressed: _toggleCamera))]))])),
+                  Positioned(
+                    bottom: 70, left: 0, right: 0,
+                    child: Column(
+                      children: [
+                        if (_isRecording) _buildRecordingTimer(),
+                        SizedBox(
+                          width: constraints.maxWidth,
+                          height: 85,
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              GestureDetector(
+                                // ✅ 수정 포인트: 버튼을 누를 때 햅틱과 촬영 로직 통합
+                                onTap: () {
+                                  hapticFeedback(); // PM 지시 사항: 미세 진동 발생
+                                  _isRecording ? _stopRecording() : _startRecording();
+                                },
+                                child: _buildRecordButton(),
+                              ),
+                              if (!_isRecording)
+                                Positioned(
+                                  right: constraints.maxWidth * 0.15,
+                                  child: IconButton(
+                                    icon: const Icon(Icons.flip_camera_ios_rounded, color: Colors.white, size: 32),
+                                    onPressed: _toggleCamera,
+                                  ),
+                                )
+                            ],
+                          ),
+                        )
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -1095,7 +1130,50 @@ class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
   late VideoPlayerController _vController;
   @override void initState() { super.initState(); _vController = VideoPlayerController.file(File(widget.filePath))..initialize().then((_) { if (mounted) setState(() {}); _vController.setLooping(true); _vController.play(); }); }
   @override void dispose() { _vController.dispose(); super.dispose(); }
-  @override Widget build(BuildContext context) { final isFav = widget.favorites.contains(widget.filePath); return Positioned.fill(child: Container(color: Colors.black, child: Stack(children: [Center(child: _vController.value.isInitialized ? AspectRatio(aspectRatio: _vController.value.aspectRatio, child: VideoPlayer(_vController)) : const CircularProgressIndicator()), Positioned(top: 40, left: 20, child: IconButton(icon: const Icon(Icons.close, color: Colors.white, size: 30), onPressed: widget.onClose)), Positioned(bottom: 50, left: 0, right: 0, child: Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [IconButton(icon: Icon(widget.isTrashMode ? Icons.settings_backup_restore : (isFav ? Icons.favorite : Icons.favorite_border), color: (isFav && !widget.isTrashMode) ? Colors.red : Colors.white, size: 30), onPressed: () { if (widget.isTrashMode) widget.onRestore(widget.filePath); else { widget.onToggleFav(widget.filePath); setState(() {}); } }), IconButton(icon: const Icon(Icons.delete_outline, color: Colors.white, size: 30), onPressed: () => widget.onDelete(widget.filePath))]))]))); }
+  @override
+  Widget build(BuildContext context) {
+    final isFav = widget.favorites.contains(widget.filePath);
+    
+    // ✅ 수정 포인트: 최상단을 GestureDetector로 감싸 화면 어디든 터치 시 닫기 구현
+    return GestureDetector(
+      onTap: widget.onClose, 
+      child: Positioned.fill(
+        child: Container(
+          color: Colors.black,
+          child: Stack(
+            children: [
+              Center(
+                child: _vController.value.isInitialized 
+                    ? AspectRatio(aspectRatio: _vController.value.aspectRatio, child: VideoPlayer(_vController)) 
+                    : const CircularProgressIndicator()
+              ),
+              // 하단 버튼들이 탭 이벤트를 가로채지 않도록 GestureDetector를 쓰지 않는 IconButton 유지
+              Positioned(top: 40, left: 20, child: IconButton(icon: const Icon(Icons.close, color: Colors.white, size: 30), onPressed: widget.onClose)),
+              Positioned(
+                bottom: 50, left: 0, right: 0,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    IconButton(
+                      icon: Icon(
+                        widget.isTrashMode ? Icons.settings_backup_restore : (isFav ? Icons.favorite : Icons.favorite_border),
+                        color: (isFav && !widget.isTrashMode) ? Colors.red : Colors.white, size: 30
+                      ),
+                      onPressed: () {
+                        if (widget.isTrashMode) widget.onRestore(widget.filePath);
+                        else { widget.onToggleFav(widget.filePath); setState(() {}); }
+                      }
+                    ),
+                    IconButton(icon: const Icon(Icons.delete_outline, color: Colors.white, size: 30), onPressed: () => widget.onDelete(widget.filePath))
+                  ]
+                )
+              )
+            ]
+          )
+        )
+      ),
+    );
+  }
 }
 
 class VideoManager extends ChangeNotifier {
