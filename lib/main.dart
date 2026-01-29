@@ -455,7 +455,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       final String result = await platform.invokeMethod('mergeVideos', {
         'paths': _selectedClipPaths,
         'outputPath': outputPath,
-        'watermarkText': 'made with 3s',
+        'watermarkText': 'Made with 3S',
         'quality': '1080p',
       });
 
