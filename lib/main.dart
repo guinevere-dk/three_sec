@@ -1314,7 +1314,6 @@ class VideoManager extends ChangeNotifier {
     notifyListeners();
   }
 }
-// [main.dart 하단에 추가할 결과물 확인 위젯]
 
 class ResultPreviewWidget extends StatefulWidget {
   final String videoPath;
@@ -1334,11 +1333,11 @@ class ResultPreviewWidget extends StatefulWidget {
 
 class _ResultPreviewWidgetState extends State<ResultPreviewWidget> {
   late VideoPlayerController _controller;
+  bool _showControls = true; // 💡 컨트롤러 표시 여부 토글용
 
   @override
   void initState() {
     super.initState();
-    // 💡 초기화와 동시에 자동 재생 및 반복 재생 설정
     _controller = VideoPlayerController.file(File(widget.videoPath))
       ..initialize().then((_) {
         if (mounted) {
@@ -1347,59 +1346,122 @@ class _ResultPreviewWidgetState extends State<ResultPreviewWidget> {
           _controller.setLooping(true);
         }
       });
+    
+    // 💡 [핵심] 재생 상태 실시간 감지 리스너 추가
+    _controller.addListener(() {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
   void dispose() {
+    // 리스너는 자동으로 해제되지만 명시적 관리를 위해 유지
     _controller.dispose();
     super.dispose();
   }
 
+  // 시간 포맷팅 헬퍼 (예: 0:12)
+  String _formatDuration(Duration duration) {
+    String twoDigits(int n) => n.toString().padLeft(2, '0');
+    String twoDigitSeconds = twoDigits(duration.inSeconds.remainder(60));
+    return "${duration.inMinutes}:$twoDigitSeconds";
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Container(
-      // 💡 화면의 90%를 차지하는 몰입감 있는 높이
-      height: MediaQuery.of(context).size.height * 0.9,
-      decoration: const BoxDecoration(
-        color: Colors.black,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
-      ),
-      child: Stack(
-        children: [
-          // 중앙 비디오 플레이어
-          Center(
-            child: _controller.value.isInitialized
-                ? AspectRatio(
-                    aspectRatio: _controller.value.aspectRatio, 
-                    child: VideoPlayer(_controller)
-                  )
-                : const CircularProgressIndicator(color: Colors.white24),
-          ),
-          
-          // 상단 닫기 버튼
-          Positioned(
-            top: 20, 
-            right: 20, 
-            child: IconButton(
-              icon: const Icon(Icons.close, color: Colors.white, size: 30), 
-              onPressed: () => Navigator.pop(context)
-            )
-          ),
-          
-          // 하단 액션 바 (공유 및 편집)
-          Positioned(
-            bottom: 60, 
-            left: 0, 
-            right: 0,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                _buildActionButton(Icons.share_rounded, "공유", Colors.blueAccent, widget.onShare),
-                _buildActionButton(Icons.auto_awesome, "편집", Colors.amber, widget.onEdit),
-              ],
+    final duration = _controller.value.duration;
+    final position = _controller.value.position;
+
+    return Scaffold( 
+      // 💡 [수정] Scaffold로 감싸서 안정적인 네비게이션 구조 확보
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          fit: StackFit.expand, // 💡 [수정] 전체 화면을 꽉 채우도록 설정
+          children: [
+            // 1. 비디오 영역 (완벽한 중앙 정렬)
+            GestureDetector(
+              onTap: () => setState(() => _showControls = !_showControls),
+              child: Center(
+                child: _controller.value.isInitialized
+                    ? AspectRatio(
+                        aspectRatio: _controller.value.aspectRatio, 
+                        child: VideoPlayer(_controller)
+                      )
+                    : const CircularProgressIndicator(color: Colors.white24),
+              ),
             ),
-          ),
-        ],
+
+            // 2. 컨트롤러 오버레이
+            if (_showControls) ...[
+              // 상단 닫기 버튼
+              Positioned(
+                top: 20, 
+                right: 20,
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white, size: 30),
+                  onPressed: () => Navigator.pop(context), 
+                ),
+              ),
+
+              // 💡 [핵심] 하단 컨트롤 패널 (시간 + 슬라이더 + 액션버튼)
+              Positioned(
+                bottom: 0, 
+                left: 0, 
+                right: 0,
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(20, 40, 20, 40),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [Colors.transparent, Colors.black.withOpacity(0.8)], 
+                      begin: Alignment.topCenter, 
+                      end: Alignment.bottomCenter
+                    )
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // 진행 바 (Seek Bar) 및 시간 표시
+                      Row(
+                        children: [
+                          Text(
+                            _formatDuration(position), 
+                            style: const TextStyle(color: Colors.white, fontSize: 12)
+                          ),
+                          Expanded(
+                            child: Slider(
+                              value: position.inMilliseconds.toDouble().clamp(0, duration.inMilliseconds.toDouble()),
+                              min: 0.0,
+                              max: duration.inMilliseconds.toDouble(),
+                              activeColor: Colors.redAccent,
+                              inactiveColor: Colors.white24,
+                              onChanged: (value) {
+                                _controller.seekTo(Duration(milliseconds: value.toInt()));
+                              },
+                            ),
+                          ),
+                          Text(
+                            _formatDuration(duration), 
+                            style: const TextStyle(color: Colors.white, fontSize: 12)
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 30),
+                      // 액션 버튼
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          _buildActionButton(Icons.share_rounded, "공유", Colors.blueAccent, widget.onShare),
+                          _buildActionButton(Icons.auto_awesome, "편집", Colors.amber, widget.onEdit),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -1415,7 +1477,10 @@ class _ResultPreviewWidgetState extends State<ResultPreviewWidget> {
           child: Icon(icon, color: Colors.white)
         ),
         const SizedBox(height: 12),
-        Text(label, style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500)),
+        Text(
+          label, 
+          style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500)
+        ),
       ],
     );
   }
