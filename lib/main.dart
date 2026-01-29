@@ -462,18 +462,47 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       if (mounted) Navigator.pop(context); // 로딩 닫기
 
       if (result == "SUCCESS") {
+        // 1. 갤러리 저장 (기존 유지)
         bool hasAccess = await Gal.hasAccess();
         if (!hasAccess) hasAccess = await Gal.requestAccess();
         if (hasAccess) {
           await Gal.putVideo(outputPath);
-          Fluttertoast.showToast(msg: "갤러리에 저장되었습니다!");
         }
-        await Share.shareXFiles([XFile(outputPath)], text: '3s Vlog');
+
+        // 2. 💡 [전략적 자산화] 완성된 영상을 앱 내 'Vlog' 전용 앨범으로 복사
+        final docDir = await getApplicationDocumentsDirectory();
+        final vlogAlbumDir = Directory(p.join(docDir.path, 'vlogs', 'Vlog'));
+        if (!await vlogAlbumDir.exists()) await vlogAlbumDir.create(recursive: true);
         
-        setState(() {
-          _isClipSelectionMode = false;
-          _selectedClipPaths.clear();
-        });
+        final internalSavePath = p.join(vlogAlbumDir.path, p.basename(outputPath));
+        await File(outputPath).copy(internalSavePath);
+
+        if (mounted) {
+          Navigator.pop(context); // 기존 로딩 다이얼로그 닫기
+
+          // 3. 💡 [UX 진화] 즉시 확인 프리뷰 모달 호출
+          showModalBottomSheet(
+            context: context,
+            isScrollControlled: true,
+            backgroundColor: Colors.transparent, // 위젯에서 직접 배경 처리
+            builder: (context) => ResultPreviewWidget(
+              videoPath: outputPath,
+              onShare: () => Share.shareXFiles([XFile(outputPath)], text: 'Made with 3S Vlog'),
+              onEdit: () {
+                // 💡 수익화 포석: 향후 편집 화면 이동 로직
+                Fluttertoast.showToast(msg: "프리미엄 편집 기능 준비 중입니다.");
+              },
+            ),
+          );
+          
+          // 데이터 새로고침 (Vlog 앨범 반영)
+          _refreshData(); 
+
+          setState(() {
+            _isClipSelectionMode = false;
+            _selectedClipPaths.clear();
+          });
+        }
       } else {
         throw Exception("Native Error: $result");
       }
@@ -1283,5 +1312,111 @@ class VideoManager extends ChangeNotifier {
       await file.delete();
     }
     notifyListeners();
+  }
+}
+// [main.dart 하단에 추가할 결과물 확인 위젯]
+
+class ResultPreviewWidget extends StatefulWidget {
+  final String videoPath;
+  final VoidCallback onShare;
+  final VoidCallback onEdit;
+
+  const ResultPreviewWidget({
+    super.key, 
+    required this.videoPath, 
+    required this.onShare, 
+    required this.onEdit
+  });
+
+  @override
+  State<ResultPreviewWidget> createState() => _ResultPreviewWidgetState();
+}
+
+class _ResultPreviewWidgetState extends State<ResultPreviewWidget> {
+  late VideoPlayerController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    // 💡 초기화와 동시에 자동 재생 및 반복 재생 설정
+    _controller = VideoPlayerController.file(File(widget.videoPath))
+      ..initialize().then((_) {
+        if (mounted) {
+          setState(() {});
+          _controller.play();
+          _controller.setLooping(true);
+        }
+      });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      // 💡 화면의 90%를 차지하는 몰입감 있는 높이
+      height: MediaQuery.of(context).size.height * 0.9,
+      decoration: const BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+      ),
+      child: Stack(
+        children: [
+          // 중앙 비디오 플레이어
+          Center(
+            child: _controller.value.isInitialized
+                ? AspectRatio(
+                    aspectRatio: _controller.value.aspectRatio, 
+                    child: VideoPlayer(_controller)
+                  )
+                : const CircularProgressIndicator(color: Colors.white24),
+          ),
+          
+          // 상단 닫기 버튼
+          Positioned(
+            top: 20, 
+            right: 20, 
+            child: IconButton(
+              icon: const Icon(Icons.close, color: Colors.white, size: 30), 
+              onPressed: () => Navigator.pop(context)
+            )
+          ),
+          
+          // 하단 액션 바 (공유 및 편집)
+          Positioned(
+            bottom: 60, 
+            left: 0, 
+            right: 0,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _buildActionButton(Icons.share_rounded, "공유", Colors.blueAccent, widget.onShare),
+                _buildActionButton(Icons.auto_awesome, "편집", Colors.amber, widget.onEdit),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionButton(IconData icon, String label, Color color, VoidCallback onTap) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        FloatingActionButton(
+          onPressed: onTap, 
+          backgroundColor: color, 
+          elevation: 0,
+          child: Icon(icon, color: Colors.white)
+        ),
+        const SizedBox(height: 12),
+        Text(label, style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500)),
+      ],
+    );
   }
 }
