@@ -1,4 +1,4 @@
-package com.example.three_sec_vlog
+package com.dk.three_sec
 
 import android.media.MediaCodec
 import android.media.MediaExtractor

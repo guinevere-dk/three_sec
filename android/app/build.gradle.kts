@@ -16,7 +16,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.three_sec_vlog"
+    namespace = "com.dk.three_sec"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -40,7 +40,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.three_sec_vlog"
+        applicationId = "com.dk.three_sec"
         minSdk = 24  // FFmpeg Kit 사용을 위한 최소 사양
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
