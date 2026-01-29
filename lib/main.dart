@@ -524,7 +524,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
             ), 
             const Divider(), 
             ...videoManager.albums
-                .where((a) => a != videoManager.currentAlbum && a != "휴지통")
+                .where((a) => a != videoManager.currentAlbum && a != "휴지통" && a != "Vlog")
                 .map((a) => ListTile(title: Text(a), onTap: () => Navigator.pop(c, a)))
           ]
         )
@@ -784,7 +784,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
               title: Text(_isClipSelectionMode ? "${_selectedClipPaths.length}개 선택" : "${videoManager.currentAlbum} (${videoManager.recordedVideoPaths.length})"),
               actions: [
                 if (_isClipSelectionMode)
-                  (videoManager.currentAlbum == "휴지통"
+                  (videoManager.currentAlbum == "휴지통" || videoManager.currentAlbum == "Vlog"
                       ? const SizedBox.shrink()
                       : Padding(
                           padding: const EdgeInsets.only(right: 12.0),
@@ -801,7 +801,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                           ),
                         ))
                 else ...[
-                  IconButton(key: keyPickMedia, icon: const Icon(Icons.add_photo_alternate_outlined), onPressed: _pickMedia),
+                  if (videoManager.currentAlbum != "Vlog" && videoManager.currentAlbum != "휴지통")
+                    IconButton(
+                      key: keyPickMedia, 
+                      icon: const Icon(Icons.add_photo_alternate_outlined), 
+                      onPressed: _pickMedia
+                    ),
                 ]
               ],
             ),
@@ -923,7 +928,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                     color: isVlog ? Colors.amber[50] : (name == "휴지통" ? const Color(0xFFF2F2F7) : Colors.grey[200]), 
                     borderRadius: BorderRadius.circular(20), 
                     border: Border.all(
-                      color: isVlog ? Colors.amber.withOpacity(0.3) : Colors.black.withOpacity(0.05), 
+                      color: isVlog ? Colors.amber.withOpacity(0.5) : Colors.black.withOpacity(0.05), 
                       width: isVlog ? 2 : 0.5
                     ),
                     boxShadow: [
@@ -987,6 +992,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
   Widget _buildExtendedActionPanel() {
     bool isTrash = videoManager.currentAlbum == "휴지통";
+    bool isVlog = videoManager.currentAlbum == "Vlog";
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
       padding: const EdgeInsets.symmetric(vertical: 16),
@@ -1013,8 +1019,10 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                   setState(() { _isClipSelectionMode = false; _selectedClipPaths.clear(); });
                   hapticFeedback();
                 }),
-                _buildSimpleAction(Icons.drive_file_move, Colors.blue, () => _handleMoveOrCopy(true)),
-                _buildSimpleAction(Icons.content_copy, Colors.teal, () => _handleMoveOrCopy(false)),
+                if (!isVlog) ...[
+                  _buildSimpleAction(Icons.drive_file_move, Colors.blue, () => _handleMoveOrCopy(true)),
+                  _buildSimpleAction(Icons.content_copy, Colors.teal, () => _handleMoveOrCopy(false)),
+                ],
                 _buildSimpleAction(Icons.delete, Colors.redAccent, _handleClipBatchDelete),
               ],
       ),
@@ -1053,6 +1061,14 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
               return GestureDetector(
                 onTap: () async { 
                   if (videoManager.currentAlbum == name) return; 
+                  
+                  // 💡 [핵심] 폴더 이동 시 다중 선택 모드를 강제로 해제하여 데이터 오염 방지
+                  if (_isClipSelectionMode) {
+                    setState(() {
+                      _isClipSelectionMode = false;
+                      _selectedClipPaths.clear();
+                    });
+                  }
                   setState(() { videoManager.recordedVideoPaths = []; });
                   videoManager.currentAlbum = name;
                   await videoManager.loadClipsFromCurrentAlbum(); 
