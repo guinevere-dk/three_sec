@@ -131,7 +131,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     // 💡 수정: ResolutionPreset.max로 해상도를 높여 왜곡을 최소화합니다.
     _controller = CameraController(
       cameras[_cameraIndex], 
-      ResolutionPreset.max, 
+      ResolutionPreset.high, // max에서 high로 변경 (안정성 확보)
       enableAudio: true,
       imageFormatGroup: ImageFormatGroup.jpeg,
     );
@@ -468,12 +468,16 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       for (int i = 0; i < _selectedClipPaths.length; i++) {
         inputs.write("-i \"${_selectedClipPaths[i]}\" ");
         
-        // PM 지시 사항: 자연스러운 고유 미감 구현 (안개 현상 제거 및 왜곡 억제)
+        // PM 지시 사항: 시네마틱 'Transparent Brilliance' 필터 (안개 현상 원천 제거)
         filters.write(
           "[$i:v]fps=30,"
-          "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1," // 중앙 크롭으로 주변부 왜곡 억제
-          "eq=contrast=1.05:brightness=0.01:gamma=1.1:saturation=1.1," // 감마 조절로 맑은 느낌 구현
-          "unsharp=3:3:0.5:3:3:0.0[v$i]; " // 샤프니스는 미세하게 하향 조정
+          "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1," 
+          // 1. eq: 미세 대비(1.03)만 부여하여 선명도 유지
+          "eq=contrast=1.03:saturation=1.05," 
+          // 2. colorbalance: 피부톤의 따스함을 위해 Red(+)와 Blue(-) 미세 조정
+          "colorbalance=rs=0.02:gs=0.0:bs=-0.02," 
+          // 3. unsharp: 인지 임계값 아래로 낮춘 자연스러운 선명도
+          "unsharp=3:3:0.4:3:3:0.0[v$i]; " 
         );
         
         // a$i: 오디오 샘플링 레이트(44100Hz) 및 스테레오 채널 통일
@@ -687,6 +691,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   }
 
   Future<void> _startRecording() async {
+    // PM 지시 사항: 촬영 시작 전 현재 노출값을 고정(Lock)하여 급격한 변화 방지
+    await _controller.setExposureMode(ExposureMode.locked);
     await _controller.startVideoRecording();
     setState(() { _isRecording = true; _remainingTime = 3; });
     _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -698,6 +704,10 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     if (!_isRecording) return;
     _recordingTimer?.cancel();
     final video = await _controller.stopVideoRecording();
+  
+    // PM 지시 사항: 촬영 종료 후 노출 고정 해제(Auto)
+    await _controller.setExposureMode(ExposureMode.auto);
+
     await videoManager.saveRecordedVideo(video);
     if (mounted) setState(() { _isRecording = false; _remainingTime = 3; });
   }
@@ -1043,22 +1053,43 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       floatingActionButton: (_isAlbumSelectionMode && _selectedAlbumNames.isNotEmpty) ? FloatingActionButton.extended(onPressed: _handleAlbumBatchDelete, backgroundColor: Colors.redAccent, label: const Text("삭제"), icon: const Icon(Icons.delete)) : null,
     );
   }
-
   Widget _buildExtendedActionPanel() {
     bool isTrash = videoManager.currentAlbum == "휴지통";
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 20), padding: const EdgeInsets.symmetric(vertical: 12),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(24), boxShadow: const [BoxShadow(blurRadius: 15, color: Colors.black12)]),
+      margin: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: const [BoxShadow(blurRadius: 15, color: Colors.black12)]
+      ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: isTrash
-            ? [IconButton(icon: const Icon(Icons.settings_backup_restore, color: Colors.blueAccent), onPressed: () async { for (var p in _selectedClipPaths) await videoManager.restoreClip(p); await videoManager.loadClipsFromCurrentAlbum(); setState(() => _isClipSelectionMode = false); hapticFeedback(); }), IconButton(icon: const Icon(Icons.delete_forever, color: Colors.redAccent), onPressed: _handleClipBatchDelete)]
-            : [IconButton(icon: const Icon(Icons.favorite, color: Colors.pink), onPressed: () { videoManager.toggleFavoritesBatch(_selectedClipPaths); setState(() { _isClipSelectionMode = false; _selectedClipPaths.clear(); }); hapticFeedback(); }), IconButton(icon: const Icon(Icons.drive_file_move, color: Colors.blue), onPressed: () => _handleMoveOrCopy(true)), IconButton(icon: const Icon(Icons.content_copy, color: Colors.blue), onPressed: () => _handleMoveOrCopy(false)), IconButton(icon: const Icon(Icons.delete, color: Colors.redAccent), onPressed: _handleClipBatchDelete)],
+            ? [
+                IconButton(
+                  icon: const Icon(Icons.settings_backup_restore, color: Colors.blueAccent), 
+                  onPressed: () async { 
+                    for (var p in _selectedClipPaths) await videoManager.restoreClip(p); 
+                    await _loadClipsFromCurrentAlbum(); 
+                    setState(() { 
+                      _isClipSelectionMode = false; 
+                      _selectedClipPaths.clear(); 
+                    }); 
+                    hapticFeedback(); 
+                  }
+                ),
+                IconButton(icon: const Icon(Icons.delete_forever, color: Colors.redAccent), onPressed: _handleClipBatchDelete)
+              ]
+            : [
+                IconButton(icon: const Icon(Icons.drive_file_move, color: Colors.blue), onPressed: () => _handleMoveOrCopy(true)),
+                IconButton(icon: const Icon(Icons.delete, color: Colors.redAccent), onPressed: _handleClipBatchDelete)
+              ],
       ),
     );
   }
 
-  void _toggleSelectAll(bool isClip) { setState(() { if (isClip) { if (_selectedClipPaths.length == videoManager.recordedVideoPaths.length) _selectedClipPaths.clear(); else _selectedClipPaths = List.from(videoManager.recordedVideoPaths); } else { final selectable = videoManager.albums.where((a) => a != "일상" && a != "휴지통").toList(); if (_selectedAlbumNames.length == selectable.length) _selectedAlbumNames.clear(); else _selectedAlbumNames = Set.from(selectable); } }); hapticFeedback(); }
+    void _toggleSelectAll(bool isClip) { setState(() { if (isClip) { if (_selectedClipPaths.length == videoManager.recordedVideoPaths.length) _selectedClipPaths.clear(); else _selectedClipPaths = List.from(videoManager.recordedVideoPaths); } else { final selectable = videoManager.albums.where((a) => a != "일상" && a != "휴지통").toList(); if (_selectedAlbumNames.length == selectable.length) _selectedAlbumNames.clear(); else _selectedAlbumNames = Set.from(selectable); } }); hapticFeedback(); }
   void _showCreateAlbumMain() async { String? name = await _showCreateAlbumDialog(); if (name != null && name.trim().isNotEmpty) { if (videoManager.albums.contains(name.trim())) return; await videoManager.createNewAlbum(name.trim()); _refreshData(); } }
   Future<String?> _showCreateAlbumDialog() async { String input = ""; return showDialog<String>(context: context, builder: (c) => AlertDialog(title: const Text("새 앨범"), content: TextField(onChanged: (v) => input = v, autofocus: true, maxLength: 12), actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text("취소")), TextButton(onPressed: () => Navigator.pop(c, input), child: const Text("확정"))])); }
   Widget _buildAlbumDropdown() { return ClipRRect(borderRadius: BorderRadius.circular(20), child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10), child: Container(height: 42, padding: const EdgeInsets.symmetric(horizontal: 14), decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(20)), child: DropdownButtonHideUnderline(child: DropdownButton<String>(value: videoManager.albums.contains(videoManager.currentAlbum) && videoManager.currentAlbum != "휴지통" ? videoManager.currentAlbum : "일상", icon: const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.white), dropdownColor: Colors.black.withOpacity(0.8), onChanged: (v) { setState(() => videoManager.currentAlbum = v!); hapticFeedback(); }, items: videoManager.albums.where((a) => a != "휴지통").map((a) => DropdownMenuItem(value: a, child: Text(a, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14)))).toList()))))); }
@@ -1184,19 +1215,33 @@ class VideoManager extends ChangeNotifier {
   final Map<String, Uint8List> thumbnailCache = {};
 
   Future<Uint8List?> getThumbnail(String videoPath) async {
+    // 1. 메모리 캐시 최우선 반환 (반응 속도 극대화)
     if (thumbnailCache.containsKey(videoPath)) return thumbnailCache[videoPath];
+
     final docDir = await getApplicationDocumentsDirectory();
     final thumbDir = Directory(p.join(docDir.path, 'thumbnails'));
     if (!await thumbDir.exists()) await thumbDir.create(recursive: true);
+    
     final thumbFile = File(p.join(thumbDir.path, "${p.basename(videoPath)}.jpg"));
+    
+    // 2. 디스크 캐시 확인
     if (await thumbFile.exists()) {
       final data = await thumbFile.readAsBytes();
       thumbnailCache[videoPath] = data; 
       return data;
     }
-    final data = await thum.VideoThumbnail.thumbnailData(video: videoPath, imageFormat: thum.ImageFormat.JPEG, maxWidth: 150, quality: 15);
+
+    // 3. 품질 퀀텀 점프: maxWidth 400, quality 70 상향 적용
+    final data = await thum.VideoThumbnail.thumbnailData(
+      video: videoPath, 
+      imageFormat: thum.ImageFormat.JPEG, 
+      maxWidth: 400, 
+      quality: 70
+    );
+    
     if (data != null) {
       thumbnailCache[videoPath] = data;
+      // 비동기 저장을 통해 UI 블로킹 방지
       thumbFile.writeAsBytes(data).catchError((e) => null); 
     }
     return data;
@@ -1254,10 +1299,60 @@ class VideoManager extends ChangeNotifier {
   Future<void> saveRecordedVideo(XFile video) async { final docDir = await getApplicationDocumentsDirectory(); final savePath = p.join(docDir.path, 'vlogs', currentAlbum, "clip_${DateTime.now().millisecondsSinceEpoch}.mp4"); await File(video.path).copy(savePath); await loadClipsFromCurrentAlbum(); }
   Future<void> createNewAlbum(String name) async { final d = await getApplicationDocumentsDirectory(); await Directory(p.join(d.path, 'vlogs', name)).create(recursive: true); await initAlbumSystem(); }
   Future<void> deleteAlbums(Set<String> names) async { final docDir = await getApplicationDocumentsDirectory(); for (var name in names) { if (name == "일상" || name == "휴지통") continue; final dir = Directory(p.join(docDir.path, 'vlogs', name)); if (await dir.exists()) { for (var f in dir.listSync().whereType<File>()) await f.rename(p.join(docDir.path, 'vlogs', '휴지통', "${name}__${p.basename(f.path)}")); await dir.delete(recursive: true); } } }
-  Future<void> moveToTrash(String path) async { final docDir = await getApplicationDocumentsDirectory(); await File(path).rename(p.join(docDir.path, 'vlogs', '휴지통', "${currentAlbum}__${p.basename(path)}")); }
-  Future<void> restoreClip(String trashPath) async { final docDir = await getApplicationDocumentsDirectory(); final fileName = p.basename(trashPath); String target = "일상"; if (fileName.contains("__")) { final origin = fileName.split("__")[0]; if (await Directory(p.join(docDir.path, 'vlogs', origin)).exists()) target = origin; } final newName = fileName.contains("__") ? fileName.split("__")[1] : fileName; await File(trashPath).rename(p.join(docDir.path, 'vlogs', target, newName)); }
-  Future<void> executeTransfer(String target, bool isMove, List<String> list) async { final docDir = await getApplicationDocumentsDirectory(); for (var old in list) { final dest = p.join(docDir.path, 'vlogs', target, p.basename(old)); if (isMove) { final f = File(old); try { await f.rename(dest); } catch (e) { await f.copy(dest); await f.delete(); } } else { await File(old).copy(dest); } } }
+  Future<void> moveToTrash(String path) async {
+    final docDir = await getApplicationDocumentsDirectory();
+    // 파일명 앞에 '앨범명__'을 붙여 휴지통으로 이동
+    final destPath = p.join(docDir.path, 'vlogs', '휴지통', "${currentAlbum}__${p.basename(path)}");
+    
+    // PM 지시 사항: rename 대신 copy & delete 사용하여 물리적 오류 방지
+    await File(path).copy(destPath);
+    await File(path).delete();
+    notifyListeners();
+  }
+
+  Future<void> restoreClip(String trashPath) async {
+    final docDir = await getApplicationDocumentsDirectory();
+    final fileName = p.basename(trashPath);
+    String target = "일상";
+    
+    // 견고한 파일명 분리 로직: 첫 번째 '__'를 기준으로 앨범명 추출
+    if (fileName.contains("__")) {
+      final parts = fileName.split("__");
+      final originAlbum = parts[0];
+      if (await Directory(p.join(docDir.path, 'vlogs', originAlbum)).exists()) {
+        target = originAlbum;
+      }
+    }
+    
+    // 원본 파일명 복구
+    final newName = fileName.contains("__") ? fileName.split("__").sublist(1).join("__") : fileName;
+    final destPath = p.join(docDir.path, 'vlogs', target, newName);
+    
+    // Safe Move 적용
+    await File(trashPath).copy(destPath);
+    await File(trashPath).delete();
+    notifyListeners();
+  }
+
+  Future<void> executeTransfer(String target, bool isMove, List<String> list) async {
+    final docDir = await getApplicationDocumentsDirectory();
+    for (var oldPath in list) {
+      final dest = p.join(docDir.path, 'vlogs', target, p.basename(oldPath));
+      await File(oldPath).copy(dest);
+      if (isMove) {
+        await File(oldPath).delete();
+      }
+    }
+    notifyListeners();
+  }
   
   Future<String?> getFirstClipPath(String n) async { final docDir = await getApplicationDocumentsDirectory(); final dir = Directory(p.join(docDir.path, 'vlogs', n)); if (!await dir.exists()) return null; final f = dir.listSync().whereType<File>().where((f) => f.path.endsWith('.mp4')).toList(); return f.isNotEmpty ? f.first.path : null; }
   Future<int> getClipCount(String name) async { final docDir = await getApplicationDocumentsDirectory(); final dir = Directory(p.join(docDir.path, 'vlogs', name)); if (!await dir.exists()) return 0; return dir.listSync().whereType<File>().where((f) => f.path.endsWith('.mp4')).length; }
+  Future<void> deletePermanently(String path) async {
+    final file = File(path);
+    if (await file.exists()) {
+      await file.delete();
+    }
+    notifyListeners();
+  }
 }
