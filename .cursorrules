@@ -9,11 +9,22 @@
 2. Viral Loop: 'Made with 3s' watermark is MANDATORY for FREE tier users.
 3. Feature Gates: Always check UserTier (free, standard, premium) before enabling features.
 4. SafeArea: All UI must respect device safe areas.
+# 3s Project Rules - Updated 2026-01-30
 
-## Monetization Specs
-- FREE: $0, 720p, Watermark Required, Local Storage Only.
-- STANDARD: $4.99/mo, 1080p, Watermark Optional, 50GB Cloud.
-- PREMIUM: $9.99/mo, 4K, Watermark Optional, Unlimited Cloud.
+## Final Pricing Architecture
+- FREE: $0, 720p, Watermark Required.
+- STANDARD: $4.99/mo OR $49.99/yr. (Feature: No Watermark, 1080p)
+- PREMIUM: $9.99/mo OR $99.99/yr. (Feature: All features, 4K)
+
+
+# 3s Billionaire's Paywall Strategy
+
+- NO TABS: The paywall must use a single 'Monthly/Annual' Toggle Switch instead of tabs.
+- DEFAULT STATE: Toggle must be set to 'Annual' by default.
+- ANCHORING: Display Standard and Premium cards side-by-side for direct comparison.
+- VISUAL HIGHLIGHT: Show "Save $20" or percentage savings prominently next to the annual price.
+- CTA: Focus on converting users to the Annual Premium plan.
 
 ## Design Rule
 - Focus on functionality and logic first. Use placeholder UI (simple buttons/text) until the feature is fully integrated.
+
