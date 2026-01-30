@@ -16,6 +16,10 @@ import 'package:image_picker/image_picker.dart';
 import 'package:tutorial_coach_mark/tutorial_coach_mark.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'managers/user_status_manager.dart';
+import 'services/iap_service.dart';
+import 'screens/paywall_screen.dart';
+
 // 💡 외부 편집 화면 파일 임포트
 import 'screens/video_edit_screen.dart';
 
@@ -30,6 +34,8 @@ Future<void> main() async {
     debugPrint("카메라를 찾을 수 없습니다: $e");
     cameras = [];
   }
+  await UserStatusManager().initialize();
+  await IAPService().initialize();
   runApp(const MyApp());
 }
 
@@ -383,6 +389,36 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     }
     if (_selectedClipPaths.length < 2) return;
 
+    final userStatusManager = UserStatusManager();
+    final currentTier = userStatusManager.currentTier;
+    
+    // 고화질(1080p) 병합 시 프리미엄 체크
+    if (!userStatusManager.isStandardOrAbove()) {
+      bool? goPaywall = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Premium 기능'),
+          content: const Text('고화질(1080p) 저장과 워터마크 제거는 Premium 전용 기능입니다. 지금 확인해보시겠어요?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('나중에')),
+            ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Premium 보기')),
+          ],
+        ),
+      );
+
+      if (goPaywall == true) {
+        if (mounted) {
+          Navigator.push(context, MaterialPageRoute(builder: (context) => const PaywallScreen()));
+        }
+        return;
+      }
+      
+      // 결제 안 하고 진행하면 저화질로 강제 변경하거나 워터마크 강제 포함 (현재는 로직상 워터마크만 강제)
+    }
+
+    final bool forceWatermark = currentTier == UserTier.free;
+    final String watermarkText = forceWatermark ? 'Made with 3s' : '';
+
     // 1. 심플한 로딩 다이얼로그 (불필요한 텍스트 제거)
     showDialog(
       context: context,
@@ -425,7 +461,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       final String result = await platform.invokeMethod('mergeVideos', {
         'paths': _selectedClipPaths,
         'outputPath': outputPath,
-        'watermarkText': 'Made with 3S',
+        'watermarkText': watermarkText,
+        'forceWatermark': forceWatermark,
+        'allowWatermarkRemoval': !forceWatermark,
         'quality': '1080p',
       });
 
@@ -783,6 +821,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                   : IconButton(icon: const Icon(Icons.menu_open), onPressed: () => setState(() => _isSidebarOpen = !_isSidebarOpen)),
               title: Text(_isClipSelectionMode ? "${_selectedClipPaths.length}개 선택" : "${videoManager.currentAlbum} (${videoManager.recordedVideoPaths.length})"),
               actions: [
+                if (!_isClipSelectionMode)
+                  IconButton(
+                    icon: const Icon(Icons.stars, color: Colors.amber), 
+                    onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const PaywallScreen()))
+                  ),
                 if (_isClipSelectionMode)
                   (videoManager.currentAlbum == "휴지통" || videoManager.currentAlbum == "Vlog"
                       ? const SizedBox.shrink()
@@ -888,6 +931,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
             : null,
         title: Text(_isAlbumSelectionMode ? "${_selectedAlbumNames.length}개 선택" : "앨범"),
         actions: [
+          if (!_isAlbumSelectionMode)
+            IconButton(
+              icon: const Icon(Icons.stars, color: Colors.amber), 
+              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const PaywallScreen()))
+            ),
           if (_isAlbumSelectionMode)
             IconButton(icon: Icon(isAll ? Icons.check_box : Icons.check_box_outline_blank), onPressed: () => _toggleSelectAll(false))
           else
