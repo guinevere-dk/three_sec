@@ -172,84 +172,124 @@ class _PaywallScreenState extends State<PaywallScreen> {
     );
   }
 
-  /// 슬라이드 토글 스위치: [ Monthly ●── Annual (Save 20%) ]
+  /// 슬라이드 토글 스위치: [ Monthly ●── Annual (BEST VALUE) ]
   Widget _buildPricingToggle() {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 20),
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: Colors.grey[200],
-        borderRadius: BorderRadius.circular(30),
-      ),
-      child: Row(
-        children: [
-          // Monthly 옵션
-          Expanded(
-            child: GestureDetector(
-              onTap: () => setState(() => _isAnnual = false),
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                decoration: BoxDecoration(
-                  color: !_isAnnual ? Colors.black : Colors.transparent,
-                  borderRadius: BorderRadius.circular(26),
-                ),
-                child: Text(
-                  'Monthly',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: !_isAnnual ? Colors.white : Colors.black54,
+    return Column(
+      children: [
+        // 토글 스위치
+        Container(
+          margin: const EdgeInsets.symmetric(horizontal: 20),
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: Colors.grey[200],
+            borderRadius: BorderRadius.circular(30),
+          ),
+          child: Row(
+            children: [
+              // Monthly 옵션
+              Expanded(
+                child: GestureDetector(
+                  onTap: () => setState(() => _isAnnual = false),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    decoration: BoxDecoration(
+                      color: !_isAnnual ? Colors.black : Colors.transparent,
+                      borderRadius: BorderRadius.circular(26),
+                    ),
+                    child: Text(
+                      'Monthly',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: !_isAnnual ? Colors.white : Colors.black54,
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
-          ),
-          
-          // Annual 옵션 (Save 20% 강조)
-          Expanded(
-            child: GestureDetector(
-              onTap: () => setState(() => _isAnnual = true),
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                decoration: BoxDecoration(
-                  color: _isAnnual ? Colors.black : Colors.transparent,
-                  borderRadius: BorderRadius.circular(26),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
+              
+              // Annual 옵션
+              Expanded(
+                child: GestureDetector(
+                  onTap: () => setState(() => _isAnnual = true),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    decoration: BoxDecoration(
+                      color: _isAnnual ? Colors.black : Colors.transparent,
+                      borderRadius: BorderRadius.circular(26),
+                    ),
+                    child: Text(
                       'Annual',
+                      textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
                         color: _isAnnual ? Colors.white : Colors.black54,
                       ),
                     ),
-                    const SizedBox(width: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: _isAnnual ? const Color(0xFFFFD700) : Colors.amber[200],
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: const Text(
-                        'Save 20%',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black,
-                        ),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
+            ],
+          ),
+        ),
+        
+        // Annual 선택 시 'BEST VALUE' 뱃지 (연간 결제 가치 강조)
+        if (_isAnnual) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFFFFD700), Color(0xFFFFA500)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.amber.withOpacity(0.3),
+                  blurRadius: 8,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.workspace_premium, color: Colors.black, size: 20),
+                const SizedBox(width: 8),
+                const Text(
+                  'BEST VALUE',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.black,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    'Save 20%',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
-      ),
+      ],
     );
   }
 
@@ -301,30 +341,31 @@ class _PaywallScreenState extends State<PaywallScreen> {
           ),
         ] : [],
       ),
-      child: Stack(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 플랜명
+            Text(
+              planName,
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: textColor,
+              ),
+            ),
+            
+            const SizedBox(height: 16),
+            
+            // 가격 (오버플로우 방지)
+            Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // 플랜명
-                Text(
-                  planName,
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: textColor,
-                  ),
-                ),
-                
-                const SizedBox(height: 16),
-                
-                // 가격
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
+                Flexible(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
                       product.price,
                       style: TextStyle(
                         fontSize: 32,
@@ -332,19 +373,21 @@ class _PaywallScreenState extends State<PaywallScreen> {
                         color: textColor,
                       ),
                     ),
-                    const SizedBox(width: 4),
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: Text(
-                        _isAnnual ? '/year' : '/month',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: isPremium ? Colors.white70 : Colors.grey,
-                        ),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
+                const SizedBox(width: 4),
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    _isAnnual ? '/year' : '/month',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: isPremium ? Colors.white70 : Colors.grey,
+                    ),
+                  ),
+                ),
+              ],
+            ),
                 
                 // Annual 모드에서 할인액 강조
                 if (savingsText.isNotEmpty) ...[
@@ -395,68 +438,28 @@ class _PaywallScreenState extends State<PaywallScreen> {
                 
                 const SizedBox(height: 20),
                 
-                // 구매 버튼
-                      ElevatedButton(
-                        onPressed: () => _handlePurchase(product.id),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: isPremium ? const Color(0xFFFFD700) : Colors.black,
-                          foregroundColor: Colors.black,
-                          minimumSize: const Size(double.infinity, 48),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          elevation: 6,
-                        ),
-                        child: Text(
-                          isPremium ? 'GET PREMIUM' : 'Select',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 15,
-                          ),
-                        ),
-                      ),
-              ],
-            ),
-          ),
-          
-          // Premium 전용: "Best Choice" 또는 "4K Exclusive" 대형 뱃지
-          if (isPremium)
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [Color(0xFFFFD700), Color(0xFFFFA500)],
-                  ),
-                  borderRadius: BorderRadius.only(
-                    topLeft: Radius.circular(18),
-                    topRight: Radius.circular(18),
-                  ),
-                ),
-                child: const Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.stars, color: Colors.black, size: 18),
-                    SizedBox(width: 6),
-                    Text(
-                      'BEST CHOICE',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black,
-                        letterSpacing: 1.2,
-                      ),
+                // 구매 버튼 (텍스트 색상 복구)
+                ElevatedButton(
+                  onPressed: () => _handlePurchase(product.id),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isPremium ? const Color(0xFFFFD700) : Colors.black,
+                    foregroundColor: isPremium ? Colors.black : Colors.white,
+                    minimumSize: const Size(double.infinity, 48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                    SizedBox(width: 6),
-                    Icon(Icons.stars, color: Colors.black, size: 18),
-                  ],
+                    elevation: 6,
+                  ),
+                  child: Text(
+                    isPremium ? 'GET PREMIUM' : '시작하기',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                    ),
+                  ),
                 ),
-              ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }

@@ -20,10 +20,12 @@ class UserStatusManager {
   static const String _tierKey = '3s_user_tier';
   static const String _purchaseDateKey = '3s_purchase_date';
   static const String _productIdKey = '3s_product_id';
+  static const String _userIdKey = '3s_user_id'; // Firebase uid
 
   UserTier _currentTier = UserTier.free;
   DateTime? _purchaseDate;
   String? _productId;
+  String? _userId; // Firebase uid
 
   /// 현재 사용자 등급 조회
   UserTier get currentTier => _currentTier;
@@ -33,6 +35,9 @@ class UserStatusManager {
   
   /// 구매한 상품 ID 조회
   String? get productId => _productId;
+
+  /// Firebase 사용자 ID 조회
+  String? get userId => _userId;
 
   /// 초기화 - 앱 시작 시 호출하여 저장된 등급 로드
   Future<void> initialize() async {
@@ -57,7 +62,10 @@ class UserStatusManager {
       // 상품 ID 로드
       _productId = prefs.getString(_productIdKey);
 
-      print('[UserStatusManager] 초기화 완료: tier=$_currentTier, productId=$_productId');
+      // 사용자 ID 로드
+      _userId = prefs.getString(_userIdKey);
+
+      print('[UserStatusManager] 초기화 완료: tier=$_currentTier, productId=$_productId, userId=$_userId');
     } catch (e) {
       print('[UserStatusManager] 초기화 실패: $e');
       _currentTier = UserTier.free;
@@ -146,6 +154,34 @@ class UserStatusManager {
         return isStandardOrAbove();
       default:
         return true; // 기본 기능은 모두 사용 가능
+    }
+  }
+
+  /// Firebase 사용자 ID 저장 (로그인 시 호출)
+  Future<bool> setUserId(String uid) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_userIdKey, uid);
+      _userId = uid;
+      print('[UserStatusManager] 사용자 ID 저장: $uid');
+      return true;
+    } catch (e) {
+      print('[UserStatusManager] 사용자 ID 저장 실패: $e');
+      return false;
+    }
+  }
+
+  /// Firebase 사용자 ID 삭제 (로그아웃/탈퇴 시 호출)
+  Future<bool> clearUserId() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_userIdKey);
+      _userId = null;
+      print('[UserStatusManager] 사용자 ID 삭제');
+      return true;
+    } catch (e) {
+      print('[UserStatusManager] 사용자 ID 삭제 실패: $e');
+      return false;
     }
   }
 }

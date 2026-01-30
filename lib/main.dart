@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; // 💡 MethodChannel 사용을 위한 핵심 임포트
+import 'package:flutter/foundation.dart';
 import 'package:camera/camera.dart';
 import 'dart:async';
 import 'dart:io';
@@ -9,24 +10,44 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 import 'package:path/path.dart' as p;
-import 'package:video_thumbnail/video_thumbnail.dart' as thum;
 import 'package:gal/gal.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:tutorial_coach_mark/tutorial_coach_mark.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 
 import 'managers/user_status_manager.dart';
 import 'services/iap_service.dart';
+import 'services/auth_service.dart';
+import 'services/cloud_service.dart';
 import 'screens/paywall_screen.dart';
+import 'screens/login_screen.dart';
+import 'managers/video_manager.dart';
 
 // 💡 외부 편집 화면 파일 임포트
 import 'screens/video_edit_screen.dart';
 
 late List<CameraDescription> cameras;
 
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp();
+  debugPrint('[FCM] background message: ${message.messageId}');
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Firebase 초기화
+  try {
+    await Firebase.initializeApp();
+    print('[Main] Firebase 초기화 완료');
+  } catch (e) {
+    print('[Main] Firebase 초기화 실패: $e');
+  }
+  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+  
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   try {
     cameras = await availableCameras();
@@ -62,7 +83,44 @@ class MyApp extends StatelessWidget {
           titleTextStyle: TextStyle(color: Colors.black, fontSize: 18, fontWeight: FontWeight.bold),
         ),
       ),
-      home: const MainNavigationScreen(),
+      home: const AuthGate(),
+    );
+  }
+}
+
+/// 인증 게이트
+/// 
+/// Firebase Auth 상태를 감지하여 로그인 여부에 따라 화면 분기:
+/// - 로그인 안 됨: LoginScreen
+/// - 로그인 완료: MainNavigationScreen
+class AuthGate extends StatelessWidget {
+  const AuthGate({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final authService = AuthService();
+
+    return StreamBuilder(
+      stream: authService.authStateChanges,
+      builder: (context, snapshot) {
+        // 로딩 중
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(
+              child: CircularProgressIndicator(),
+            ),
+          );
+        }
+
+        // 로그인 상태 확인
+        if (snapshot.hasData && snapshot.data != null) {
+          // 로그인 완료 → 메인 화면
+          return const MainNavigationScreen();
+        } else {
+          // 로그인 안 됨 → 로그인 화면
+          return const LoginScreen();
+        }
+      },
     );
   }
 }
@@ -82,8 +140,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   int _selectedIndex = 0;
   late CameraController _controller;
   late Future<void> _initializeControllerFuture;
+  late TabController _libraryTabController;
+  int _libraryTabIndex = 0;
 
-  final VideoManager videoManager = VideoManager();
   final ImagePicker _picker = ImagePicker();
 
   // 튜토리얼용 GlobalKey
@@ -100,6 +159,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   Timer? _recordingTimer;
   Offset? _tapPosition;
   late AnimationController _focusAnimController;
+  bool _notificationPermissionRequested = false;
 
   double _exposureOffset = 0.0;
   double _minExposure = 0.0;
@@ -135,7 +195,13 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     super.initState();
     _initCamera();
     _focusAnimController = AnimationController(vsync: this, duration: const Duration(milliseconds: 400));
+    _libraryTabController = TabController(length: 2, vsync: this)
+      ..addListener(() {
+        if (!mounted || _libraryTabController.indexIsChanging) return;
+        setState(() => _libraryTabIndex = _libraryTabController.index);
+      });
     _refreshData();
+    _initFirebaseMessaging();
   }
 
   void _initCamera() {
@@ -159,6 +225,86 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     }).catchError((e) {
       debugPrint("카메라 초기화 실패: $e");
     });
+  }
+
+  Future<void> _initFirebaseMessaging() async {
+    if (kIsWeb) return;
+    FirebaseMessaging.onMessage.listen((message) {
+      final title = message.notification?.title;
+      if (title != null) {
+        Fluttertoast.showToast(
+          msg: title,
+          backgroundColor: Colors.black87,
+          textColor: Colors.white,
+          toastLength: Toast.LENGTH_SHORT,
+          gravity: ToastGravity.BOTTOM,
+        );
+      }
+    });
+
+    FirebaseMessaging.onMessageOpenedApp.listen((message) {
+      final title = message.notification?.title ?? "알림을 열었습니다.";
+      if (mounted) {
+        Fluttertoast.showToast(msg: title, backgroundColor: Colors.black87, textColor: Colors.white);
+      }
+    });
+
+    await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(alert: true, badge: true, sound: true);
+    final prefs = await SharedPreferences.getInstance();
+    final asked = prefs.getBool('notification_permission_requested') ?? false;
+    if (asked) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _showNotificationPermissionDialog());
+  }
+
+  Future<void> _showNotificationPermissionDialog() async {
+    if (!mounted) return;
+
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('3s 알림 받기'),
+        content: const Text('새로운 클립, 브이로그 상태, 특별 혜택을 놓치지 않도록 푸시 알림을 허용해주세요.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('다음에'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.black),
+            child: const Text('알림 허용'),
+          ),
+        ],
+      ),
+    );
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('notification_permission_requested', true);
+
+    if (result == true) {
+      final settings = await FirebaseMessaging.instance.requestPermission(
+        alert: true,
+        announcement: false,
+        badge: true,
+        carPlay: false,
+        criticalAlert: false,
+        provisional: false,
+        sound: true,
+      );
+      final success = settings.authorizationStatus == AuthorizationStatus.authorized;
+      Fluttertoast.showToast(
+        msg: success ? '알림을 활성화했습니다.' : '알림 권한이 허용되지 않았습니다.',
+        backgroundColor: Colors.black87,
+        textColor: Colors.white,
+      );
+    } else {
+      Fluttertoast.showToast(
+        msg: '알림은 설정에서 언제든 활성화할 수 있습니다.',
+        backgroundColor: Colors.black87,
+        textColor: Colors.white,
+      );
+    }
   }
 
   Future<void> _checkAndStartTutorial() async {
@@ -307,8 +453,10 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
   Future<void> _refreshData() async {
     await videoManager.initAlbumSystem();
+    await videoManager.loadVlogProjects();
     if (_isInAlbumDetail) await _loadClipsFromCurrentAlbum();
     if (mounted) setState(() {});
+    CloudService().checkUsageAndAlert(videoManager);
   }
 
   Future<void> _loadClipsFromCurrentAlbum() async {
@@ -325,6 +473,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     _exposureTimer?.cancel();
     _controller.dispose();
     _focusAnimController.dispose();
+    _libraryTabController.dispose();
     super.dispose();
   }
 
@@ -457,44 +606,61 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       final exportDir = Directory(p.join(docDir.path, 'exports'));
       if (!await exportDir.exists()) await exportDir.create(recursive: true);
 
-      // 💡 네이티브 병합 호출
+      // 💡 네이티브 병합 호출 (4K + 자막 + GPU 필터 + 오디오 믹싱)
       final String result = await platform.invokeMethod('mergeVideos', {
         'paths': _selectedClipPaths,
         'outputPath': outputPath,
-        'watermarkText': watermarkText,
         'forceWatermark': forceWatermark,
-        'allowWatermarkRemoval': !forceWatermark,
-        'quality': '1080p',
+        'quality': userStatusManager.currentTier == UserTier.premium ? '4K' : '1080p',
+        'userTier': userStatusManager.currentTier.toString().split('.').last,
+        
+        // 📝 자막 파라미터 (멀티 오버레이)
+        'subtitles': [
+          // 예시: 중앙 상단 제목
+          // {
+          //   'text': '내 첫 번째 Vlog',
+          //   'x': 0.0,    // -1.0 (왼쪽) ~ 1.0 (오른쪽), 0.0 = 중앙
+          //   'y': -0.8,   // -1.0 (상단) ~ 1.0 (하단), -0.8 = 상단
+          //   'size': 1.5, // 1.0 = 기본 크기
+          //   'color': '#FFFFFF',
+          // },
+        ],
+        
+        // 🎨 비디오 이펙트 (Premium 전용)
+        'videoEffects': {
+          // 'contrast': 1.2,      // 대비 (0.0~2.0, 1.0=기본)
+          // 'saturation': 1.3,    // 채도 (0.0~2.0, 1.0=기본, 0.0=흑백)
+          // 'grayscale': false,   // 흑백 필터
+        },
+        
+        // 🎵 오디오 믹싱 파라미터 (선택적)
+        // 'bgmPath': '/path/to/bgm.mp3',
+        // 'forceMuteOriginal': false,
+        // 'enableNoiseSuppression': true,
+        // 'bgmVolume': 0.5,
       });
 
       // 💡 [중요] 여기서 딱 한 번만 팝하여 로딩창을 닫습니다.
       if (mounted) Navigator.pop(context);
 
       if (result == "SUCCESS") {
-        // 갤러리 저장
-        await Gal.putVideo(outputPath);
-
-        // Vlog 전용 앨범으로 복사 (전략적 자산화)
-        final vlogAlbumDir = Directory(p.join(docDir.path, 'vlogs', 'Vlog'));
-        if (!await vlogAlbumDir.exists()) await vlogAlbumDir.create(recursive: true);
-        
-        final internalSavePath = p.join(vlogAlbumDir.path, p.basename(outputPath));
-        await File(outputPath).copy(internalSavePath);
+        final savedPath = await videoManager.saveMergedProject(outputPath);
+        await Gal.putVideo(savedPath);
+        await File(outputPath).delete().catchError((_) {});
 
         if (mounted) {
-          // 💡 [Ver 2.8.7] 모달 대신 안정적인 페이지 이동으로 프리뷰 노출
           Navigator.push(
             context,
             MaterialPageRoute(
               builder: (context) => ResultPreviewWidget(
-                videoPath: outputPath,
-                onShare: () => Share.shareXFiles([XFile(outputPath)], text: 'Made with 3S Vlog'),
-                onEdit: () => Fluttertoast.showToast(msg: "프리미엄 편집 기능 준비 중입니다."),
+                videoPath: savedPath,
+                onShare: () => Share.shareXFiles([XFile(savedPath)], text: 'Made with 3S Vlog'),
+                onEdit: () => _handleEditRequest(savedPath),
               ),
             ),
           );
-          
-          _refreshData(); // 데이터 새로고침
+
+          await _refreshData();
           setState(() {
             _isClipSelectionMode = false;
             _selectedClipPaths.clear();
@@ -507,6 +673,68 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     } catch (e) {
       if (mounted) Navigator.pop(context); // 에러 발생 시에도 로딩창은 닫아야 함
       Fluttertoast.showToast(msg: "오류 발생: $e");
+    }
+  }
+
+  // --- [편집 요청 핸들러] ---
+
+  /// 편집 요청 처리 (구매 트리거 포함)
+  Future<void> _handleEditRequest(String videoPath) async {
+    final userStatusManager = UserStatusManager();
+    
+    // Standard 등급 이상만 편집 가능
+    if (!userStatusManager.isStandardOrAbove()) {
+      // Free 유저 → 구매 유도 팝업
+      final bool? goPaywall = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('편집 기능 잠금'),
+          content: const Text(
+            '편집 기능은 Standard 등급부터 사용 가능합니다.\n\n'
+            '지금 업그레이드하고 더 멋진 Vlog를 만들어보세요!',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('나중에'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.amber,
+                foregroundColor: Colors.black,
+              ),
+              child: const Text('업그레이드'),
+            ),
+          ],
+        ),
+      );
+
+      if (goPaywall == true && mounted) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => const PaywallScreen()),
+        );
+      }
+      return;
+    }
+
+    // Standard 이상 → VideoEditScreen으로 이동
+    if (mounted) {
+      final result = await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => VideoEditScreen(
+            videoFile: File(videoPath),
+            targetAlbum: videoManager.currentAlbum,
+          ),
+        ),
+      );
+
+      if (result == true) {
+        Fluttertoast.showToast(msg: "편집 완료");
+        await _refreshData();
+      }
     }
   }
 
@@ -804,7 +1032,68 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     );
   }
 
-  Widget _buildLibraryMain() { if (_isInAlbumDetail) return _buildDetailView(); return _buildAlbumGridView(); }
+  Widget _buildLibraryMain() {
+    if (_isInAlbumDetail) return _buildDetailView();
+
+    final bool isClipTab = _libraryTabIndex == 0;
+    final selectableAlbums = videoManager.albums.where((a) => a != "일상" && a != "휴지통" && a != "Vlog").toList();
+    final bool isAll = _selectedAlbumNames.length == selectableAlbums.length && _selectedAlbumNames.isNotEmpty;
+
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        leading: isClipTab
+            ? (_isAlbumSelectionMode
+                ? IconButton(icon: const Icon(Icons.close), onPressed: () => setState(() { _isAlbumSelectionMode = false; _selectedAlbumNames.clear(); }))
+                : null)
+            : null,
+        title: Text(isClipTab ? (_isAlbumSelectionMode ? "${_selectedAlbumNames.length}개 선택" : "앨범") : "브이로그"),
+        actions: isClipTab
+            ? [
+                if (!_isAlbumSelectionMode)
+                  IconButton(
+                    icon: const Icon(Icons.stars, color: Colors.amber),
+                    onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const PaywallScreen())),
+                  ),
+                if (_isAlbumSelectionMode)
+                  IconButton(
+                    icon: Icon(isAll ? Icons.check_box : Icons.check_box_outline_blank),
+                    onPressed: () => _toggleSelectAll(false),
+                  )
+                else
+                  IconButton(icon: const Icon(Icons.add, size: 28), onPressed: _showCreateAlbumMain),
+              ]
+            : [],
+        bottom: TabBar(
+          controller: _libraryTabController,
+          indicatorColor: Colors.blueAccent,
+          labelColor: Colors.black,
+          unselectedLabelColor: Colors.black54,
+          unselectedLabelStyle: const TextStyle(fontSize: 14),
+          tabs: const [
+            Tab(text: "클립"),
+            Tab(text: "브이로그"),
+          ],
+        ),
+      ),
+      body: TabBarView(
+        controller: _libraryTabController,
+        children: [
+          _buildClipTabContent(),
+          _buildVlogTabContent(),
+        ],
+      ),
+      floatingActionButton: isClipTab && _isAlbumSelectionMode && _selectedAlbumNames.isNotEmpty
+          ? FloatingActionButton.extended(
+              onPressed: _handleAlbumBatchDelete,
+              backgroundColor: Colors.redAccent,
+              icon: const Icon(Icons.delete),
+              label: const Text("삭제"),
+            )
+          : null,
+    );
+  }
 
   Widget _buildDetailView() {
     const double headerHeight = 60.0;
@@ -920,121 +1209,197 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     );
   }
 
-  Widget _buildAlbumGridView() {
-    bool isAll = _selectedAlbumNames.length == videoManager.albums.where((a) => a != "일상" && a != "휴지통" && a != "Vlog").length && _selectedAlbumNames.isNotEmpty;
-    
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.white, elevation: 0,
-        leading: _isAlbumSelectionMode 
-            ? IconButton(icon: const Icon(Icons.close), onPressed: () => setState(() { _isAlbumSelectionMode = false; _selectedAlbumNames.clear(); })) 
-            : null,
-        title: Text(_isAlbumSelectionMode ? "${_selectedAlbumNames.length}개 선택" : "앨범"),
-        actions: [
-          if (!_isAlbumSelectionMode)
-            IconButton(
-              icon: const Icon(Icons.stars, color: Colors.amber), 
-              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const PaywallScreen()))
-            ),
-          if (_isAlbumSelectionMode)
-            IconButton(icon: Icon(isAll ? Icons.check_box : Icons.check_box_outline_blank), onPressed: () => _toggleSelectAll(false))
+  Widget _buildClipTabContent() {
+    return GestureDetector(
+      onScaleStart: (d) {
+        _isZoomingLocked = false;
+        if (_isAlbumSelectionMode && d.pointerCount == 1) _startDragSelection(d.focalPoint, false);
+      },
+      onScaleUpdate: (d) => _handleScaleUpdate(d, false),
+      child: Stack(
+        children: [
+          if (videoManager.recordedVideoPaths.isEmpty)
+            Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    key: keyFirstClip,
+                    width: 100,
+                    height: 100,
+                    decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(12)),
+                    child: const Icon(Icons.movie_creation, color: Colors.grey, size: 40),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text("영상이 없습니다.\n촬영하거나 가져와보세요!", textAlign: TextAlign.center, style: TextStyle(color: Colors.grey))
+                ],
+              ),
+            )
           else
-            IconButton(icon: const Icon(Icons.add, size: 28), onPressed: _showCreateAlbumMain),
+            GridView.builder(
+              key: _clipGridKey,
+              padding: const EdgeInsets.all(2),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: _gridColumnCount,
+                crossAxisSpacing: 2,
+                mainAxisSpacing: 2,
+              ),
+              itemCount: videoManager.recordedVideoPaths.length,
+              itemBuilder: (context, index) {
+                final path = videoManager.recordedVideoPaths[index];
+                final isSelected = _selectedClipPaths.contains(path);
+                final selectIndex = _selectedClipPaths.indexOf(path);
+                final bool isFirst = index == 0;
+
+                return GestureDetector(
+                  onLongPress: () {
+                    setState(() {
+                      _isClipSelectionMode = true;
+                      _lastProcessedIndex = index;
+                      _isDragAdding = !isSelected;
+                      if (_isDragAdding) _selectedClipPaths.add(path);
+                      else _selectedClipPaths.remove(path);
+                    });
+                    hapticFeedback();
+                  },
+                  onTap: () {
+                    if (_isClipSelectionMode) {
+                      setState(() {
+                        isSelected ? _selectedClipPaths.remove(path) : _selectedClipPaths.add(path);
+                      });
+                    } else {
+                      setState(() => _previewingPath = path);
+                    }
+                  },
+                  child: Container(
+                    key: isFirst ? keyFirstClip : null,
+                    child: Stack(fit: StackFit.expand, children: [
+                      _buildThumbnailWidget(path),
+                      if (videoManager.favorites.contains(path))
+                        Positioned(bottom: 4, left: 4, child: const Icon(Icons.favorite, color: Colors.white, size: 16)),
+                        if (videoManager.isClipCloudSynced(path))
+                          Positioned(top: 6, right: 6, child: Icon(Icons.cloud_done, color: Colors.white.withOpacity(0.9), size: 20)),
+                      if (isSelected) Container(color: Colors.white54),
+                      if (_isClipSelectionMode && isSelected)
+                        Positioned(
+                          bottom: 6,
+                          right: 6,
+                          child: Container(
+                            width: 24,
+                            height: 24,
+                            decoration: const BoxDecoration(color: Colors.blueAccent, shape: BoxShape.circle),
+                            alignment: Alignment.center,
+                            child: Text('${selectIndex + 1}', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                          ),
+                        )
+                      else if (_isClipSelectionMode)
+                        const Positioned(bottom: 4, right: 4, child: Icon(Icons.radio_button_unchecked, color: Colors.white70, size: 24)),
+                    ]),
+                  ),
+                );
+              },
+            ),
+          if (_previewingPath != null)
+            VideoPreviewWidget(
+              filePath: _previewingPath!,
+              favorites: videoManager.favorites,
+              isTrashMode: videoManager.currentAlbum == "휴지통",
+              onToggleFav: (p) => setState(() {
+                if (videoManager.favorites.contains(p))
+                  videoManager.favorites.remove(p);
+                else
+                  videoManager.favorites.add(p);
+              }),
+              onRestore: (p) => _handleRestore(p),
+              onDelete: (p) => _handleSafeSingleDelete(p),
+              onClose: () => setState(() => _previewingPath = null),
+            ),
         ],
       ),
-      body: GestureDetector(
-        onScaleStart: (d) { _isZoomingLocked = false; if (_isAlbumSelectionMode && d.pointerCount == 1) _startDragSelection(d.focalPoint, false); },
-        onScaleUpdate: (d) => _handleScaleUpdate(d, false),
-        child: GridView.builder(
-          key: _albumGridKey, padding: const EdgeInsets.all(16),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: _gridColumnCount, crossAxisSpacing: 16, mainAxisSpacing: 16),
-          itemCount: videoManager.albums.length,
-          itemBuilder: (context, index) {
-            final name = videoManager.albums[index]; 
-            final isS = _selectedAlbumNames.contains(name); 
-            // 💡 [시스템 폴더 보호] Vlog 추가
-            final bool isP = name == "일상" || name == "휴지통" || name == "Vlog";
-            final bool isVlog = name == "Vlog";
+    );
+  }
 
-            return GestureDetector(
-              onLongPress: () { if (!isP) { setState(() { _isAlbumSelectionMode = true; _lastProcessedIndex = index; _isDragAdding = !isS; _selectedAlbumNames.add(name); }); hapticFeedback(); } },
-              onTap: () async {
-                if (_isAlbumSelectionMode) {
-                  if (!isP) setState(() => isS ? _selectedAlbumNames.remove(name) : _selectedAlbumNames.add(name));
-                } else {
-                  videoManager.currentAlbum = name; 
-                  setState(() => videoManager.recordedVideoPaths.clear()); 
-                  await videoManager.loadClipsFromCurrentAlbum(); 
-                  if (mounted) setState(() => _isInAlbumDetail = true);
-                }
-              },
-              child: Hero(
-                tag: 'album_art_$name',
-                child: Container(
-                  decoration: BoxDecoration(
-                    // 💡 [Vlog 프리미엄 컬러 적용]
-                    color: isVlog ? Colors.amber[50] : (name == "휴지통" ? const Color(0xFFF2F2F7) : Colors.grey[200]), 
-                    borderRadius: BorderRadius.circular(20), 
-                    border: Border.all(
-                      color: isVlog ? Colors.amber.withOpacity(0.5) : Colors.black.withOpacity(0.05), 
-                      width: isVlog ? 2 : 0.5
-                    ),
-                    boxShadow: [
-                      BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 12, offset: const Offset(0, 4))
-                    ],
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(20),
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        // 💡 [Vlog 전용 아이콘 적용]
-                        isVlog 
-                            ? const Center(child: Icon(Icons.stars, size: 40, color: Colors.amber))
-                            : (name == "휴지통" 
-                                ? const Center(child: Icon(Icons.delete_outline, size: 40, color: Colors.black26)) 
-                                : _buildAlbumThumbnail(name)),
-                        if (isS) Container(color: Colors.white60),
-                        Container(
-                          decoration: const BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topCenter, end: Alignment.bottomCenter,
-                              colors: [Colors.transparent, Colors.black54], stops: [0.6, 1.0],
-                            ),
-                          ),
-                        ),
-                        Positioned(
-                          bottom: 12, left: 12, right: 12, 
-                          child: FutureBuilder<int>(
-                            key: ValueKey("count_$name"), 
-                            future: videoManager.getClipCount(name), 
-                            builder: (context, snapshot) => Text(
-                              "$name (${snapshot.data ?? 0})", 
-                              style: TextStyle(
-                                color: isVlog ? Colors.orange[900] : Colors.white, 
-                                fontWeight: FontWeight.bold, 
-                                fontSize: 14
-                              ), 
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ),
-                        if (_isAlbumSelectionMode && !isP) 
-                          Positioned(
-                            top: 10, right: 10, 
-                            child: Icon(isS ? Icons.check_circle : Icons.radio_button_unchecked, 
-                            color: isS ? Colors.blueAccent : Colors.white70, size: 24),
-                          ),
-                      ],
+  Widget _buildVlogTabContent() {
+    final projects = videoManager.vlogProjectPaths;
+    if (projects.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: const [
+            Icon(Icons.stars, size: 60, color: Colors.grey),
+            SizedBox(height: 12),
+            Text("브이로그가 아직 없습니다.", style: TextStyle(color: Colors.grey, fontSize: 16)),
+            SizedBox(height: 4),
+            Text("클립을 선택해 하나의 스토리로 완성해보세요.", style: TextStyle(color: Colors.grey, fontSize: 14)),
+          ],
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: GridView.builder(
+        key: const ValueKey("vlog_grid"),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: _gridColumnCount,
+          crossAxisSpacing: 12,
+          mainAxisSpacing: 12,
+        ),
+        itemCount: projects.length,
+        itemBuilder: (context, index) {
+          final path = projects[index];
+          return GestureDetector(
+            onTap: () => _openVlogPreview(path),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  _buildThumbnailWidget(path),
+                      Positioned(
+                        top: 8,
+                        right: 8,
+                        child: Icon(Icons.cloud_done, color: Colors.white.withOpacity(0.9), size: 22),
+                      ),
+                  Container(
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Colors.transparent, Colors.black54],
+                        stops: [0.5, 1.0],
+                      ),
                     ),
                   ),
-                ),
+                  Positioned(
+                    left: 12,
+                    bottom: 12,
+                    right: 12,
+                    child: Text(
+                      "브이로그 ${index + 1}",
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ],
               ),
-            );
-          },
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _openVlogPreview(String path) {
+    if (!mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ResultPreviewWidget(
+          videoPath: path,
+          onShare: () => Share.shareXFiles([XFile(path)], text: 'Made with 3S Vlog'),
+          onEdit: () => _handleEditRequest(path),
         ),
       ),
-      floatingActionButton: (_isAlbumSelectionMode && _selectedAlbumNames.isNotEmpty) ? FloatingActionButton.extended(onPressed: _handleAlbumBatchDelete, backgroundColor: Colors.redAccent, label: const Text("삭제"), icon: const Icon(Icons.delete)) : null,
     );
   }
 
@@ -1198,175 +1563,6 @@ class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
   }
 }
 
-class VideoManager extends ChangeNotifier {
-  String currentAlbum = "일상";
-  List<String> albums = ["일상", "휴지통"];
-  List<String> recordedVideoPaths = [];
-  Set<String> favorites = {};
-  final Map<String, Uint8List> thumbnailCache = {};
-
-  // 💡 MethodChannel 연결 (VideoManager 내부에서도 사용 가능)
-  static const platform = MethodChannel('com.dk.three_sec/video_engine');
-
-  Future<Uint8List?> getThumbnail(String videoPath) async {
-    if (thumbnailCache.containsKey(videoPath)) return thumbnailCache[videoPath];
-
-    final docDir = await getApplicationDocumentsDirectory();
-    final thumbDir = Directory(p.join(docDir.path, 'thumbnails'));
-    if (!await thumbDir.exists()) await thumbDir.create(recursive: true);
-    
-    final thumbFile = File(p.join(thumbDir.path, "${p.basename(videoPath)}.jpg"));
-    
-    if (await thumbFile.exists()) {
-      final data = await thumbFile.readAsBytes();
-      thumbnailCache[videoPath] = data; 
-      return data;
-    }
-
-    final data = await thum.VideoThumbnail.thumbnailData(
-      video: videoPath, 
-      imageFormat: thum.ImageFormat.JPEG, 
-      maxWidth: 400, 
-      quality: 70
-    );
-    
-    if (data != null) {
-      thumbnailCache[videoPath] = data;
-      thumbFile.writeAsBytes(data).catchError((e) => null); 
-    }
-    return data;
-  }
-
-  // 💡 [Native Bridge] 사진 -> 영상 변환도 네이티브로 위임
-  Future<void> convertPhotoToVideo(String imagePath, String targetAlbum) async {
-    final docDir = await getApplicationDocumentsDirectory();
-    final outDir = Directory(p.join(docDir.path, 'vlogs', targetAlbum));
-    if (!await outDir.exists()) await outDir.create(recursive: true);
-    
-    final String outPath = p.join(outDir.path, "photo_${DateTime.now().millisecondsSinceEpoch}.mp4");
-
-    // FFmpeg 제거 후 네이티브 호출
-    final String result = await platform.invokeMethod('convertImageToVideo', {
-      'imagePath': imagePath,
-      'outputPath': outPath,
-      'duration': 3, // 3초 영상 생성
-    });
-
-    if (result != "SUCCESS") {
-      throw Exception("Native Conversion Error: $result");
-    }
-  }
-
-  Future<void> initAlbumSystem() async {
-    final docDir = await getApplicationDocumentsDirectory();
-    final baseDir = Directory(p.join(docDir.path, 'vlogs'));
-    if (!await baseDir.exists()) await baseDir.create(recursive: true);
-    await Directory(p.join(baseDir.path, '일상')).create();
-    await Directory(p.join(baseDir.path, '휴지통')).create();
-    await Directory(p.join(baseDir.path, 'Vlog')).create();
-    await Directory(p.join(docDir.path, 'thumbnails')).create();
-    List<FileSystemEntity> entities = baseDir.listSync().whereType<Directory>().toList();
-    List<MapEntry<String, DateTime>> albumWithTime = [];
-    for (var entity in entities) { String name = p.basename(entity.path); FileStat stat = await entity.stat(); albumWithTime.add(MapEntry(name, stat.changed)); }
-    albumWithTime.sort((a, b) { 
-      if (a.key == "일상") return -1; if (b.key == "일상") return 1; 
-      if (a.key == "휴지통") return 1; if (b.key == "휴지통") return -1; 
-      if (a.key == "Vlog") return 1; if (b.key == "Vlog") return -1;
-      return a.value.compareTo(b.value); 
-    });
-    albums = albumWithTime.map((e) => e.key).toList();
-    notifyListeners();
-  }
-  void clearClips() {
-    recordedVideoPaths = [];
-    notifyListeners();
-  }
-  Future<void> loadClipsFromCurrentAlbum() async {
-    recordedVideoPaths = [];
-    
-    final docDir = await getApplicationDocumentsDirectory();
-    final albumDir = Directory(p.join(docDir.path, 'vlogs', currentAlbum));
-    if (!await albumDir.exists()) await albumDir.create(recursive: true);
-    
-    final files = albumDir.listSync().whereType<File>()
-        .where((f) => f.path.endsWith('.mp4'))
-        .map((f) => f.path).toList();
-    
-    files.sort((a, b) => File(b).lastModifiedSync().compareTo(File(a).lastModifiedSync()));
-    
-    recordedVideoPaths = files;
-    notifyListeners();
-  }
-
-  void toggleFavoritesBatch(List<String> paths) { for (var path in paths) { if (favorites.contains(path)) favorites.remove(path); else favorites.add(path); } }
-  Future<void> moveClipsBatch(List<String> paths, String targetAlbum) async { final docDir = await getApplicationDocumentsDirectory(); for (var oldPath in paths) { final dest = p.join(docDir.path, 'vlogs', targetAlbum, p.basename(oldPath)); try { await File(oldPath).rename(dest); } catch (e) { await File(oldPath).copy(dest); await File(oldPath).delete(); } } notifyListeners(); }
-  Future<void> deleteClipsBatch(List<String> paths) async { for (var path in paths) await moveToTrash(path); }
-  Future<void> saveRecordedVideo(XFile video) async { final docDir = await getApplicationDocumentsDirectory(); final savePath = p.join(docDir.path, 'vlogs', currentAlbum, "clip_${DateTime.now().millisecondsSinceEpoch}.mp4"); await File(video.path).copy(savePath); await loadClipsFromCurrentAlbum(); }
-  Future<void> createNewAlbum(String name) async { final d = await getApplicationDocumentsDirectory(); await Directory(p.join(d.path, 'vlogs', name)).create(recursive: true); await initAlbumSystem(); }
-  Future<void> deleteAlbums(Set<String> names) async { 
-    final docDir = await getApplicationDocumentsDirectory(); 
-    for (var name in names) { 
-      if (name == "일상" || name == "휴지통" || name == "Vlog") continue; 
-      final dir = Directory(p.join(docDir.path, 'vlogs', name));
-      if (await dir.exists()) { 
-        for (var f in dir.listSync().whereType<File>()) 
-        await f.rename(p.join(docDir.path, 'vlogs', '휴지통', "${name}__${p.basename(f.path)}")); 
-        await dir.delete(recursive: true); 
-      } 
-    } 
-  }
-  Future<void> moveToTrash(String path) async {
-    final docDir = await getApplicationDocumentsDirectory();
-    final destPath = p.join(docDir.path, 'vlogs', '휴지통', "${currentAlbum}__${p.basename(path)}");
-    await File(path).copy(destPath);
-    await File(path).delete();
-    notifyListeners();
-  }
-
-  Future<void> restoreClip(String trashPath) async {
-    final docDir = await getApplicationDocumentsDirectory();
-    final fileName = p.basename(trashPath);
-    String target = "일상";
-    
-    if (fileName.contains("__")) {
-      final parts = fileName.split("__");
-      final originAlbum = parts[0];
-      if (await Directory(p.join(docDir.path, 'vlogs', originAlbum)).exists()) {
-        target = originAlbum;
-      }
-    }
-    
-    final newName = fileName.contains("__") ? fileName.split("__").sublist(1).join("__") : fileName;
-    final destPath = p.join(docDir.path, 'vlogs', target, newName);
-    
-    await File(trashPath).copy(destPath);
-    await File(trashPath).delete();
-    notifyListeners();
-  }
-
-  Future<void> executeTransfer(String target, bool isMove, List<String> list) async {
-    final docDir = await getApplicationDocumentsDirectory();
-    for (var oldPath in list) {
-      final dest = p.join(docDir.path, 'vlogs', target, p.basename(oldPath));
-      await File(oldPath).copy(dest);
-      if (isMove) {
-        await File(oldPath).delete();
-      }
-    }
-    notifyListeners();
-  }
-  
-  Future<String?> getFirstClipPath(String n) async { final docDir = await getApplicationDocumentsDirectory(); final dir = Directory(p.join(docDir.path, 'vlogs', n)); if (!await dir.exists()) return null; final f = dir.listSync().whereType<File>().where((f) => f.path.endsWith('.mp4')).toList(); return f.isNotEmpty ? f.first.path : null; }
-  Future<int> getClipCount(String name) async { final docDir = await getApplicationDocumentsDirectory(); final dir = Directory(p.join(docDir.path, 'vlogs', name)); if (!await dir.exists()) return 0; return dir.listSync().whereType<File>().where((f) => f.path.endsWith('.mp4')).length; }
-  Future<void> deletePermanently(String path) async {
-    final file = File(path);
-    if (await file.exists()) {
-      await file.delete();
-    }
-    notifyListeners();
-  }
-}
-
 class ResultPreviewWidget extends StatefulWidget {
   final String videoPath;
   final VoidCallback onShare;
@@ -1466,10 +1662,10 @@ class _ResultPreviewWidgetState extends State<ResultPreviewWidget> {
                       ),
                       const SizedBox(height: 20),
                       Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                         children: [
                           _buildPremiumActionButton(Icons.share_rounded, "공유", widget.onShare),
-                          // _buildPremiumActionButton(Icons.auto_awesome, "편집", widget.onEdit), // 💡 뱃지 제외 버전
+                          _buildPremiumActionButton(Icons.auto_awesome, "편집", widget.onEdit),
                         ],
                       ),
                     ],

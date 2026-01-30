@@ -1,0 +1,70 @@
+rules_version = '2';
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🔐 Firestore 보안 규칙 (3s Vlog App)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// 컬렉션 구조:
+// - users/{userId}: 사용자 정보 (구독 등급, 저장 용량)
+// - videos/{videoId}: 영상 메타데이터 (앨범, 즐겨찾기 등)
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 👤 사용자 정보: users/{userId}
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    match /users/{userId} {
+      // ✅ 읽기: 인증된 본인만
+      allow read: if request.auth != null 
+                  && request.auth.uid == userId;
+      
+      // ✅ 쓰기: 인증된 본인만 (자신의 정보 업데이트)
+      allow write: if request.auth != null 
+                   && request.auth.uid == userId;
+    }
+    
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 📹 영상 메타데이터: videos/{videoId}
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    match /videos/{videoId} {
+      // ✅ 읽기: 인증된 본인의 영상만
+      allow read: if request.auth != null 
+                  && request.auth.uid == resource.data.uid;
+      
+      // ✅ 생성: 인증된 사용자 + uid 일치 확인
+      allow create: if request.auth != null 
+                    && request.auth.uid == request.resource.data.uid
+                    && isValidVideoMetadata();
+      
+      // ✅ 업데이트: 인증된 본인 + 필수 필드 보존
+      allow update: if request.auth != null 
+                    && request.auth.uid == resource.data.uid
+                    && request.resource.data.uid == resource.data.uid // uid 변경 불가
+                    && request.resource.data.videoId == resource.data.videoId; // videoId 변경 불가
+      
+      // ✅ 삭제: 인증된 본인만
+      allow delete: if request.auth != null 
+                    && request.auth.uid == resource.data.uid;
+    }
+    
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 🛡️ 보안 함수
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    
+    /// 유효한 영상 메타데이터 검증
+    function isValidVideoMetadata() {
+      let data = request.resource.data;
+      
+      return data.keys().hasAll(['uid', 'videoId', 'fileName', 'storagePath', 'albumName', 'isFavorite', 'fileSize', 'uploadStatus'])
+          && data.uid is string
+          && data.videoId is string
+          && data.fileName is string
+          && data.storagePath is string
+          && data.albumName is string
+          && data.isFavorite is bool
+          && data.fileSize is int
+          && data.uploadStatus in ['queued', 'uploading', 'completed', 'failed'];
+    }
+  }
+}

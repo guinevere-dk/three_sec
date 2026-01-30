@@ -5,6 +5,7 @@ import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:in_app_purchase_android/in_app_purchase_android.dart';
 import 'package:in_app_purchase_storekit/in_app_purchase_storekit.dart';
 import '../managers/user_status_manager.dart';
+import 'auth_service.dart';
 
 /// 인앱 결제 서비스
 ///
@@ -373,6 +374,19 @@ class IAPService {
 
       if (success) {
         print('[IAPService] ✓ 사용자 등급 업데이트 완료: $tier');
+        
+        // Firestore에 동기화
+        final authService = AuthService();
+        final purchaseDateTime = DateTime.fromMillisecondsSinceEpoch(
+          int.tryParse(purchase.transactionDate ?? '0') ??
+              DateTime.now().millisecondsSinceEpoch,
+        );
+        
+        await authService.syncSubscriptionToFirestore(
+          tier: tier,
+          productId: productId,
+          purchaseDate: purchaseDateTime,
+        );
       } else {
         print('[IAPService] ✗ 사용자 등급 업데이트 실패');
       }
