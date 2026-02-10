@@ -112,7 +112,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           onPressed: _handleNaverSignIn,
                           backgroundColor: const Color(0xFF03C75A),
                           textColor: Colors.white,
-                          icon: Icons.n_mobiledata,
+                          icon: Icons.check_circle_outline,
                           label: 'Continue with Naver (Coming Soon)',
                           isDisabled: true,
                         ),

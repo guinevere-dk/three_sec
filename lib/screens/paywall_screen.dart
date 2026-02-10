@@ -1,14 +1,11 @@
+import 'dart:ui';
+import 'dart:async';
 import 'package:flutter/material.dart';
+
+import 'package:video_player/video_player.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 import '../services/iap_service.dart';
 
-/// 페이월(결제) 화면 - 억만장자의 설계
-/// 
-/// 단일 화면 구조:
-/// - Monthly/Annual 슬라이드 토글 (기본값: Annual)
-/// - Standard vs Premium 대조 카드 (나란히 배치)
-/// - Annual 모드: 할인액 강조 ("$20 Save")
-/// - Premium 강조: "Best Choice" 대형 뱃지
 class PaywallScreen extends StatefulWidget {
   const PaywallScreen({super.key});
 
@@ -18,464 +15,392 @@ class PaywallScreen extends StatefulWidget {
 
 class _PaywallScreenState extends State<PaywallScreen> {
   final IAPService _iapService = IAPService();
+  VideoPlayerController? _videoController;
   bool _isLoading = false;
+  List<ProductDetails> _products = [];
+  StreamSubscription<List<PurchaseDetails>>? _subscription;
   
-  // 토글 상태: true=Annual, false=Monthly (기본값: Annual)
-  bool _isAnnual = true;
+  // 0: Standard, 1: Premium
+  int _selectedTierIndex = 1; // Default to Premium
+  
+  // Selected Pricing Option (for Premium)
+  // 0: Annual, 1: Monthly
+  int _selectedPricingIndex = 0; // Default to Annual
 
   @override
   void initState() {
     super.initState();
+    _initVideoBackground();
     if (!_iapService.isInitialized) {
       _initIAP();
     }
   }
 
+  void _initVideoBackground() {
+    // Placeholder video (Butterfly)
+    _videoController = VideoPlayerController.networkUrl(
+      Uri.parse('https://flutter.github.io/assets-for-api-docs/assets/videos/butterfly.mp4'),
+    )..initialize().then((_) {
+        setState(() {});
+        _videoController?.play();
+        _videoController?.setLooping(true);
+        _videoController?.setVolume(0); // Mute background
+      }).catchError((e) {
+        debugPrint("Video initialization failed: $e");
+      });
+  }
+
   Future<void> _initIAP() async {
     setState(() => _isLoading = true);
     await _iapService.initialize();
-    if (mounted) setState(() => _isLoading = false);
+    
+    // Listen to purchase updates for UI feedback
+    final Stream<List<PurchaseDetails>> purchaseUpdated = InAppPurchase.instance.purchaseStream;
+    _subscription = purchaseUpdated.listen((purchaseDetailsList) {
+      _listenToPurchaseUpdated(purchaseDetailsList);
+    }, onDone: () {
+      _subscription?.cancel();
+    }, onError: (error) {
+      if (mounted) {
+         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $error")));
+         setState(() => _isLoading = false);
+      }
+    });
+
+    if (mounted) {
+      setState(() {
+        _products = _iapService.products;
+        _isLoading = false;
+      });
+    }
+  }
+
+  void _listenToPurchaseUpdated(List<PurchaseDetails> purchaseDetailsList) {
+    for (final PurchaseDetails purchaseDetails in purchaseDetailsList) {
+      if (purchaseDetails.status == PurchaseStatus.pending) {
+        if (mounted) setState(() => _isLoading = true);
+      } else {
+        if (purchaseDetails.status == PurchaseStatus.error) {
+          if (mounted) {
+             ScaffoldMessenger.of(context).showSnackBar(
+               SnackBar(content: Text("Purchase Failed: ${purchaseDetails.error?.message ?? 'Unknown Error'}"))
+             );
+             setState(() => _isLoading = false);
+          }
+        } else if (purchaseDetails.status == PurchaseStatus.purchased ||
+                   purchaseDetails.status == PurchaseStatus.restored) {
+          if (mounted) {
+             ScaffoldMessenger.of(context).showSnackBar(
+               const SnackBar(content: Text("Welcome to Premium!"))
+             );
+             setState(() => _isLoading = false);
+             Navigator.pop(context); // Close Paywall
+          }
+        }
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _subscription?.cancel();
+    _videoController?.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final cycle = _isAnnual ? IAPSubscriptionCycle.annual : IAPSubscriptionCycle.monthly;
-    final standardProduct = _iapService.getProductFor(
-      cycle: cycle,
-      tier: IAPSubscriptionTier.standard,
-    );
-    final premiumProduct = _iapService.getProductFor(
-      cycle: cycle,
-      tier: IAPSubscriptionTier.premium,
-    );
-    final bool productsReady = standardProduct != null && premiumProduct != null;
-
-    if (_isLoading || !productsReady) {
-      return Scaffold(
-        appBar: AppBar(
-          title: const Text('Upgrade to Premium'),
-          centerTitle: true,
-          backgroundColor: Colors.black,
-          foregroundColor: Colors.white,
-        ),
-        body: const Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    final standard = standardProduct!;
-    final premium = premiumProduct!;
-
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Upgrade to Premium'),
-        centerTitle: true,
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-      ),
-      body: _isLoading 
-        ? const Center(child: CircularProgressIndicator())
-        : SingleChildScrollView(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          // 1. Video Background
+          if (_videoController != null && _videoController!.value.isInitialized)
+            SizedBox.expand(
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: _videoController!.value.size.width,
+                  height: _videoController!.value.size.height,
+                  child: VideoPlayer(_videoController!),
+                ),
+              ),
+            )
+          else
+            Container(color: Colors.black), // Fallback
+
+          // 2. Blur Overlay
+          Positioned.fill(
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+              child: Container(
+                color: Colors.black.withAlpha(102),
+              ),
+            ),
+          ),
+
+          // 3. Content
+          SafeArea(
             child: Column(
               children: [
-                const SizedBox(height: 30),
-                
-                // 헤더
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 20),
-                  child: Column(
-                    children: [
-                      Text(
-                        'Unlock Your Creative Power',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 28,
-                          fontWeight: FontWeight.bold,
-                          height: 1.2,
-                        ),
-                      ),
-                      SizedBox(height: 12),
-                      Text(
-                        'Remove watermarks, unlimited clips & 4K export',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 15,
-                          color: Colors.grey,
-                        ),
-                      ),
-                    ],
+                // Close Button
+                Align(
+                  alignment: Alignment.topRight,
+                  child: IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: () => Navigator.pop(context),
                   ),
                 ),
                 
-                const SizedBox(height: 30),
-                
-                // 글로벌 토글 스위치 [ Monthly ●── Annual (Save 20%) ]
-                _buildPricingToggle(),
-                
-                const SizedBox(height: 30),
-                
-                // Standard vs Premium 대조 카드 (나란히 배치)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Standard 카드
-                      Expanded(
-                        child: _buildPlanCard(
-                          product: standard,
-                          isStandard: true,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      // Premium 카드 (화려하게)
-                      Expanded(
-                        child: _buildPlanCard(
-                          product: premium,
-                          isStandard: false,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                
-                const SizedBox(height: 30),
-                
-                // 구매 복원 및 약관
-                TextButton.icon(
-                  onPressed: () async {
-                    setState(() => _isLoading = true);
-                    final success = await _iapService.restorePurchases();
-                    if (mounted) {
-                      setState(() => _isLoading = false);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text(success ? 'Purchases restored' : 'No purchases found')),
-                      );
-                    }
-                  },
-                  icon: const Icon(Icons.restore),
-                  label: const Text('Restore Purchases'),
-                ),
-                
-                const SizedBox(height: 10),
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 40),
-                  child: Text(
-                    'Cancel anytime in Store settings.\nPrices in USD. Auto-renewal applies.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 11, color: Colors.grey),
-                  ),
-                ),
-                const SizedBox(height: 30),
-              ],
-            ),
-          ),
-    );
-  }
+                const Spacer(),
 
-  /// 슬라이드 토글 스위치: [ Monthly ●── Annual (BEST VALUE) ]
-  Widget _buildPricingToggle() {
-    return Column(
-      children: [
-        // 토글 스위치
-        Container(
-          margin: const EdgeInsets.symmetric(horizontal: 20),
-          padding: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            color: Colors.grey[200],
-            borderRadius: BorderRadius.circular(30),
-          ),
-          child: Row(
-            children: [
-              // Monthly 옵션
-              Expanded(
-                child: GestureDetector(
-                  onTap: () => setState(() => _isAnnual = false),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    decoration: BoxDecoration(
-                      color: !_isAnnual ? Colors.black : Colors.transparent,
-                      borderRadius: BorderRadius.circular(26),
-                    ),
-                    child: Text(
-                      'Monthly',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: !_isAnnual ? Colors.white : Colors.black54,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              
-              // Annual 옵션
-              Expanded(
-                child: GestureDetector(
-                  onTap: () => setState(() => _isAnnual = true),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    decoration: BoxDecoration(
-                      color: _isAnnual ? Colors.black : Colors.transparent,
-                      borderRadius: BorderRadius.circular(26),
-                    ),
-                    child: Text(
-                      'Annual',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: _isAnnual ? Colors.white : Colors.black54,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-        
-        // Annual 선택 시 'BEST VALUE' 뱃지 (연간 결제 가치 강조)
-        if (_isAnnual) ...[
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFFFFD700), Color(0xFFFFA500)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.amber.withOpacity(0.3),
-                  blurRadius: 8,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.workspace_premium, color: Colors.black, size: 20),
-                const SizedBox(width: 8),
-                const Text(
-                  'BEST VALUE',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black,
-                    letterSpacing: 1.5,
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: Colors.black,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Text(
-                    'Save 20%',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
+                // Main Content Card
+                _buildGlassCard(),
               ],
             ),
           ),
+          
+          if (_isLoading)
+            Container(
+              color: Colors.black54,
+              child: const Center(child: CircularProgressIndicator(color: Colors.white)),
+            ),
         ],
-      ],
+      ),
     );
   }
 
-  /// 플랜 카드 빌더 (Standard vs Premium)
-  Widget _buildPlanCard({
-    required ProductDetails product,
-    required bool isStandard,
-  }) {
-    // 가격 추출
-    final priceString = product.price.replaceAll(RegExp(r'[^\d.]'), '');
-    final price = double.tryParse(priceString) ?? 0;
-    
-    // Annual 모드에서 할인액 계산 (월간 대비)
-    String savingsText = '';
-    if (_isAnnual && price > 0) {
-      // Standard: $4.99/mo * 12 = $59.88 → $49.99 = Save $10
-      // Premium: $9.99/mo * 12 = $119.88 → $99.99 = Save $20
-      final monthlyEquivalent = isStandard ? 4.99 : 9.99;
-      final annualFull = monthlyEquivalent * 12;
-      final savings = annualFull - price;
-      if (savings > 0) {
-        savingsText = '\$${savings.toStringAsFixed(0)} Save';
-      }
-    }
-    
-    // 플랜별 정보
-    final planName = isStandard ? 'Standard' : 'Premium';
-    final features = isStandard 
-      ? ['Ad removal', 'Unlimited clips', 'Basic editing']
-      : ['Ad removal', 'Watermark removal', 'Unlimited clips', '4K export', 'Advanced editing', 'Priority support'];
-    
-    // Premium은 화려하게
-    final isPremium = !isStandard;
-    final cardColor = isPremium ? Colors.black : Colors.white;
-    final textColor = isPremium ? Colors.white : Colors.black;
-    final borderColor = isPremium ? Colors.amber : Colors.grey[300]!;
+  Widget _buildGlassCard() {
+    return Container(
+       margin: const EdgeInsets.all(16),
+       padding: const EdgeInsets.all(24),
+       decoration: BoxDecoration(
+         color: Colors.white.withAlpha(25),
+         borderRadius: BorderRadius.circular(32),
+         border: Border.all(color: Colors.white24),
+         boxShadow: [
+           BoxShadow(
+             color: Colors.black.withAlpha(51),
+             blurRadius: 20,
+             spreadRadius: 5,
+           )
+         ]
+       ),
+       child: Column(
+         mainAxisSize: MainAxisSize.min,
+         children: [
+           const Text(
+             "Unlock Your Potential",
+             style: TextStyle( color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+           ),
+           const SizedBox(height: 20),
+           
+           // Toggle: Standard | Premium
+           _buildTierToggle(),
+           
+           const SizedBox(height: 20),
+           
+           // Benefit List (Dynamic based on toggle)
+           _buildBenefitList(),
+           
+           const SizedBox(height: 24),
+           
+           if (_selectedTierIndex == 1) ...[
+              // Pricing Cards (Only for Premium)
+              if (_products.isNotEmpty) ...[
+                 Row(
+                   crossAxisAlignment: CrossAxisAlignment.end,
+                   children: [
+                     // Monthly (Anchor - Smaller)
+                     Expanded(
+                       flex: 2,
+                       child: _buildPricingCard(
+                         title: "Monthly",
+                         price: _getPrice(IAPService.premiumMonthly),
+                         isHero: false,
+                         isSelected: _selectedPricingIndex == 1,
+                         onTap: () => setState(() => _selectedPricingIndex = 1),
+                       ),
+                     ),
+                     const SizedBox(width: 12),
+                     // Annual (Hero - Larger)
+                     Expanded(
+                       flex: 3,
+                       child: _buildPricingCard(
+                         title: "Annual",
+                         price: _getPrice(IAPService.premiumAnnual),
+                         subtitle: "Save 20%",
+                         isHero: true,
+                         isSelected: _selectedPricingIndex == 0,
+                         onTap: () => setState(() => _selectedPricingIndex = 0),
+                       ),
+                     ),
+                   ],
+                 ),
+              ] else ...[
+                 const Center(child: CircularProgressIndicator(color: Colors.white)),
+                 const SizedBox(height: 20),
+              ],
+             const SizedBox(height: 24),
+             
+             // Upgrade Button
+             SizedBox(
+               width: double.infinity,
+               height: 54,
+                child: ElevatedButton(
+                  onPressed: () {
+                    final productId = _selectedPricingIndex == 0 
+                        ? IAPService.premiumAnnual 
+                        : IAPService.premiumMonthly;
+                    _iapService.purchase(productId);
+                  },
+                 style: ElevatedButton.styleFrom(
+                   backgroundColor: const Color(0xFFFFD700),
+                   foregroundColor: Colors.black,
+                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                   elevation: 0,
+                 ),
+                 child: const Text(
+                   "Upgrade Now",
+                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                 ),
+               ),
+             ),
+           ] else ...[
+             // Standard Message
+             const Padding(
+               padding: EdgeInsets.symmetric(vertical: 20),
+               child: Text(
+                 "You are currently on the Standard plan.",
+                 style: TextStyle(color: Colors.white70),
+               ),
+             ),
+           ],
+           
+           const SizedBox(height: 16),
+           TextButton(
+             onPressed: () => _iapService.restorePurchases(), 
+             child: const Text("Restore Purchases", style: TextStyle(color: Colors.white54, fontSize: 12))
+           ),
+         ],
+       ),
+    );
+  }
 
+  Widget _buildTierToggle() {
     return Container(
       decoration: BoxDecoration(
-        color: cardColor,
-        border: Border.all(color: borderColor, width: isPremium ? 3 : 1),
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: isPremium ? [
-          BoxShadow(
-            color: Colors.amber.withOpacity(0.4),
-            blurRadius: 16,
-            spreadRadius: 2,
-            offset: const Offset(0, 6),
-          ),
-        ] : [],
+        color: Colors.black38,
+        borderRadius: BorderRadius.circular(16),
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
+        children: [
+          _buildToggleButton("Standard", 0),
+          _buildToggleButton("Premium", 1),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildToggleButton(String text, int index) {
+    final isSelected = _selectedTierIndex == index;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => setState(() => _selectedTierIndex = index),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: isSelected ? Colors.white : Colors.transparent,
+            borderRadius: BorderRadius.circular(16),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            text,
+            style: TextStyle(
+              color: isSelected ? Colors.black : Colors.white54,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBenefitList() {
+    final benefits = _selectedTierIndex == 0
+        ? ["720p Export", "Basic Filters", "Standard Support"]
+        : ["4K Export", "All AI Filters", "Priority Support", "No Watermark"];
+
+    return Column(
+      children: benefits.map((b) => Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Row(
           children: [
-            // 플랜명
-            Text(
-              planName,
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: textColor,
-              ),
-            ),
-            
-            const SizedBox(height: 16),
-            
-            // 가격 (오버플로우 방지)
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Flexible(
-                  child: FittedBox(
-                    fit: BoxFit.scaleDown,
-                    child: Text(
-                      product.price,
-                      style: TextStyle(
-                        fontSize: 32,
-                        fontWeight: FontWeight.bold,
-                        color: textColor,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text(
-                    _isAnnual ? '/year' : '/month',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: isPremium ? Colors.white70 : Colors.grey,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-                
-                // Annual 모드에서 할인액 강조
-                if (savingsText.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFD700),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      savingsText,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black,
-                      ),
-                    ),
-                  ),
-                ],
-                
-                const SizedBox(height: 20),
-                
-                // 기능 목록
-                ...features.map((feature) => Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Icon(
-                        Icons.check_circle,
-                        color: isPremium ? Colors.amber : Colors.green,
-                        size: 18,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          feature,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: isPremium ? Colors.white : Colors.black87,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                )).toList(),
-                
-                const SizedBox(height: 20),
-                
-                // 구매 버튼 (텍스트 색상 복구)
-                ElevatedButton(
-                  onPressed: () => _handlePurchase(product.id),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: isPremium ? const Color(0xFFFFD700) : Colors.black,
-                    foregroundColor: isPremium ? Colors.black : Colors.white,
-                    minimumSize: const Size(double.infinity, 48),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    elevation: 6,
-                  ),
-                  child: Text(
-                    isPremium ? 'GET PREMIUM' : '시작하기',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 15,
-                    ),
-                  ),
-                ),
+            Icon(Icons.check_circle, color: _selectedTierIndex == 1 ? const Color(0xFFFFD700) : Colors.white54, size: 20),
+            const SizedBox(width: 8),
+            Text(b, style: const TextStyle(color: Colors.white)),
+          ],
+        ),
+      )).toList(),
+    );
+  }
+
+  Widget _buildPricingCard({
+    required String title,
+    required String price,
+    String? subtitle,
+    required bool isHero,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: EdgeInsets.all(isHero ? 16 : 12),
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.white.withAlpha(38) : Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSelected ? const Color(0xFFFFD700) : Colors.white12, 
+            width: isSelected ? 2 : 1
+          ),
+        ),
+        child: Column(
+          children: [
+            if (isHero) ...[
+               Container(
+                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                 decoration: BoxDecoration(
+                   color: const Color(0xFFFFD700),
+                   borderRadius: BorderRadius.circular(4)
+                 ),
+                 child: const Text("BEST VALUE", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black)),
+               ),
+               const SizedBox(height: 8),
+            ],
+            Text(title, style: const TextStyle(color: Colors.white70, fontSize: 14)),
+            const SizedBox(height: 4),
+            Text(price, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+            if (subtitle != null) ...[
+              const SizedBox(height: 4),
+              Text(subtitle, style: const TextStyle(color: Color(0xFFFFD700), fontSize: 12)),
+            ]
           ],
         ),
       ),
     );
   }
 
-  /// 구매 처리 (토글 상태에 따라 정확한 상품 ID 전달)
-  Future<void> _handlePurchase(String productId) async {
-    setState(() => _isLoading = true);
+  String _getPrice(String productId) {
     try {
-      final success = await _iapService.purchase(productId);
-      if (!success && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Purchase request failed. Try again.')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (_products.isEmpty) return "...";
+      final product = _products.firstWhere((p) => p.id == productId);
+      return product.price;
+    } catch (e) {
+      return "..."; // Loading or Error
     }
   }
 }
+

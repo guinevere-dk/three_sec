@@ -9,6 +9,7 @@ import android.graphics.Typeface
 import android.text.Spannable
 import android.text.SpannableString
 import android.text.style.ForegroundColorSpan
+import android.text.style.BackgroundColorSpan
 import android.text.style.StyleSpan
 import android.text.style.TypefaceSpan
 import androidx.annotation.NonNull
@@ -35,11 +36,17 @@ import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EncoderUtil
 import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.TextOverlay
+import androidx.media3.effect.BitmapOverlay
 import androidx.media3.effect.StaticOverlaySettings
+import androidx.media3.transformer.DefaultAssetLoaderFactory // ✅ 추가
+import androidx.media3.datasource.DataSourceBitmapLoader // ✅ 추가
 import androidx.media3.effect.Contrast
 import androidx.media3.effect.RgbMatrix
-import androidx.media3.effect.RgbFilter
+import androidx.media3.effect.Presentation // ✅ 추가
+import androidx.media3.common.Effect // ✅ 추가
 import androidx.media3.effect.GlEffect
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import java.io.File
 import java.nio.ByteBuffer
 import android.util.Log
@@ -75,31 +82,32 @@ class MainActivity: FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "mergeVideos" -> {
-                    val paths = call.argument<List<String>>("paths")
+                    // Flutter Args: videoPaths, audioChanges, bgmPath, bgmVolume, quality, outputPath
+                    val paths = call.argument<List<String>>("videoPaths")
+                    val audioChanges = call.argument<Map<String, Double>>("audioChanges") ?: emptyMap()
                     val outputPath = call.argument<String>("outputPath")
                     
-                    // 📝 자막 파라미터 (새로운 구조)
+                    // Optional Args (Defaults)
                     val subtitles = call.argument<List<Map<String, Any>>>("subtitles") ?: emptyList()
                     val forceWatermark = call.argument<Boolean>("forceWatermark") ?: false
                     val quality = call.argument<String>("quality") ?: "1080p"
                     val userTier = call.argument<String>("userTier") ?: "free"
                     
-                    // 🎵 오디오 믹싱 파라미터
+                    // Audio Mixing
                     val bgmPath = call.argument<String>("bgmPath")
                     val forceMuteOriginal = call.argument<Boolean>("forceMuteOriginal") ?: false
                     val enableNoiseSuppression = call.argument<Boolean>("enableNoiseSuppression") ?: false
                     val bgmVolume = call.argument<Double>("bgmVolume")?.toFloat() ?: 0.5f
                     
-                    // 🎨 비디오 이펙트 파라미터 (Premium)
+                    // Video Effects
                     val videoEffects = call.argument<Map<String, Any>>("videoEffects") ?: emptyMap()
                     
                     Log.d("3S_4K", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                    Log.d("3S_4K", "mergeVideos 호출")
-                    Log.d("3S_4K", "  - 자막: ${subtitles.size}개")
-                    Log.d("3S_4K", "  - 품질: $quality")
-                    Log.d("3S_4K", "  - 사용자 등급: $userTier")
-                    Log.d("3S_4K", "  - 비디오 이펙트: ${videoEffects.keys}")
-                    Log.d("3S_AUDIO", "오디오 믹싱: bgm=${bgmPath != null}, mute=$forceMuteOriginal, noise=$enableNoiseSuppression")
+                    Log.d("3S_4K", "mergeVideos 호출 (Flutter -> Native)")
+                    Log.d("3S_4K", "  - paths: $paths")
+                    Log.d("3S_4K", "  - outputPath: $outputPath")
+                    Log.d("3S_4K", "  - audioConfig: $audioChanges (To be implemented)")
+                    Log.d("3S_4K", "  - bgmPath: $bgmPath, vol: $bgmVolume")
                     
                     if (paths != null && outputPath != null && paths.isNotEmpty()) {
                         mergeVideos(
@@ -117,7 +125,7 @@ class MainActivity: FlutterActivity() {
                             result
                         )
                     } else {
-                        result.error("INVALID_ARGS", "파일 경로가 비어있습니다.", null)
+                        result.error("INVALID_ARGS", "필수 인자 누락 (videoPaths or outputPath)", null)
                     }
                 }
                 "extractClips" -> {
@@ -140,12 +148,210 @@ class MainActivity: FlutterActivity() {
                         result.error("INVALID_ARGS", "파라미터가 유효하지 않습니다.", null)
                     }
                 }
+                "applyEdits" -> {
+                    val inputPath = call.argument<String>("inputPath")
+                    val outputPath = call.argument<String>("outputPath")
+                    
+                    // 📝 자막, 스티커, 이펙트 파라미터
+                    val subtitles = call.argument<List<Map<String, Any>>>("subtitles") ?: emptyList()
+                    val stickers = call.argument<List<Map<String, Any>>>("stickers") ?: emptyList()
+                    val videoEffects = call.argument<Map<String, Any>>("videoEffects") ?: emptyMap()
+                    
+                    val quality = call.argument<String>("quality") ?: "1080p"
+                    val userTier = call.argument<String>("userTier") ?: "free"
+                    
+                    // 🎵 오디오 파라미터
+                    val bgmPath = call.argument<String>("bgmPath")
+                    val forceMuteOriginal = call.argument<Boolean>("forceMuteOriginal") ?: false
+                    val enableNoiseSuppression = call.argument<Boolean>("enableNoiseSuppression") ?: false
+                    val bgmVolume = call.argument<Double>("bgmVolume")?.toFloat() ?: 0.5f
+                    
+                    Log.d("3S_EDIT", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                    Log.d("3S_EDIT", "applyEdits 호출")
+                    Log.d("3S_EDIT", "  - 자막: ${subtitles.size}개")
+                    Log.d("3S_EDIT", "  - 스티커: ${stickers.size}개")
+                    Log.d("3S_EDIT", "  - 이펙트: ${videoEffects.keys}")
+                    Log.d("3S_EDIT", "  - 품질: $quality")
+                    Log.d("3S_EDIT", "  - 사용자 등급: $userTier")
+                    
+                    if (inputPath != null && outputPath != null) {
+                        applyEdits(
+                            inputPath,
+                            outputPath,
+                            subtitles,
+                            stickers,
+                            videoEffects,
+                            quality,
+                            userTier,
+                            bgmPath,
+                            forceMuteOriginal,
+                            enableNoiseSuppression,
+                            bgmVolume,
+                            result
+                        )
+                    } else {
+                        result.error("INVALID_ARGS", "입력 경로 또는 출력 경로가 비어있습니다.", null)
+                    }
+                }
                 "convertImageToVideo" -> {
-                    result.notImplemented()
+                    val imagePath = call.argument<String>("imagePath")
+                    val outputPath = call.argument<String>("outputPath")
+                    val duration = call.argument<Int>("duration") ?: 3
+
+                    Log.d("3S_CONVERT", "convertImageToVideo 호출: $imagePath")
+
+                    if (imagePath != null && outputPath != null) {
+                        convertImageToVideo(imagePath, outputPath, duration, result)
+                    } else {
+                        result.error("INVALID_ARGS", "필수 인자가 누락되었습니다.", null)
+                    }
                 }
                 else -> result.notImplemented()
             }
         }
+    }
+
+    private fun convertImageToVideo(
+        imagePath: String,
+        outputPath: String,
+        durationSec: Int,
+        result: MethodChannel.Result
+    ) {
+        // 1. 파일 검사
+        val file = File(imagePath) // ✅ 누락된 변수 선언 복원
+        if (!file.exists()) {
+            Log.e("3S_CONVERT", "파일 없음: $imagePath")
+            result.error("FILE_NOT_FOUND", "파일이 존재하지 않습니다.", null)
+            return
+        }
+        if (!file.canRead()) {
+            Log.e("3S_CONVERT", "읽기 권한 없음: $imagePath")
+            result.error("PERMISSION_DENIED", "파일 읽기 권한이 없습니다.", null)
+            return
+        }
+        Log.d("3S_CONVERT", "파일 확인됨. 크기: ${file.length()} bytes")
+
+        // 2-1. 이미지 리사이징 (전처리)
+        // 원본이 너무 크면(4K 등) AssetLoader가 실패할 수 있음 -> 1080p로 줄여서 TEMP 파일 생성
+        val resizedPath = "${cacheDir.path}/resized_${System.currentTimeMillis()}.jpg"
+        try {
+            val options = android.graphics.BitmapFactory.Options()
+            options.inJustDecodeBounds = true
+            android.graphics.BitmapFactory.decodeFile(imagePath, options)
+            
+            val srcWidth = options.outWidth
+            val srcHeight = options.outHeight
+            var inSampleSize = 1
+            
+            // 1080p 기준(약 200만 픽셀 or 긴 변 1920)으로 샘플링 계산
+            val reqSize = 1920
+            if (srcWidth > reqSize || srcHeight > reqSize) {
+                val halfHeight = srcHeight / 2
+                val halfWidth = srcWidth / 2
+                while ((halfHeight / inSampleSize) >= reqSize && (halfWidth / inSampleSize) >= reqSize) {
+                    inSampleSize *= 2
+                }
+            }
+            
+            options.inJustDecodeBounds = false
+            options.inSampleSize = inSampleSize
+            
+            val originalBitmap = android.graphics.BitmapFactory.decodeFile(imagePath, options)
+            if (originalBitmap == null) {
+                result.error("DECODE_NULL", "비트맵 디코딩 실패", null)
+                return
+            }
+            
+            // Exif 회전 정보 읽기 (InputStream 사용이 더 안정적일 수 있음)
+            val exif = try {
+                android.media.ExifInterface(imagePath)
+            } catch (e: Exception) {
+                Log.e("3S_CONVERT_V2", "Exif 읽기 실패: $e")
+                null
+            }
+            
+            val orientation = exif?.getAttributeInt(
+                android.media.ExifInterface.TAG_ORIENTATION,
+                android.media.ExifInterface.ORIENTATION_NORMAL
+            ) ?: android.media.ExifInterface.ORIENTATION_NORMAL
+            
+            Log.d("3S_CONVERT_V2", "감지된 Orientation: $orientation")
+
+            val matrix = android.graphics.Matrix()
+            when (orientation) {
+                android.media.ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+                android.media.ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+                android.media.ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            }
+            
+            val rotatedBitmap = android.graphics.Bitmap.createBitmap(
+                originalBitmap, 0, 0, originalBitmap.width, originalBitmap.height, matrix, true
+            )
+            
+            val outStream = java.io.FileOutputStream(resizedPath)
+            rotatedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, outStream) // 품질 95
+            outStream.flush()
+            outStream.close()
+            
+            Log.d("3S_CONVERT_V2", "리사이징/회전 완료(V2): ${srcWidth}x${srcHeight} -> ${rotatedBitmap.width}x${rotatedBitmap.height}, path=$resizedPath")
+            
+        } catch (e: Exception) {
+            Log.e("3S_CONVERT_V2", "리사이징 에러: $e")
+            result.error("RESIZE_ERROR", "이미지 리사이징 실패: $e", null)
+            return
+        }
+
+        val transcodeFile = File(resizedPath)
+        val uri = Uri.fromFile(transcodeFile)
+        Log.d("3S_CONVERT_V2", "변환 URI(V2): $uri")
+
+        // 출력 파일이 이미 존재하면 삭제
+        val outFile = File(outputPath)
+        if (outFile.exists()) {
+            outFile.delete()
+        }
+
+        // 3. MIME Type 명시
+        val mediaItem = MediaItem.Builder()
+            .setUri(uri)
+            .setMimeType(MimeTypes.IMAGE_JPEG)
+            .setImageDurationMs(durationSec * 1_000L) // ✅ 이미지 지속 시간 설정 (필수)
+            .build()
+        
+        // 이미 리사이징했으므로 Presentation 효과는 제거 가능하지만, 안전하게 비율 유지위해 남겨둘 수도 있음.
+        // 여기서는 그냥 심플하게 변환만 수행
+        val editedMediaItem = EditedMediaItem.Builder(mediaItem)
+            .setFrameRate(30)
+            .setRemoveAudio(true)
+            .build()
+            // durationUs는 setImageDurationMs로 대체됨 (AssetLoader 사용 시)
+
+        val transformer = Transformer.Builder(this)
+            .setVideoMimeType(MimeTypes.VIDEO_H264)
+            .setAssetLoaderFactory(DefaultAssetLoaderFactory(this, DataSourceBitmapLoader(this)))
+            .build()
+        
+        transformer.addListener(object : Transformer.Listener {
+            override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                Handler(Looper.getMainLooper()).post {
+                    Log.d("3S_CONVERT", "변환 성공: $outputPath")
+                    // 임시 파일 삭제
+                    File(resizedPath).delete()
+                    result.success("SUCCESS")
+                }
+            }
+
+            override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
+                Handler(Looper.getMainLooper()).post {
+                    File(resizedPath).delete() // 에러나도 삭제
+                    val cause = exportException.cause?.message ?: "Unknown Cause"
+                    Log.e("3S_CONVERT", "변환 실패: ${exportException.message}, Cause: $cause")
+                    result.error("EXPORT_FAILED", "변환 실패(${exportException.errorCode}): ${exportException.message} / $cause", null)
+                }
+            }
+        })
+        
+        transformer.start(editedMediaItem, outputPath)
     }
 
     private fun mergeVideos(
@@ -212,10 +418,10 @@ class MainActivity: FlutterActivity() {
             // Effects 결합 (오디오 + 비디오)
             val finalEffects = if (audioProcessors.isNotEmpty() && !forceMuteOriginal) {
                 // 노이즈 억제 + GPU 필터 + 오버레이
-                Effects(audioProcessors, allVideoEffects)
+                Effects(audioProcessors, allVideoEffects as List<androidx.media3.common.Effect>)
             } else {
                 // GPU 필터 + 오버레이만
-                Effects(listOf(), allVideoEffects)
+                Effects(mutableListOf<AudioProcessor>(), allVideoEffects as List<androidx.media3.common.Effect>)
             }
 
             videoSequence.add(
@@ -357,9 +563,9 @@ class MainActivity: FlutterActivity() {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     /**
-     * 자막/워터마크 오버레이 생성
+     * 자막/워터마크 오버레이 생성 (고도화)
      * 
-     * @param subtitles 자막 리스트 [{text, x, y, size, color}, ...]
+     * @param subtitles 자막 리스트 [{text, x, y, size, color, backgroundColor, startTime, endTime}, ...]
      * @param forceWatermark 워터마크 강제 표시 여부
      * @param userTier 사용자 등급 (standard, premium)
      * @return OverlayEffect 또는 null
@@ -380,7 +586,20 @@ class MainActivity: FlutterActivity() {
                 val size = (subtitle["size"] as? Number)?.toFloat() ?: 1.0f
                 val colorHex = subtitle["color"] as? String ?: "#FFFFFF"
                 
+                // 🆕 배경색 (선택적)
+                val backgroundColorHex = subtitle["backgroundColor"] as? String
+                
+                // 🆕 표시 시간 (선택적, ms 단위)
+                val startTimeMs = (subtitle["startTime"] as? Number)?.toLong()
+                val endTimeMs = (subtitle["endTime"] as? Number)?.toLong()
+                
                 Log.d("3S_SUBTITLE", "자막 ${index + 1}: '$text' (x=$x, y=$y, size=$size, color=$colorHex)")
+                if (backgroundColorHex != null) {
+                    Log.d("3S_SUBTITLE", "  - 배경색: $backgroundColorHex")
+                }
+                if (startTimeMs != null && endTimeMs != null) {
+                    Log.d("3S_SUBTITLE", "  - 시간: ${startTimeMs}ms ~ ${endTimeMs}ms")
+                }
                 
                 // SpannableString 생성
                 val spannable = SpannableString(text)
@@ -393,9 +612,20 @@ class MainActivity: FlutterActivity() {
                     Color.WHITE
                 }
                 
+                // 배경색 파싱
+                val backgroundColor = if (backgroundColorHex != null) {
+                    try {
+                        Color.parseColor(backgroundColorHex)
+                    } catch (e: Exception) {
+                        null
+                    }
+                } else {
+                    null
+                }
+                
                 // 🎨 Standard vs Premium 스타일링
                 if (userTier == "premium") {
-                    // 💎 Premium: 고급 스타일 (외곽선, 그림자 효과는 추후 구현)
+                    // 💎 Premium: 고급 스타일
                     Log.d("3S_SUBTITLE", "  ✓ Premium 스타일 적용")
                     
                     // 볼드 폰트
@@ -406,6 +636,12 @@ class MainActivity: FlutterActivity() {
                     
                     // 색상
                     spannable.setSpan(ForegroundColorSpan(color), 0, len, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    
+                    // 배경색 (선택적)
+                    if (backgroundColor != null) {
+                        spannable.setSpan(BackgroundColorSpan(backgroundColor), 0, len, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                        Log.d("3S_SUBTITLE", "  ✓ 배경색 적용")
+                    }
                     
                     // TODO: 외곽선 효과 (StrokeSpan - 커스텀 구현 필요)
                     // TODO: 그림자 효과 (ShadowSpan - 커스텀 구현 필요)
@@ -419,6 +655,12 @@ class MainActivity: FlutterActivity() {
                     
                     // 색상
                     spannable.setSpan(ForegroundColorSpan(color), 0, len, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    
+                    // 배경색 (선택적)
+                    if (backgroundColor != null) {
+                        spannable.setSpan(BackgroundColorSpan(backgroundColor), 0, len, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                        Log.d("3S_SUBTITLE", "  ✓ 배경색 적용")
+                    }
                 }
                 
                 // 오버레이 위치 설정
@@ -428,9 +670,15 @@ class MainActivity: FlutterActivity() {
                     .setScale(size, size)
                     .build()
                 
-                // TextOverlay 생성
+                // TextOverlay 생성 (Media3는 시간 파라미터 미지원, 전체 구간 표시)
+                // TODO: 시간 범위 표시는 별도 로직으로 구현 필요
                 val textOverlay = TextOverlay.createStaticTextOverlay(spannable, overlaySettings)
                 textOverlays.add(textOverlay)
+                
+                if (startTimeMs != null && endTimeMs != null) {
+                    Log.d("3S_SUBTITLE", "  ⚠️ 시간 범위는 현재 버전에서 미지원 (${startTimeMs}~${endTimeMs}ms)")
+                }
+
                 
             } catch (e: Exception) {
                 Log.e("3S_SUBTITLE", "✗ 자막 ${index + 1} 생성 실패: ${e.message}")
@@ -470,7 +718,90 @@ class MainActivity: FlutterActivity() {
         }
         
         Log.d("3S_SUBTITLE", "✓ 총 ${textOverlays.size}개 오버레이 생성")
-        return OverlayEffect(textOverlays)
+        return OverlayEffect(textOverlays.toList())
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 🎨 스티커 오버레이 생성
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /**
+     * 스티커 오버레이 생성
+     * 
+     * @param stickers 스티커 리스트 [{imagePath, x, y, width, height, rotation, startTime, endTime}, ...]
+     * @return OverlayEffect 또는 null
+     */
+    private fun createStickerOverlays(
+        stickers: List<Map<String, Any>>
+    ): OverlayEffect? {
+        val bitmapOverlays = mutableListOf<BitmapOverlay>()
+        
+        for ((index, sticker) in stickers.withIndex()) {
+            try {
+                val imagePath = sticker["imagePath"] as? String ?: continue
+                val x = (sticker["x"] as? Number)?.toFloat() ?: 0f
+                val y = (sticker["y"] as? Number)?.toFloat() ?: 0f
+                val width = (sticker["width"] as? Number)?.toFloat() ?: 0.2f
+                val height = (sticker["height"] as? Number)?.toFloat() ?: 0.2f
+                val rotation = (sticker["rotation"] as? Number)?.toFloat() ?: 0f
+                
+                // 표시 시간 (선택적, ms 단위)
+                val startTimeMs = (sticker["startTime"] as? Number)?.toLong()
+                val endTimeMs = (sticker["endTime"] as? Number)?.toLong()
+                
+                Log.d("3S_STICKER", "스티커 ${index + 1}: $imagePath")
+                Log.d("3S_STICKER", "  - 위치: (x=$x, y=$y)")
+                Log.d("3S_STICKER", "  - 크기: ${width}x${height}")
+                Log.d("3S_STICKER", "  - 회전: ${rotation}°")
+                
+                if (startTimeMs != null && endTimeMs != null) {
+                    Log.d("3S_STICKER", "  - 시간: ${startTimeMs}ms ~ ${endTimeMs}ms")
+                }
+                
+                // 이미지 파일 로드
+                val imageFile = File(imagePath)
+                if (!imageFile.exists()) {
+                    Log.e("3S_STICKER", "✗ 스티커 파일 없음: $imagePath")
+                    continue
+                }
+                
+                val bitmap = BitmapFactory.decodeFile(imagePath)
+                if (bitmap == null) {
+                    Log.e("3S_STICKER", "✗ 비트맵 디코딩 실패: $imagePath")
+                    continue
+                }
+                
+                // 오버레이 위치 설정
+                val overlaySettings = StaticOverlaySettings.Builder()
+                    .setOverlayFrameAnchor(x, y)
+                    .setBackgroundFrameAnchor(x, y)
+                    .setScale(width, height)
+                    .build()
+                
+                // BitmapOverlay 생성 (Media3는 시간 파라미터 미지원, 전체 구간 표시)
+                // TODO: 시간 범위 표시는 별도 로직으로 구현 필요
+                val bitmapOverlay = BitmapOverlay.createStaticBitmapOverlay(bitmap, overlaySettings)
+                
+                bitmapOverlays.add(bitmapOverlay)
+                Log.d("3S_STICKER", "✓ 스티커 ${index + 1} 생성 완료")
+                
+                if (startTimeMs != null && endTimeMs != null) {
+                    Log.d("3S_STICKER", "  ⚠️ 시간 범위는 현재 버전에서 미지원 (${startTimeMs}~${endTimeMs}ms)")
+                }
+
+                
+            } catch (e: Exception) {
+                Log.e("3S_STICKER", "✗ 스티커 ${index + 1} 생성 실패: ${e.message}")
+            }
+        }
+        
+        if (bitmapOverlays.isEmpty()) {
+            Log.d("3S_STICKER", "✓ 스티커 없음")
+            return null
+        }
+        
+        Log.d("3S_STICKER", "✓ 총 ${bitmapOverlays.size}개 스티커 생성")
+        return OverlayEffect(bitmapOverlays.toList())
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -512,7 +843,7 @@ class MainActivity: FlutterActivity() {
             if (saturation != DEFAULT_SATURATION) {
                 // RgbMatrix를 사용하여 채도 조절
                 val matrix = createSaturationMatrix(saturation)
-                filters.add(RgbMatrix(matrix))
+                filters.add(RgbMatrix { _, _ -> matrix })
                 Log.d("3S_4K", "  ✓ Saturation: $saturation")
             }
             
@@ -521,7 +852,7 @@ class MainActivity: FlutterActivity() {
             if (grayscale) {
                 // 채도 0으로 설정하여 흑백 효과
                 val matrix = createSaturationMatrix(GRAYSCALE_SATURATION)
-                filters.add(RgbMatrix(matrix))
+                filters.add(RgbMatrix { _, _ -> matrix })
                 Log.d("3S_4K", "  ✓ Grayscale: true")
             }
             
@@ -655,9 +986,9 @@ class MainActivity: FlutterActivity() {
                 }
 
                 val segment = segments[index]
-                val startMs = (segment["startMs"] as? Number)?.toLong() ?: 0L
-                val durationMs = (segment["durationMs"] as? Number)?.toLong() ?: 3000L
-                val endMs = startMs + durationMs
+                val startMs = (segment["start"] as? Number)?.toLong() ?: 0L
+                val endMs = (segment["end"] as? Number)?.toLong() ?: (startMs + 3000L)
+                val durationMs = endMs - startMs
 
                 Log.d("3S_EDIT", "────────────────────────────────────────")
                 Log.d("3S_EDIT", "구간 ${index + 1}/${segments.size} 처리 중")
@@ -674,12 +1005,17 @@ class MainActivity: FlutterActivity() {
 
                 try {
                     // 1. MediaItem 생성
-                    val mediaItem = MediaItem.fromUri(Uri.parse(inputPath))
+                    val baseMediaItem = MediaItem.fromUri(Uri.parse(inputPath))
                     
                     // 2. ClippingConfiguration 설정
                     val clippingConfig = MediaItem.ClippingConfiguration.Builder()
                         .setStartPositionMs(startMs)
                         .setEndPositionMs(endMs)
+                        .build()
+                    
+                    // MediaItem에 ClippingConfiguration 적용
+                    val mediaItem = baseMediaItem.buildUpon()
+                        .setClippingConfiguration(clippingConfig)
                         .build()
                     
                     // 3. 🎵 오디오 프로세서 (노이즈 억제)
@@ -708,12 +1044,11 @@ class MainActivity: FlutterActivity() {
                     }
                     
                     // 5. Effects 결합 (오디오 + 비디오)
-                    val clipEffects = Effects(audioProcessors, videoEffects)
+                    val clipEffects = Effects(audioProcessors, videoEffects as List<androidx.media3.common.Effect>)
                     
                     // 6. EditedMediaItem 생성 (오디오 + 자막 + 노이즈 억제)
                     val editedMediaItem = EditedMediaItem.Builder(mediaItem)
                         .setRemoveAudio(false)
-                        .setClippingConfiguration(clippingConfig)
                         .setEffects(clipEffects)
                         .build()
                     
@@ -791,6 +1126,180 @@ class MainActivity: FlutterActivity() {
             Log.e("3S_EDIT", "✗ extractClips 초기화 실패: ${e.message}", e)
             Handler(Looper.getMainLooper()).post {
                 result.error("INIT_FAILED", "초기화 실패: ${e.message}", null)
+            }
+        }
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // ✏️ 영상 편집 적용 (자막 + 스티커 + 이펙트)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /**
+     * 영상 편집 적용
+     * 
+     * Flutter의 applyEdits 호출에 대응하는 네이티브 메서드
+     * 
+     * @param inputPath 입력 영상 경로
+     * @param outputPath 출력 영상 경로
+     * @param subtitles 자막 리스트
+     * @param stickers 스티커 리스트
+     * @param videoEffects 비디오 이펙트 맵
+     * @param quality 품질 설정
+     * @param userTier 사용자 등급
+     * @param bgmPath BGM 경로 (선택적)
+     * @param forceMuteOriginal 원본 음소거 여부
+     * @param enableNoiseSuppression 노이즈 억제 활성화
+     * @param bgmVolume BGM 볼륨
+     * @param result Flutter 결과 콜백
+     */
+    private fun applyEdits(
+        inputPath: String,
+        outputPath: String,
+        subtitles: List<Map<String, Any>>,
+        stickers: List<Map<String, Any>>,
+        videoEffects: Map<String, Any>,
+        quality: String,
+        userTier: String,
+        bgmPath: String?,
+        forceMuteOriginal: Boolean,
+        enableNoiseSuppression: Boolean,
+        bgmVolume: Float,
+        result: MethodChannel.Result
+    ) {
+        Log.d("3S_EDIT", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        Log.d("3S_EDIT", "영상 편집 시작")
+        Log.d("3S_EDIT", "  - 입력: $inputPath")
+        Log.d("3S_EDIT", "  - 출력: $outputPath")
+        Log.d("3S_EDIT", "  - 자막: ${subtitles.size}개")
+        Log.d("3S_EDIT", "  - 스티커: ${stickers.size}개")
+        Log.d("3S_EDIT", "  - GPU 이펙트: ${videoEffects.keys}")
+        Log.d("3S_EDIT", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        try {
+            // 1. MediaItem 생성
+            val mediaItem = MediaItem.fromUri(Uri.parse(inputPath))
+
+            // 2. 🎵 오디오 프로세서 (노이즈 억제)
+            val audioProcessors = mutableListOf<AudioProcessor>()
+            if (enableNoiseSuppression) {
+                val noiseSuppressor = NoiseSuppressorAudioProcessor(noiseThreshold = 0.15f)
+                audioProcessors.add(noiseSuppressor)
+                Log.d("3S_EDIT", "✓ 노이즈 억제 활성화")
+            }
+
+            // 3. 🎨 비디오 이펙트 생성
+            val allVideoEffects = mutableListOf<Any>()
+
+            // 3-1. GPU 필터
+            val gpuFilters = createGpuFilters(videoEffects, userTier)
+            allVideoEffects.addAll(gpuFilters)
+
+            // 3-2. 자막 오버레이
+            val subtitleOverlay = createSubtitleOverlays(
+                subtitles = subtitles,
+                forceWatermark = false,
+                userTier = userTier
+            )
+            if (subtitleOverlay != null) {
+                allVideoEffects.add(subtitleOverlay)
+                Log.d("3S_EDIT", "✓ 자막 ${subtitles.size}개 적용")
+            }
+
+            // 3-3. 스티커 오버레이
+            val stickerOverlay = createStickerOverlays(stickers)
+            if (stickerOverlay != null) {
+                allVideoEffects.add(stickerOverlay)
+                Log.d("3S_EDIT", "✓ 스티커 ${stickers.size}개 적용")
+            }
+
+            // 4. Effects 결합
+            val effects = Effects(
+                audioProcessors,
+                allVideoEffects as List<androidx.media3.common.Effect>
+            )
+
+            // 5. EditedMediaItem 생성
+            val editedMediaItem = EditedMediaItem.Builder(mediaItem)
+                .setRemoveAudio(forceMuteOriginal)
+                .setEffects(effects)
+                .build()
+
+            val sequence = EditedMediaItemSequence(listOf(editedMediaItem))
+
+            // 6. BGM 추가 (선택적)
+            val sequences = mutableListOf(sequence)
+            if (bgmPath != null && File(bgmPath).exists()) {
+                Log.d("3S_EDIT", "✓ BGM 추가: $bgmPath")
+                
+                val retriever = MediaMetadataRetriever()
+                retriever.setDataSource(bgmPath)
+                val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                val bgmDurationMs = durationStr?.toLongOrNull() ?: 0L
+                retriever.release()
+
+                val bgmMediaItem = MediaItem.fromUri(Uri.parse(bgmPath))
+                val fadeOutProcessor = FadeOutAudioProcessor(
+                    fadeOutDurationMs = 500L,
+                    totalDurationMs = bgmDurationMs
+                )
+
+                val bgmEffects = Effects(listOf<AudioProcessor>(fadeOutProcessor), listOf())
+                val bgmEditedItem = EditedMediaItem.Builder(bgmMediaItem)
+                    .setRemoveVideo(true)
+                    .setEffects(bgmEffects)
+                    .build()
+
+                sequences.add(EditedMediaItemSequence(listOf(bgmEditedItem)))
+            }
+
+            // 7. Composition 생성
+            val composition = Composition.Builder(sequences)
+                .setTransmuxAudio(false)
+                .setTransmuxVideo(false)
+                .build()
+
+            // 8. Encoder Factory (4K 지원)
+            val encoderFactory = create4KEncoderFactory(quality, userTier)
+
+            // 9. Transformer 구성
+            val transformer = Transformer.Builder(context)
+                .setVideoMimeType(MimeTypes.VIDEO_H264)
+                .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                .setEncoderFactory(encoderFactory)
+                .addListener(object : Transformer.Listener {
+                    override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                        Log.d("3S_EDIT", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                        Log.d("3S_EDIT", "✓ 편집 완료")
+                        Log.d("3S_EDIT", "  - 파일 크기: ${exportResult.fileSizeBytes / 1024 / 1024}MB")
+                        Log.d("3S_EDIT", "  - 처리 시간: ${exportResult.durationMs}ms")
+                        Log.d("3S_EDIT", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                        Handler(Looper.getMainLooper()).post {
+                            result.success("SUCCESS")
+                        }
+                    }
+
+                    override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
+                        Log.e("3S_EDIT", "✗ 편집 실패: ${exportException.message}", exportException)
+                        Handler(Looper.getMainLooper()).post {
+                            result.error("EXPORT_FAILED", "편집 실패: ${exportException.message}", null)
+                        }
+                    }
+                })
+                .build()
+
+            // 10. 출력 파일 준비 및 시작
+            val file = File(outputPath)
+            if (file.exists()) {
+                file.delete()
+            }
+
+            Log.d("3S_EDIT", "⚡ Transformer 시작...")
+            transformer.start(composition, outputPath)
+
+        } catch (e: Exception) {
+            Log.e("3S_EDIT", "✗ applyEdits 실패: ${e.message}", e)
+            Handler(Looper.getMainLooper()).post {
+                result.error("APPLY_EDITS_FAILED", "편집 적용 실패: ${e.message}", null)
             }
         }
     }

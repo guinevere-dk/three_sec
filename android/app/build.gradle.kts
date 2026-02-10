@@ -72,7 +72,6 @@ dependencies {
     implementation("androidx.media3:media3-effect:1.2.1")
     implementation("androidx.media3:media3-common:1.2.1")
     implementation(platform("com.google.firebase:firebase-bom:34.3.0"))
-    implementation("com.google.firebase:firebase-auth-ktx")
 }
 
 apply(plugin = "com.google.gms.google-services")

@@ -30,30 +30,24 @@ class IAPService {
   late StreamSubscription<List<PurchaseDetails>> _subscription;
 
   /// 상품 ID 정의
-  // Standard 등급
-  static const String standardMonthly = '3s_standard_monthly';
-  static const String standardAnnual = '3s_standard_annual';
-
-  // Premium 등급
-  static const String premiumMonthly = '3s_premium_monthly';
-  static const String premiumAnnual = '3s_premium_annual';
+  // Requested Product IDs
+  static const String premiumMonthly = 'three_sec_premium_monthly';
+  static const String premiumAnnual = 'three_sec_premium_annual';
 
   /// 상품 ID 맵 (사이클 ↔ 등급)
+  // We only have Premium IDs now based on request. 
+  // Standard might be free or handled differently, but mapping here for Premium.
   static const Map<IAPSubscriptionCycle, Map<IAPSubscriptionTier, String>> _productIdMap = {
     IAPSubscriptionCycle.monthly: {
-      IAPSubscriptionTier.standard: standardMonthly,
       IAPSubscriptionTier.premium: premiumMonthly,
     },
     IAPSubscriptionCycle.annual: {
-      IAPSubscriptionTier.standard: standardAnnual,
       IAPSubscriptionTier.premium: premiumAnnual,
     },
   };
 
   /// 💡 [업데이트] 상품 ID 리스트 (Map 기반)
   static const List<String> _productIds = [
-    standardMonthly,
-    standardAnnual,
     premiumMonthly,
     premiumAnnual,
   ];
@@ -351,14 +345,14 @@ class IAPService {
       final productId = purchase.productID;
 
       // 상품 ID에 따라 등급 결정
+      // 상품 ID에 따라 등급 결정
       UserTier tier;
-      if (productId == standardMonthly || productId == standardAnnual) {
-        tier = UserTier.standard;
-      } else if (productId == premiumMonthly || productId == premiumAnnual) {
+      if (productId == premiumMonthly || productId == premiumAnnual) {
         tier = UserTier.premium;
       } else {
-        print('[IAPService] 알 수 없는 상품 ID: $productId');
-        return;
+        // Fallback or Unknown
+        print('[IAPService] 알 수 없는 상품 ID (기본 처리): $productId');
+        tier = UserTier.premium; // Assume premium for now since we only sell premium
       }
 
       // UserStatusManager를 통해 등급 업데이트

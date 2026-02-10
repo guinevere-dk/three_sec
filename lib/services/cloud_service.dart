@@ -1,56 +1,10 @@
-import 'dart:convert';
-import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import '../managers/video_manager.dart';
-
-class CloudService {
-  static const double _warningThreshold = 0.9;
-  static const String _fcmUrl = 'https://fcm.googleapis.com/fcm/send';
-  // TODO: Replace with your actual FCM server key stored securely.
-  static const String _serverKey = 'REPLACE_WITH_SERVER_KEY';
-
-  bool _alertSent = false;
-
-  Future<void> checkUsageAndAlert(VideoManager manager) async {
-    final usage = await manager.getCloudUsage();
-    if (_alertSent || usage.limitBytes == 0) return;
-    final ratio = usage.ratio;
-    if (ratio >= _warningThreshold) {
-      _alertSent = true;
-      await _sendHighUsageNotification();
-    }
-  }
-
-  Future<void> _sendHighUsageNotification() async {
-    final payload = {
-      "notification": {
-        "title": "클라우드가 거의 찼습니다!",
-        "body": "Premium 업그레이드로 200GB를 확보해보세요.",
-        "android_channel_id": "high_usage_alerts"
-      },
-      "to": "/topics/premium_offers",
-    };
-
-    try {
-      await http.post(
-        Uri.parse(_fcmUrl),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'key=$_serverKey',
-        },
-        body: jsonEncode(payload),
-      );
-    } catch (e) {
-      debugPrint('[CloudService] FCM alert failed: $e');
-    }
-  }
-}
 import 'dart:io';
 import 'dart:async';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:path/path.dart' as p;
 import '../managers/user_status_manager.dart';
+import '../managers/video_manager.dart';
 import 'auth_service.dart';
 
 /// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -584,6 +538,42 @@ class CloudService {
     final usage = await getStorageUsageGB();
     final limit = getStorageLimitGB();
     return usage / limit;
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // 🔔 용량 알림 (Premium 전환 유도)
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  /// 용량 사용률 체크 및 알림
+  /// 
+  /// [manager] VideoManager 인스턴스
+  /// 
+  /// 90% 이상 도달 시 Premium 전환 알림 트리거
+  Future<void> checkUsageAndAlert(VideoManager manager) async {
+    try {
+      final usage = await manager.getCloudUsage();
+      
+      if (usage.ratio >= 0.9) {
+        // 90% 도달 시 알림 트리거
+        print('[CloudService] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        print('[CloudService] ⚠️ 용량 90% 도달!');
+        print('[CloudService]   - 현재 사용량: ${(usage.ratio * 100).toStringAsFixed(1)}%');
+        print('[CloudService]   - 사용량: ${usage.usedBytes / (1024 * 1024 * 1024)} GB');
+        print('[CloudService]   - 제한: ${usage.limitBytes / (1024 * 1024 * 1024)} GB');
+        print('[CloudService] 📢 Premium 전환 알림 발송 준비');
+        print('[CloudService] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        
+        // TODO: FCM 푸시 알림 전송
+        // await _sendHighUsageNotification();
+        
+        // TODO: 인앱 다이얼로그 표시
+        // - "클라우드 저장 공간이 거의 찼습니다!"
+        // - "Premium으로 업그레이드하여 50GB를 확보하세요"
+        // - [업그레이드] 버튼 → PaywallScreen
+      }
+    } catch (e) {
+      print('[CloudService] ✗ 용량 체크 실패: $e');
+    }
   }
 }
 
