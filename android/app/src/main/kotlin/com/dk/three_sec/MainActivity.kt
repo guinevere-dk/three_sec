@@ -68,7 +68,7 @@ class MainActivity: FlutterActivity() {
         private const val RESOLUTION_4K_WIDTH = 3840
         private const val RESOLUTION_4K_HEIGHT = 2160
         private const val BITRATE_4K_MAX = 20_000_000  // 20Mbps
-        private const val BITRATE_1080P_MAX = 8_000_000 // 8Mbps
+        private const val BITRATE_1080P_MAX = 5_000_000 // 5Mbps (Standardized for Gallery)
         
         // 🎨 GPU 필터 프리셋
         private const val GRAYSCALE_SATURATION = 0.0f
@@ -533,8 +533,9 @@ class MainActivity: FlutterActivity() {
                     Log.d("3S_AUDIO", "  - 파일 크기: ${exportResult.fileSizeBytes / 1024 / 1024}MB")
                     Log.d("3S_AUDIO", "  - 처리 시간: ${exportResult.durationMs}ms")
                     Log.d("3S_AUDIO", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                    Log.d("3S_AUDIO", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                     Handler(Looper.getMainLooper()).post { 
-                        result.success("SUCCESS") 
+                        result.success(outputPath) 
                     }
                 }
 
@@ -1273,8 +1274,9 @@ class MainActivity: FlutterActivity() {
                         Log.d("3S_EDIT", "  - 파일 크기: ${exportResult.fileSizeBytes / 1024 / 1024}MB")
                         Log.d("3S_EDIT", "  - 처리 시간: ${exportResult.durationMs}ms")
                         Log.d("3S_EDIT", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                        Log.d("3S_EDIT", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                         Handler(Looper.getMainLooper()).post {
-                            result.success("SUCCESS")
+                            result.success(outputPath)
                         }
                     }
 

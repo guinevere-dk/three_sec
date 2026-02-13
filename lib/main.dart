@@ -526,13 +526,15 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     }
     if (selectedPaths.length < 2) return;
 
+    // Create a project
+    final project = await videoManager.createProject(selectedPaths);
+
     // Navigate to VideoEditScreen for editing & export
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => VideoEditScreen(
-          videoPaths: selectedPaths,
-          targetAlbum: videoManager.currentAlbum,
+          project: project,
         ),
       ),
     );
@@ -603,12 +605,16 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
     // Standard 이상 → VideoEditScreen으로 이동
     if (mounted) {
+      // Create a temporary project for single clip editing
+      // Note: In real app, we might want to create a proper project or use a specific "Edit Single" mode.
+      // Here we wrap it in a project.
+      final project = await videoManager.createProject([videoPath]);
+      
       final result = await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (context) => VideoEditScreen(
-            videoPaths: [videoPath],
-            targetAlbum: videoManager.currentAlbum,
+            project: project,
           ),
         ),
       );

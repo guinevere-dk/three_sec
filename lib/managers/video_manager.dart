@@ -10,8 +10,11 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_thumbnail/video_thumbnail.dart' as thum;
+import 'package:gal/gal.dart';
 
+import 'dart:convert';
 import 'user_status_manager.dart';
+import '../models/vlog_project.dart';
 
 class VideoManager extends ChangeNotifier {
   static const _rawBaseName = 'raw_clips';
@@ -33,6 +36,121 @@ class VideoManager extends ChangeNotifier {
   final Map<String, Uint8List> thumbnailCache = {};
   Map<String, int> albumCounts = {}; // Public variable for UI
   final Set<String> _cloudSyncedPaths = {};
+
+  // ✅ 프로젝트 리스트 (Phase 5)
+  List<VlogProject> vlogProjects = [];
+
+  // 앱 시작 시 호출 (initAlbumSystem 등에서 호출)
+  Future<void> loadProjects() async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final projectDir = Directory(p.join(appDir.path, 'vlog_projects'));
+      
+      if (!await projectDir.exists()) {
+        await projectDir.create(recursive: true);
+        vlogProjects = [];
+      } else {
+        // .json 파일 모두 읽기
+        final files = projectDir.listSync()
+            .whereType<File>()
+            .where((f) => f.path.endsWith('.json'));
+            
+        vlogProjects = files.map((file) {
+          try {
+            final jsonStr = file.readAsStringSync();
+            return VlogProject.fromJson(jsonDecode(jsonStr));
+          } catch (e) {
+            print("Error parsing project: ${file.path}");
+            return null;
+          }
+        }).whereType<VlogProject>().toList();
+        
+        // 최신순 정렬
+        vlogProjects.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      }
+      notifyListeners();
+    } catch (e) {
+      print("Error loading projects: $e");
+    }
+  }
+
+  // 현재 폴더에 맞는 프로젝트 필터링
+  List<VlogProject> get filteredProjects {
+    if (currentVlogFolder == '휴지통') {
+      return vlogProjects.where((p) => p.folderName == '휴지통').toList();
+    }
+    // 휴지통이 아닌 경우: 해당 폴더인 것만 (단, '기본'의 경우 null도 포괄 가능하지만, 모델 기본값이 '기본'이므로 일치 비교)
+    // 폴더 이동 시 '휴지통'으로 보내지 않은 프로젝트만 보여야 함 (휴지통 기능이 폴더 필드로 통합됨)
+    // 만약 currentVlogFolder가 비어있으면(전체보기?) -> 요구사항은 currentVlogFolder 사용
+    if (currentVlogFolder.isEmpty) return vlogProjects.where((p) => p.folderName != '휴지통').toList(); // Fallback
+    
+    return vlogProjects.where((p) => p.folderName == currentVlogFolder).toList();
+  }
+
+  // 프로젝트 폴더 이동
+  Future<void> moveProjectToFolder(VlogProject project, String targetFolder) async {
+    final updatedProject = project.copyWith(folderName: targetFolder);
+    await saveProject(updatedProject);
+    notifyListeners();
+  }
+
+  // 새 프로젝트 생성
+  Future<VlogProject> createProject(List<String> videoPaths) async {
+    final timestamp = DateTime.now();
+    // 현재 폴더가 휴지통이면 '기본'으로 생성, 아니면 현재 폴더 사용
+    final folder = (currentVlogFolder == '휴지통' || currentVlogFolder.isEmpty) ? '기본' : currentVlogFolder;
+    
+    final newProject = VlogProject(
+      id: timestamp.millisecondsSinceEpoch.toString(),
+      title: "Vlog_${timestamp.year}${timestamp.month}${timestamp.day}",
+      videoPaths: videoPaths,
+      folderName: folder,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    );
+    
+    vlogProjects.insert(0, newProject); // 리스트 맨 앞에 추가
+    await saveProject(newProject);
+    notifyListeners();
+    return newProject;
+  }
+
+  // 프로젝트 저장 (파일 덮어쓰기)
+  Future<void> saveProject(VlogProject project) async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final projectDir = Directory(p.join(appDir.path, 'vlog_projects'));
+      if (!await projectDir.exists()) await projectDir.create(recursive: true);
+      
+      final file = File(p.join(projectDir.path, '${project.id}.json'));
+      await file.writeAsString(jsonEncode(project.toJson()));
+      
+      // 리스트 내 상태 업데이트 (필요 시)
+      final index = vlogProjects.indexWhere((p) => p.id == project.id);
+      if (index != -1) {
+        vlogProjects[index] = project;
+      }
+    } catch (e) {
+      print("Error saving project: $e");
+    }
+  }
+
+  // 프로젝트 삭제
+  Future<void> deleteProject(String id) async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final file = File(p.join(appDir.path, 'vlog_projects', '$id.json'));
+      
+      if (await file.exists()) {
+        await file.delete();
+      }
+      
+      vlogProjects.removeWhere((p) => p.id == id);
+      notifyListeners();
+    } catch (e) {
+      print("Error deleting project: $e");
+    }
+  }
 
   static const platform = MethodChannel('com.dk.three_sec/video_engine');
 
@@ -120,6 +238,10 @@ class VideoManager extends ChangeNotifier {
       final data = await thumbFile.readAsBytes();
       thumbnailCache[videoPath] = data;
       return data;
+    }
+
+    if (!await File(videoPath).exists()) {
+      return null;
     }
 
     final data = await thum.VideoThumbnail.thumbnailData(
@@ -225,8 +347,15 @@ class VideoManager extends ChangeNotifier {
       
       print("✅ Export Success: $result");
       
-      // (선택) 갤러리에 저장하고 싶다면 gal 패키지 등을 사용
-      // await Gal.putVideo(result!); 
+      // 갤러리에 저장 (Gal 패키지 사용)
+      if (result != null) {
+        try {
+          await Gal.putVideo(result, album: '3S_Vlogs');
+          print("✅ Saved to Gallery (Album: 3S_Vlogs)");
+        } catch (e) {
+          print("❌ Failed to save to gallery: $e");
+        }
+      }
 
       return result;
 
@@ -236,6 +365,17 @@ class VideoManager extends ChangeNotifier {
     } catch (e) {
       print("❌ Unexpected Error: $e");
       return null;
+    }
+  }
+
+  // 휴지통으로 이동
+  Future<void> moveProjectToTrash(String projectId) async {
+    final index = vlogProjects.indexWhere((p) => p.id == projectId);
+    if (index != -1) {
+       final project = vlogProjects[index];
+       final updated = project.copyWith(folderName: '휴지통');
+       await saveProject(updated);
+       notifyListeners();
     }
   }
 
@@ -350,6 +490,9 @@ class VideoManager extends ChangeNotifier {
     // Using _updateVlogProjectCount instead for stats
     await _updateVlogProjectCount();
     
+    // Phase 5: 프로젝트 로드
+    await loadProjects();
+
     // notifyListeners(); // _updateVlogProjectCount calls notifyListeners
   }
 

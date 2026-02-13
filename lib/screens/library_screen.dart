@@ -11,6 +11,8 @@ import '../utils/media_selection_helper.dart';
 import '../managers/video_manager.dart';
 import '../screens/paywall_screen.dart';
 import '../screens/profile_screen.dart';
+import '../screens/video_edit_screen.dart';
+import '../models/vlog_project.dart';
 
 class LibraryScreen extends StatefulWidget {
   final GlobalKey keyPickMedia;
@@ -346,7 +348,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       tooltip: 'Create Vlog',
                       onPressed: () {
                         final pathsCopy = List<String>.from(_selectedClipPaths);
-                        widget.onMerge(pathsCopy);
+                        _handleMerge(pathsCopy);
                         setState(() {
                           _isClipSelectionMode = false;
                           _selectedClipPaths.clear();
@@ -758,5 +760,18 @@ class _LibraryScreenState extends State<LibraryScreen> {
     });
 
     hapticFeedback();
+  }
+
+  Future<void> _handleMerge(List<String> paths) async {
+    if (paths.length < 2) return;
+    
+    // Create Project
+    final project = await videoManager.createProject(paths);
+    
+    if (!mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => VideoEditScreen(project: project)),
+    );
   }
 }

@@ -196,6 +196,8 @@ class MediaWidgets {
     required bool isSelectionMode,
     required int gridColumnCount,
     required bool isFavorite,
+    String? title, // Added
+    String? subtitle, // Added
     required VoidCallback onTap,
     required VoidCallback onLongPress,
     required Future<Uint8List?> Function(String) getThumbnail,
@@ -225,12 +227,50 @@ class MediaWidgets {
                   : Container(color: Colors.grey[200]),
             ),
             
+            // Title & Subtitle Overlay (Bottom Gradient)
+            if (title != null || subtitle != null)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(8, 24, 8, 8),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [Colors.black.withOpacity(0.8), Colors.transparent],
+                      begin: Alignment.bottomCenter,
+                      end: Alignment.topCenter,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (title != null)
+                        Text(
+                          title,
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      if (subtitle != null)
+                        Text(
+                          subtitle,
+                          style: const TextStyle(color: Colors.white70, fontSize: 10),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+
             // Duration Badge (Dummy for now as logic isn't passed, but styled)
             // Or Favorite Icon
             if (isFavorite)
               const Positioned(
-                bottom: 8,
-                left: 8,
+                top: 8,
+                right: 8,
                 child: Icon(Icons.favorite, color: Colors.white, size: 16),
               ),
 

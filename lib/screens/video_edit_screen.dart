@@ -12,6 +12,7 @@ import 'package:file_picker/file_picker.dart';
 import '../managers/video_manager.dart';
 import '../models/edit_command.dart';
 import '../managers/user_status_manager.dart';
+import '../models/vlog_project.dart';
 
 // ?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺
 // ?뱷 ?곗씠??紐⑤뜽
@@ -154,13 +155,11 @@ class StateChangeCommand implements EditCommand {
 // ?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺
 
 class VideoEditScreen extends StatefulWidget {
-  final List<String> videoPaths;
-  final String? targetAlbum;
+  final VlogProject project;
 
   const VideoEditScreen({
     super.key,
-    required this.videoPaths,
-    this.targetAlbum,
+    required this.project,
   });
 
   @override
@@ -173,6 +172,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   VideoPlayerController? _controller;
   bool _isInitialized = false;
   bool _isPlaying = false;
+  bool _isMissingFile = false;
   
   // Editor State
   List<SubtitleModel> _subtitles = [];
@@ -218,16 +218,142 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     'assets/stickers/sparkles.png',
   ];
 
+  List<Duration> _clipDurations = [];
+  Duration _totalDuration = Duration.zero;
+  VideoPlayerController? _nextController; // Preloader
+
   @override
   void initState() {
     super.initState();
     _initClips();
+    _preloadDurations();
+    // Initialize Undo/Redo Manager with initial state
+    // ...
+  }
+
+  Future<void> _preloadDurations() async {
+    _clipDurations.clear();
+    _totalDuration = Duration.zero;
+
+    // Ensure _clips aligns with paths
+    if (_clips.isEmpty && widget.project.videoPaths.isNotEmpty) {
+       _clips = widget.project.videoPaths.map((path) => ClipModel(
+          path: path,
+          id: path,
+          endTime: Duration.zero,
+          totalDuration: Duration.zero,
+       )).toList();
+    }
+
+    for (int i = 0; i < widget.project.videoPaths.length; i++) {
+      final path = widget.project.videoPaths[i];
+      final file = File(path);
+      if (await file.exists()) {
+        final controller = VideoPlayerController.file(file);
+        await controller.initialize();
+        final duration = controller.value.duration;
+        _clipDurations.add(duration);
+        _totalDuration += duration;
+        
+        // Sync ClipModel metadata immediately
+        if (i < _clips.length) {
+          _clips[i].totalDuration = duration;
+          _clips[i].endTime = duration;
+        }
+        
+        await controller.dispose();
+      } else {
+        _clipDurations.add(Duration.zero);
+      }
+    }
+    if (mounted) setState(() {}); // Update UI with total duration
+  }
+  
+  Future<void> _preloadNextClip() async {
+    final nextIndex = _currentClipIndex + 1;
+    if (nextIndex >= _clips.length) return;
+
+    final nextClip = _clips[nextIndex];
+    final file = File(nextClip.path);
+    if (!await file.exists()) return;
+
+    // Dispose old next controller if it exists and points to a different file
+    if (_nextController != null && _nextController!.dataSource != 'file://${file.path}') {
+      await _nextController!.dispose();
+      _nextController = null;
+    }
+
+    if (_nextController == null) {
+      _nextController = VideoPlayerController.file(file);
+      await _nextController!.initialize();
+      // Ready for switch
+    }
+  }
+  
+  void _attachListeners(VideoPlayerController controller, ClipModel clip) {
+    controller.addListener(_videoListener);
+    
+    // Continuous Playback & Trim Listener
+    controller.addListener(() {
+      if (!_isInitialized || _controller != controller) return; // Safety check
+      final pos = controller.value.position;
+      
+      // Trim: Start Constraint
+      if (pos < clip.startTime) {
+         controller.seekTo(clip.startTime);
+         return;
+      }
+      
+      // End of Clip Logic
+      if (pos >= clip.endTime) {
+         if (_currentClipIndex < _clips.length - 1) {
+            final nextIndex = _currentClipIndex + 1;
+            
+            // Seamless Switch using Preloader
+            if (_nextController != null && _nextController!.value.isInitialized) {
+               // 1. Swap Controllers
+               final oldController = _controller;
+               _controller = _nextController;
+               _nextController = null;
+               
+               // 2. Update Index
+               _currentClipIndex = nextIndex;
+               final nextClip = _clips[nextIndex];
+               
+               // 3. Attach Listeners to New Controller
+               _attachListeners(_controller!, nextClip);
+               
+               // 4. Play Immediately
+               _controller!.play();
+               // Ensure we start at startTime (if not 0)
+               if (nextClip.startTime > Duration.zero) {
+                  _controller!.seekTo(nextClip.startTime);
+               }
+
+               // 5. Dispose Old & Trigger Next Preload
+               oldController?.removeListener(_videoListener);
+               oldController?.dispose();
+               
+               setState(() {});
+               _preloadNextClip();
+            } else {
+               // Fallback to standard load
+               _controller!.pause();
+               _loadClip(nextIndex);
+            }
+         } else {
+            // End of Timeline
+            controller.pause();
+            setState(() => _isPlaying = false);
+         }
+      }
+    });
   }
 
   Future<void> _initClips() async {
     final videoManager = Provider.of<VideoManager>(context, listen: false);
     
-    _clips = widget.videoPaths.map((path) => ClipModel(
+    _clips = widget.project.videoPaths.map((path) => ClipModel(
         path: path,
         id: path, // Use path as ID for simplicity
         endTime: Duration.zero,
@@ -239,48 +365,91 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     }
   }
 
-  Future<void> _loadClip(int index) async {
+  Future<void> _loadClip(int index, {Duration? seekTo}) async {
     if (index < 0 || index >= _clips.length) return;
     
-    _controller?.dispose();
-    _controller = null;
-    _isInitialized = false;
-    setState(() {}); // Show loader
-
+    bool reused = false;
     final clip = _clips[index];
-    final file = File(clip.path);
-    
-    if (!await file.exists()) return;
 
-    _controller = VideoPlayerController.file(file);
-    await _controller!.initialize();
+    // Check Preloader Reuse
+    if (_nextController != null && 
+        _nextController!.value.isInitialized &&
+        _nextController!.dataSource == 'file://${clip.path}') {
+        
+        _controller?.dispose();
+        _controller = _nextController;
+        _nextController = null;
+        reused = true;
+    } else {
+        _controller?.dispose();
+        _controller = null;
+        _isInitialized = false;
+        setState(() {}); // Show loader
+
+        final file = File(clip.path);
+        // Safety Net
+        if (!await file.exists()) {
+          setState(() { _isMissingFile = true; _isInitialized = false; });
+          return;
+        }
+
+        _controller = VideoPlayerController.file(file);
+        await _controller!.initialize();
+    }
     
-    // Update clip duration metadata if not set
+    // Update metadata if needed
     if (clip.totalDuration == Duration.zero) {
       clip.totalDuration = _controller!.value.duration;
       clip.endTime = clip.totalDuration;
     }
 
-    _controller!.addListener(_videoListener);
-    // Apply Trim Range Loop
-    _controller!.addListener(() {
-      if (!_isInitialized || _controller == null) return;
-      final pos = _controller!.value.position;
-      if (pos < clip.startTime || pos > clip.endTime) {
-         if (_isPlaying) {
-           _controller!.seekTo(clip.startTime);
-         }
-      }
-    });
+    // Attach Listeners (Refactored)
+    _attachListeners(_controller!, clip);
 
     setState(() {
       _currentClipIndex = index;
       _isInitialized = true;
-      _isPlaying = false; // Start paused
+      _isPlaying = true; 
     });
     
-    // Seek to start time
-    await _controller!.seekTo(clip.startTime);
+    if (!reused) {
+        if (seekTo != null) {
+          await _controller!.seekTo(seekTo);
+        } else {
+          await _controller!.seekTo(clip.startTime);
+        }
+    }
+    
+    await _controller!.play();
+    _preloadNextClip(); // Start preloading next
+  }
+
+  double _calculateGlobalPosition() {
+    if (_controller == null || !_isInitialized || _clipDurations.isEmpty) return 0.0;
+    double globalPos = 0.0;
+    for (int i = 0; i < _currentClipIndex; i++) {
+       if (i < _clipDurations.length) globalPos += _clipDurations[i].inMilliseconds;
+    }
+    globalPos += _controller!.value.position.inMilliseconds;
+    return globalPos;
+  }
+
+  void _seekToGlobalPosition(double value) {
+     double accumulated = 0.0;
+     for (int i = 0; i < _clipDurations.length; i++) {
+        final duration = _clipDurations[i].inMilliseconds;
+        if (value <= accumulated + duration + 100) { // Slight buffer
+           // Target is in this clip
+           final seekPos = Duration(milliseconds: (value - accumulated).toInt());
+           if (i != _currentClipIndex) {
+              _loadClip(i, seekTo: seekPos);
+           } else {
+              _controller!.seekTo(seekPos);
+           }
+           return;
+        }
+        accumulated += duration;
+     }
   }
 
   void _videoListener() {
@@ -296,23 +465,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       }
     }
     
-    // Sequential Playback Logic
-    final val = _controller!.value;
-    if (val.position >= val.duration) {
-       if (_isPlaying) {
-          if (_currentClipIndex < _clips.length - 1) {
-             // Move to next clip
-             _loadClip(_currentClipIndex + 1).then((_) {
-                _controller?.play();
-             });
-          } else {
-             // End of playlist
-             setState(() => _isPlaying = false);
-             _controller?.pause();
-             _bgmController?.pause();
-          }
-       }
-    }
+
   }
 
   Future<void> _initBgmController(String path) async {
@@ -535,86 +688,183 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: const Color(0xFFF8F9FA),
       body: SafeArea(
-        child: Column(
+        child: Stack(
           children: [
-            // 70% Video Preview
-            Expanded(
-              flex: 7,
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  _buildPreviewSection(),
-                  // Header
-                  Positioned(
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    child: _buildHeader(),
-                  ),
-                  // Overlays
-                  ..._stickers.map((s) => _buildStickerWidget(s)),
-                  ..._subtitles.map((s) => _buildSubtitleWidget(s)),
-                ],
-              ),
+            // Middle Preview
+            _buildPreviewSection(),
+
+            // Top Header Overlay
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: _buildHeader(),
+            ),
+
+            // Bottom Controls Overlay
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: _buildBottomControls(),
             ),
             
-            // 30% Controls & Timeline
-            Expanded(
-              flex: 3,
-              child: Container(
-                color: const Color(0xFF1E1E1E),
-                child: Column(
-                  children: [
-                    _buildGlassToolbar(),
-                    Expanded(child: _buildTimelineSection()),
-                  ],
-                ),
-              ),
-            ),
+            // Progress Overlay
+            _buildVideoProgressOverlay(),
+            
+            // Overlays (Stickers/Subtitles) - Positioning logic needs care.
+            // Assuming they are full screen absolute positioned for now or relative to stack
+            // If they are interactive drag, they need stack context.
+            ..._stickers.map((s) => _buildStickerWidget(s)),
+            ..._subtitles.map((s) => _buildSubtitleWidget(s)),
           ],
         ),
       ),
     );
   }
 
+  Widget _buildBottomControls() {
+    return Container(
+      height: 160,
+      color: const Color(0xFFF8F9FA),
+      child: Column(
+        children: [
+          _buildTimelineSection(),
+          Expanded(child: _buildGlassToolbar()), // Use remaining space
+        ],
+      ),
+    );
+  }
+
   Widget _buildPreviewSection() {
+    if (_isMissingFile) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: const [
+            Icon(Icons.error_outline, color: Colors.red, size: 60),
+            SizedBox(height: 16),
+            Text("File Missing", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
+      );
+    }
+
     if (!_isInitialized || _controller == null) {
       return const Center(child: CircularProgressIndicator(color: Colors.white));
     }
     
-    return GestureDetector(
-      onTap: _togglePlayPause,
-      child: Container(
-        width: double.infinity,
-        height: double.infinity,
-        color: Colors.black,
-        child: AspectRatio(
-          aspectRatio: _controller!.value.aspectRatio,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              // Filter Layer
-              ColorFiltered(
-                colorFilter: _getFilterMatrix(),
-                child: VideoPlayer(_controller!),
-              ),
-              
-              if (!_isPlaying)
-                Container(
-                  color: Colors.black26,
-                  child: const Center(
-                    child: Icon(Icons.play_arrow, color: Colors.white, size: 64),
+    return Positioned(
+      top: 60,
+      left: 0,
+      right: 0,
+      bottom: 160, 
+      child: GestureDetector(
+        onTap: _togglePlayPause,
+        child: Container(
+          color: const Color(0xFFF8F9FA),
+          child: Center(
+            child: AspectRatio(
+              aspectRatio: _controller!.value.aspectRatio,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  // Filter Layer
+                  ColorFiltered(
+                    colorFilter: _getFilterMatrix(),
+                    child: VideoPlayer(_controller!),
                   ),
-                ),
-            ],
+                  
+                  if (!_isPlaying)
+                    Container(
+                      color: Colors.black26,
+                      child: const Center(
+                        child: Icon(Icons.play_arrow, color: Colors.white, size: 64),
+                      ),
+                    ),
+                  
+
+                ],
+              ),
+            ),
           ),
         ),
       ),
     );
   }
-  
+
+
+
+
+  Widget _buildVideoProgressOverlay() {
+    if (_controller == null || !_isInitialized) return const SizedBox.shrink();
+
+    return ValueListenableBuilder(
+      valueListenable: _controller!,
+      builder: (context, VideoPlayerValue value, child) {
+        final globalPos = _calculateGlobalPosition();
+        final totalMs = _totalDuration.inMilliseconds.toDouble();
+        final globalDuration = _totalDuration; // Fix missing variable
+        
+        return Positioned(
+          bottom: 180, 
+          left: 60, // Reduced width
+          right: 60, // Reduced width
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Time Labels
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                   Text(
+                      _formatDuration(Duration(milliseconds: globalPos.toInt())),
+                      style: const TextStyle(
+                        color: Colors.white, 
+                        fontWeight: FontWeight.bold,
+                        shadows: [Shadow(blurRadius: 2, color: Colors.black)]
+                      ),
+                   ),
+                   Text(
+                      _formatDuration(globalDuration),
+                      style: const TextStyle(
+                        color: Colors.white, 
+                        fontWeight: FontWeight.bold,
+                        shadows: [Shadow(blurRadius: 2, color: Colors.black)]
+                      ),
+                   ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              // Slider
+              SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 2,
+                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                  activeTrackColor: Colors.white,
+                  inactiveTrackColor: Colors.white24,
+                  thumbColor: Colors.white,
+                ),
+                child: Slider(
+                  value: globalPos.clamp(0.0, globalDuration.inMilliseconds.toDouble()),
+                  min: 0.0,
+                  max: globalDuration.inMilliseconds > 0 ? globalDuration.inMilliseconds.toDouble() : 1.0,
+                  onChanged: (val) {
+                    _seekToGlobalPosition(val);
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   ColorFilter _getFilterMatrix() {
     switch (_selectedFilter) {
       case FilterPreset.grayscale:
@@ -680,9 +930,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   Widget _buildGlassToolbar() {
     return Container(
       height: 60,
-      decoration: BoxDecoration(
-        color: Colors.white.withAlpha(15), 
-        border: const Border(bottom: BorderSide(color: Colors.white10)),
+      decoration: const BoxDecoration(
+        color: Colors.transparent, 
+        border: Border(bottom: BorderSide(color: Colors.black12)), // Light Border
       ),
       child: ListView(
         scrollDirection: Axis.horizontal,
@@ -707,9 +957,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, color: Colors.white, size: 24),
+            Icon(icon, color: Colors.black87, size: 24), // Dark Icon
             const SizedBox(height: 4),
-            Text(label, style: const TextStyle(color: Colors.white, fontSize: 10)),
+            Text(label, style: const TextStyle(color: Colors.black87, fontSize: 10)), // Dark Text
           ],
         ),
       ),
@@ -717,68 +967,78 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   Widget _buildTimelineSection() {
-    return ReorderableListView.builder(
-       scrollDirection: Axis.horizontal,
-       padding: const EdgeInsets.all(10),
-       itemCount: _clips.length,
-       onReorder: (oldIndex, newIndex) {
-         setState(() {
-           if (oldIndex < newIndex) newIndex -= 1;
-           final item = _clips.removeAt(oldIndex);
-           _clips.insert(newIndex, item);
-           // TODO: Add ReorderCommand
-         });
-       },
-       itemBuilder: (context, index) {
-         final clip = _clips[index];
-         final isSelected = index == _currentClipIndex;
-         return GestureDetector(
-           key: ValueKey(clip.id),
-           onTap: () {
-             if (_currentClipIndex != index) {
-               _loadClip(index);
-             }
-           },
-           child: Container(
-             width: 80,
-             margin: const EdgeInsets.only(right: 8),
-             decoration: BoxDecoration(
-               border: isSelected ? Border.all(color: Colors.yellow, width: 2) : null,
-               borderRadius: BorderRadius.circular(8),
-               color: Colors.grey[800],
-             ),
-             child: Stack(
-               fit: StackFit.expand,
-               children: [
-                 ClipRRect(
-                   borderRadius: BorderRadius.circular(8),
-                   child: FutureBuilder<Uint8List?>(
-                     future: Provider.of<VideoManager>(context, listen: false).getThumbnail(clip.path),
-                     builder: (context, snapshot) {
-                       if (snapshot.hasData && snapshot.data != null) {
-                         return Image.memory(snapshot.data!, fit: BoxFit.cover);
-                       }
-                       return const Center(child: Icon(Icons.movie, color: Colors.white24));
-                     },
-                   ),
-                 ),
-                 Positioned(
-                   bottom: 4,
-                   right: 4,
-                   child: Container(
-                     padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                     color: Colors.black54,
-                     child: Text(
-                       "${(clip.endTime.inSeconds - clip.startTime.inSeconds)}s",
-                       style: const TextStyle(color: Colors.white, fontSize: 10),
-                     ),
-                   ),
-                 )
-               ],
-             ),
-           ),
-         );
-       },
+    return SizedBox(
+      height: 90,
+      child: ReorderableListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        itemCount: _clips.length,
+        onReorder: (oldIndex, newIndex) {
+          setState(() {
+            if (oldIndex < newIndex) newIndex -= 1;
+            final item = _clips.removeAt(oldIndex);
+            _clips.insert(newIndex, item);
+          });
+        },
+        itemBuilder: (context, index) {
+          final clip = _clips[index];
+          final isSelected = index == _currentClipIndex;
+          return GestureDetector(
+            key: ValueKey(clip.id),
+            onTap: () async {
+              if (_currentClipIndex != index) {
+                await _loadClip(index);
+                _controller!.play();
+              }
+            },
+            child: Container(
+              width: 70, // Updated size
+              height: 70, // Explicit height constraint (though constrained by parent ListView, but container handles contents)
+              margin: const EdgeInsets.only(right: 8, top: 10, bottom: 10), // Adding margin for better spacing
+              decoration: BoxDecoration(
+                border: isSelected ? Border.all(color: Colors.blue, width: 3) : null,
+                borderRadius: BorderRadius.circular(12),
+                color: Colors.grey[300], // Light placeholder color
+                boxShadow: [
+                   if (isSelected) BoxShadow(color: Colors.blue.withOpacity(0.3), blurRadius: 8, spreadRadius: 2)
+                ]
+              ),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(9), // Inner radius checks out (12 - 3 border)
+                    child: FutureBuilder<Uint8List?>(
+                      future: Provider.of<VideoManager>(context, listen: false).getThumbnail(clip.path),
+                      builder: (context, snapshot) {
+                        if (snapshot.hasData && snapshot.data != null) {
+                          return Image.memory(snapshot.data!, fit: BoxFit.cover);
+                        }
+                        return const Center(child: Icon(Icons.movie, color: Colors.black26));
+                      },
+                    ),
+                  ),
+                  Positioned(
+                    bottom: 4,
+                    right: 4,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.black54,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        "${(clip.endTime.inSeconds - clip.startTime.inSeconds)}s",
+                        style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  )
+                ],
+              ),
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -802,15 +1062,35 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   // 'Done' 버튼 클릭 시 호출
   // 'Done' / 'Export' 버튼 클릭 시 호출
   void _handleExport() {
+    // Safety Net: Check all files before export dialog
+    for (final path in widget.project.videoPaths) {
+      if (!File(path).existsSync()) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            backgroundColor: const Color(0xFF1E1E1E),
+            title: const Text("Error", style: TextStyle(color: Colors.redAccent)),
+            content: const Text("원본 파일이 손상되어 내보낼 수 없습니다.\n(Source file missing)", style: TextStyle(color: Colors.white)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context), 
+                child: const Text("OK"),
+              )
+            ],
+          )
+        );
+        return;
+      }
+    }
     _showExportDialog();
   }
 
   void _showExportDialog() {
     final userStatus = Provider.of<UserStatusManager>(context, listen: false);
-    String selectedQuality = '1080p'; // Default 
+    String selectedQuality = widget.project.quality; // Use project quality
 
     // 등급에 따른 초기값 조정 (옵션)
-    if (!userStatus.isStandardOrAbove()) {
+    if (!userStatus.isStandardOrAbove() && selectedQuality != '720p') {
       selectedQuality = '720p';
     }
 
@@ -825,9 +1105,18 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                   _buildQualityOption("720p (Basic)", "720p", selectedQuality, true, (val) => setStateDialog(() => selectedQuality = val)),
-                   _buildQualityOption("1080p (Standard)", "1080p", selectedQuality, userStatus.isStandardOrAbove(), (val) => setStateDialog(() => selectedQuality = val)),
-                   _buildQualityOption("4K (Premium)", "4k", selectedQuality, userStatus.isPremium(), (val) => setStateDialog(() => selectedQuality = val)),
+                   _buildQualityOption("720p (Basic)", "720p", selectedQuality, true, (val) {
+                     setStateDialog(() => selectedQuality = val);
+                     _updateProjectQuality(val);
+                   }),
+                   _buildQualityOption("1080p (Standard)", "1080p", selectedQuality, userStatus.isStandardOrAbove(), (val) {
+                     setStateDialog(() => selectedQuality = val);
+                     _updateProjectQuality(val);
+                   }),
+                   _buildQualityOption("4K (Premium)", "4k", selectedQuality, userStatus.isPremium(), (val) {
+                     setStateDialog(() => selectedQuality = val);
+                     _updateProjectQuality(val);
+                   }),
                 ],
               ),
               actions: [
@@ -849,6 +1138,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         );
       }
     );
+  }
+
+  void _updateProjectQuality(String newQuality) {
+    if (widget.project.quality != newQuality) {
+      widget.project.quality = newQuality;
+      Provider.of<VideoManager>(context, listen: false).saveProject(widget.project);
+    }
   }
 
   Widget _buildQualityOption(String label, String value, String groupValue, bool enabled, Function(String) onChanged) {
@@ -875,9 +1171,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            CircularProgressIndicator(color: Colors.blueAccent),
-            SizedBox(height: 20),
-            Text("Rendering Vlog... 🎬", style: TextStyle(color: Colors.white)),
+             CircularProgressIndicator(color: Colors.blueAccent),
+             SizedBox(height: 20),
+             Text("Rendering Vlog... 🎬", style: TextStyle(color: Colors.white)),
           ],
         ),
       ),
@@ -886,18 +1182,22 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     try {
       final videoManager = Provider.of<VideoManager>(context, listen: false);
       
-      // 현재 클립 순서대로 경로 추출
-      final currentPaths = _clips.map((c) => c.path).toList();
-      
-      final Map<String, double> audioConfig = {}; 
-      // (TODO: Populate audioConfig if needed)
+      // Sync State to Project before Export
+      widget.project.videoPaths = _clips.map((c) => c.path).toList();
+      widget.project.bgmPath = _currentState.bgmPath;
+      widget.project.bgmVolume = _currentState.bgmVolume;
+      widget.project.quality = quality;
+      // AudioConfig sync (Clip Volumes) - Not fully implemented in EditorState yet, assuming default or need to map
+      // widget.project.audioConfig = ...; 
+
+      await videoManager.saveProject(widget.project);
 
       final resultPath = await videoManager.exportVlog(
-        videoPaths: currentPaths,
-        audioConfig: audioConfig,
-        bgmPath: _currentState.bgmPath,
-        bgmVolume: _currentState.bgmVolume,
-        quality: quality,
+        videoPaths: widget.project.videoPaths,
+        audioConfig: widget.project.audioConfig,
+        bgmPath: widget.project.bgmPath,
+        bgmVolume: widget.project.bgmVolume,
+        quality: widget.project.quality,
       );
 
       if (!mounted) return;

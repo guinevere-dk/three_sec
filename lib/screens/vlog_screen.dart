@@ -11,6 +11,9 @@ import '../widgets/media_dialogs.dart';
 import '../utils/haptics.dart';
 import '../utils/media_selection_helper.dart';
 import '../managers/video_manager.dart';
+import 'package:intl/intl.dart';
+import '../models/vlog_project.dart';
+import '../screens/video_edit_screen.dart';
 import '../screens/paywall_screen.dart';
 
 class VlogScreen extends StatefulWidget {
@@ -254,6 +257,9 @@ class _VlogScreenState extends State<VlogScreen> {
   }
 
   Widget _buildDetailView() {
+    // Use filteredProjects instead of vlogProjects
+    final projects = videoManager.filteredProjects;
+
     return Scaffold(
       backgroundColor: Colors.white,
       body: GestureDetector(
@@ -303,7 +309,7 @@ class _VlogScreenState extends State<VlogScreen> {
                       ),
                        if (!_isVlogSelectionMode)
                         Text(
-                          "${videoManager.vlogProjectPaths.length} Vlogs",
+                          "${projects.length} Vlogs",
                           style: TextStyle(
                             color: Colors.grey[500],
                             fontSize: 12,
@@ -317,7 +323,7 @@ class _VlogScreenState extends State<VlogScreen> {
                     if (_isVlogSelectionMode)
                       IconButton(
                         icon: Icon(
-                          _selectedVlogPaths.length == videoManager.vlogProjectPaths.length
+                          _selectedVlogPaths.length == projects.length
                               ? Icons.check_box
                               : Icons.check_box_outline_blank,
                           color: Colors.black,
@@ -327,7 +333,7 @@ class _VlogScreenState extends State<VlogScreen> {
                   ],
                 ),
                 
-                if (videoManager.vlogProjectPaths.isEmpty)
+                if (projects.isEmpty)
                    SliverFillRemaining(
                       child: Center(
                         child: Column(
@@ -356,28 +362,35 @@ class _VlogScreenState extends State<VlogScreen> {
                       ),
                       delegate: SliverChildBuilderDelegate(
                         (context, index) {
-                          final path = videoManager.vlogProjectPaths[index];
-                          final isSelected = _selectedVlogPaths.contains(path);
-                          final int selectIdx = _selectedVlogPaths.indexOf(path);
+                          final project = projects[index];
+                          final isSelected = _selectedVlogPaths.contains(project.id);
+                          final int selectIdx = _selectedVlogPaths.indexOf(project.id);
 
                           return MediaWidgets.buildMediaGridItem(
-                            path: path,
+                            // Thumbnail from first clip
+                            path: project.videoPaths.isNotEmpty ? project.videoPaths.first : '', 
                             isSelected: isSelected,
                             selectIndex: selectIdx,
                             isSelectionMode: _isVlogSelectionMode,
                             gridColumnCount: _gridColumnCount,
-                            isFavorite: videoManager.favorites.contains(path),
+                            isFavorite: false, // Favorites removed for Vlogs
+                            subtitle: "${DateFormat('MM/dd').format(project.updatedAt)} • ${project.videoPaths.length} clips",
+                            title: project.title,
                             onTap: () {
                               if (_isVlogSelectionMode) {
                                 setState(() {
                                   if (isSelected) {
-                                    _selectedVlogPaths.remove(path);
+                                    _selectedVlogPaths.remove(project.id);
                                   } else {
-                                    _selectedVlogPaths.add(path);
+                                    _selectedVlogPaths.add(project.id);
                                   }
                                 });
                               } else {
-                                setState(() => _previewingPath = path);
+                                // Navigate to Editor
+                                Navigator.push(
+                                  context, 
+                                  MaterialPageRoute(builder: (_) => VideoEditScreen(project: project))
+                                ).then((_) => widget.onRefresh());
                               }
                             },
                             onLongPress: () {
@@ -386,9 +399,9 @@ class _VlogScreenState extends State<VlogScreen> {
                                 _dragStartIndex = index;
                                 _isDragAdding = !isSelected;
                                 if (_isDragAdding) {
-                                  _selectedVlogPaths.add(path);
+                                  _selectedVlogPaths.add(project.id);
                                 } else {
-                                  _selectedVlogPaths.remove(path);
+                                  _selectedVlogPaths.remove(project.id);
                                 }
                               });
                               hapticFeedback();
@@ -396,7 +409,7 @@ class _VlogScreenState extends State<VlogScreen> {
                             getThumbnail: videoManager.getThumbnail,
                           );
                         },
-                        childCount: videoManager.vlogProjectPaths.length,
+                        childCount: projects.length,
                       ),
                     ),
                   ),
@@ -416,27 +429,29 @@ class _VlogScreenState extends State<VlogScreen> {
       floatingActionButton: (_isVlogSelectionMode && _selectedVlogPaths.isNotEmpty)
           ? MediaWidgets.buildActionPanel(
               isTrashMode: videoManager.currentVlogFolder == "휴지통",
-              onCreateVlog: null, // Vlog screen doesn't support creating vlogs from vlogs (yet)
-              onFavorite: () {
-                videoManager.toggleFavoritesBatch(_selectedVlogPaths);
-                setState(() {
-                  _isVlogSelectionMode = false;
-                  _selectedVlogPaths.clear();
-                });
-                hapticFeedback();
-              },
+              onCreateVlog: null, 
+              onFavorite: null, // Removed favorite action
               onMove: () => _handleMoveOrCopy(true),
-              onCopy: () => _handleMoveOrCopy(false),
+              // Copy not requested for folders phase, but keeping placeholder or removing?
+              // User said: "moveProjectToFolder(VlogProject project, String targetFolder) 메서드를 구현해라."
+              // and in Step 3: "_handleMoveOrCopy에서 폴더 선택 후 videoManager.moveProjectToFolder를 호출하도록 연결해라."
+              // Assuming Copy is not priority or should behave like Move (duplicate then move?)
+              // For now, let's keep Copy as void or implementing duplication later if needed.
+              // Logic changes: _handleMoveOrCopy implemented below.
+              onCopy: () => _handleMoveOrCopy(false), 
               onDelete: _handleVlogBatchDelete,
               onRestore: () async {
-                for (var path in _selectedVlogPaths) {
-                   await videoManager.restoreVlog(path);
+                // Restore from Trash (which is a folder now) = Move to '기본' or original?
+                // Logic for filteredProjects handles '휴지통' folder.
+                // We should use moveProjectToFolder('기본') for restore if simple.
+                for (var id in _selectedVlogPaths) {
+                   final p = projects.firstWhere((element) => element.id == id);
+                   await videoManager.moveProjectToFolder(p, '기본');
                 }
                 setState(() {
                   _isVlogSelectionMode = false;
                   _selectedVlogPaths.clear();
                 });
-                await _loadVlogsFromCurrentFolder();
                 hapticFeedback();
               },
             )
@@ -449,7 +464,7 @@ class _VlogScreenState extends State<VlogScreen> {
 
   void _startDragSelection(Offset position, bool isVlog) {
     final targetList = isVlog 
-        ? videoManager.vlogProjectPaths 
+        ? videoManager.vlogProjects.map((p) => p.id).toList()
         : videoManager.vlogAlbums.where((f) => f != "일상").toList(); // ✅ 휴지통 포함
     
     double topPad = MediaQuery.of(context).padding.top + kToolbarHeight;
@@ -512,7 +527,7 @@ class _VlogScreenState extends State<VlogScreen> {
     if (!isActive) return;
     
     final targetList = isVlog 
-        ? videoManager.vlogProjectPaths 
+        ? videoManager.vlogProjects.map((p) => p.id).toList()
         : videoManager.vlogAlbums.where((f) => f != "일상").toList(); // ✅ 휴지통 포함
     
     double topPad = MediaQuery.of(context).padding.top + kToolbarHeight; 
@@ -566,18 +581,7 @@ class _VlogScreenState extends State<VlogScreen> {
     hapticFeedback();
   }
 
-  void _toggleSelectAllVlogs() {
-    setState(() {
-      if (_selectedVlogPaths.length == videoManager.vlogProjectPaths.length) {
-        _selectedVlogPaths.clear();
-      } else {
-        _selectedVlogPaths = List.from(videoManager.vlogProjectPaths);
-      }
-    });
-    hapticFeedback();
-  }
-
-  // --- [액션 핸들러] ---
+   // --- [액션 핸들러] ---
 
   void _showCreateFolderDialog() async {
     String? name = await MediaDialogs.showCreateVlogFolderDialog(context: context);
@@ -616,18 +620,23 @@ class _VlogScreenState extends State<VlogScreen> {
       bool? ok = await MediaDialogs.showConfirmDialog(
         context: context,
         title: "영구 삭제",
-        content: "선택한 Vlog를 모두 삭제할까요?",
+        content: "선택한 Vlog 프로젝트를 영구 삭제할까요? 복구할 수 없습니다.",
       );
       if (ok != true) return;
-      for (var path in _selectedVlogPaths) await videoManager.deletePermanently(path); // Assuming deletePermanently works for any file
+      for (var id in _selectedVlogPaths) await videoManager.deleteProject(id);
     } else {
-      // Vlog 휴지통으로 이동
-      for (var path in _selectedVlogPaths) {
-        await videoManager.moveVlogToTrash(path);
+      bool? ok = await MediaDialogs.showConfirmDialog(
+        context: context,
+        title: "프로젝트 삭제",
+        content: "선택한 프로젝트를 휴지통으로 이동할까요?",
+      );
+      if (ok != true) return;
+      
+      for (var id in _selectedVlogPaths) {
+        await videoManager.moveProjectToTrash(id);
       }
-      Fluttertoast.showToast(msg: "휴지통으로 이동했습니다");
+      Fluttertoast.showToast(msg: "휴지통으로 이동되었습니다");
     }
-    await _loadVlogsFromCurrentFolder();
     setState(() {
       _isVlogSelectionMode = false;
       _selectedVlogPaths.clear();
@@ -635,15 +644,71 @@ class _VlogScreenState extends State<VlogScreen> {
     hapticFeedback();
   }
 
-  Future<void> _handleMoveOrCopy(bool isMove) async {
-    // TODO: Vlog 이동/복사 로직 구현
-    Fluttertoast.showToast(msg: isMove ? "이동 준비중" : "복사 준비중");
-    
+  void _toggleSelectAllVlogs() {
     setState(() {
-      _isVlogSelectionMode = false;
-      _selectedVlogPaths.clear();
+      final projects = videoManager.filteredProjects;
+      if (_selectedVlogPaths.length == projects.length) {
+        _selectedVlogPaths.clear();
+      } else {
+        _selectedVlogPaths = projects.map((p) => p.id).toList();
+      }
     });
-
     hapticFeedback();
+  }
+
+  // ... 
+
+  Future<void> _handleMoveOrCopy(bool isMove) async {
+    if (!isMove) {
+      Fluttertoast.showToast(msg: "복사 기능은 준비중입니다.");
+       setState(() {
+        _isVlogSelectionMode = false;
+        _selectedVlogPaths.clear();
+      });
+      return;
+    }
+
+    // Show Folder Selection Dialog
+    final folders = videoManager.vlogAlbums.where((f) => f != "휴지통" && f != videoManager.currentVlogFolder).toList();
+    if (folders.isEmpty) {
+      Fluttertoast.showToast(msg: "이동할 다른 폴더가 없습니다.");
+      return;
+    }
+
+    String? targetFolder = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("폴더 이동"),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: folders.length,
+            itemBuilder: (context, index) {
+              return ListTile(
+                leading: const Icon(Icons.folder),
+                title: Text(folders[index]),
+                onTap: () => Navigator.pop(context, folders[index]),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+
+    if (targetFolder != null) {
+      final projects = videoManager.filteredProjects;
+      for (var id in _selectedVlogPaths) {
+        final project = projects.firstWhere((p) => p.id == id);
+        await videoManager.moveProjectToFolder(project, targetFolder);
+      }
+      
+      Fluttertoast.showToast(msg: "${_selectedVlogPaths.length}개 이동됨");
+      setState(() {
+        _isVlogSelectionMode = false;
+        _selectedVlogPaths.clear();
+      });
+      hapticFeedback();
+    }
   }
 }
