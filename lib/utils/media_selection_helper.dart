@@ -144,7 +144,6 @@ class MediaSelectionHelper {
     required dynamic currentSelection, // List<String> or Set<String>
     required int dragStartIndex,
     required bool isDragAdding,
-    required Function(String item, bool isAdding) onSelectionChanged,
     bool Function(String item)? canSelectItem,
     double scrollOffset = 0.0,
     double topPadding = 0.0,
@@ -182,9 +181,17 @@ class MediaSelectionHelper {
         }
 
         if (isDragAdding && !isCurrentlySelected) {
-            onSelectionChanged(item, true);
+            if (currentSelection is List<String>) {
+              currentSelection.add(item);
+            } else if (currentSelection is Set<String>) {
+              currentSelection.add(item);
+            }
         } else if (!isDragAdding && isCurrentlySelected) {
-            onSelectionChanged(item, false);
+            if (currentSelection is List<String>) {
+              currentSelection.remove(item);
+            } else if (currentSelection is Set<String>) {
+              currentSelection.remove(item);
+            }
         }
     }
   }

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -9,10 +10,11 @@ import '../widgets/media_dialogs.dart';
 import '../utils/haptics.dart';
 import '../utils/media_selection_helper.dart';
 import '../managers/video_manager.dart';
+import '../managers/user_status_manager.dart';
+import '../services/cloud_service.dart';
 import '../screens/paywall_screen.dart';
-import '../screens/profile_screen.dart';
-import '../screens/video_edit_screen.dart';
-import '../models/vlog_project.dart';
+
+enum _SelectionActionState { local, cloud, mixed }
 
 class LibraryScreen extends StatefulWidget {
   final GlobalKey keyPickMedia;
@@ -20,7 +22,7 @@ class LibraryScreen extends StatefulWidget {
   final Function() onRefreshData;
   final Function(List<String> selectedPaths) onMerge;
   final Function(String path) onPickMedia;
-  
+
   const LibraryScreen({
     super.key,
     required this.keyPickMedia,
@@ -40,13 +42,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
   bool _isAlbumSelectionMode = false;
   bool _isDragAdding = true;
   int? _dragStartIndex;
-  
+
   int _gridColumnCount = 3;
   bool _isZoomingLocked = false;
-  
-
 
   String? _previewingPath;
+  String _storageFilter = 'all';
 
   final GlobalKey _clipGridKey = GlobalKey(debugLabel: 'clipGrid');
   final GlobalKey _albumGridKey = GlobalKey(debugLabel: 'albumGrid');
@@ -55,6 +56,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   Set<String> _selectedAlbumNames = {};
 
   late VideoManager videoManager;
+  final CloudService _cloudService = CloudService();
 
   @override
   void initState() {
@@ -65,20 +67,38 @@ class _LibraryScreenState extends State<LibraryScreen> {
       if (mounted) setState(() {});
     });
   }
-  
-  final ScrollController _scrollController = ScrollController();
+
+  final ScrollController _albumScrollController = ScrollController();
+  final ScrollController _clipScrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _albumScrollController.dispose();
+    _clipScrollController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     videoManager = Provider.of<VideoManager>(context);
-    
+
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
-        if (_previewingPath != null) setState(() => _previewingPath = null);
-        else if (_isClipSelectionMode) setState(() { _isClipSelectionMode = false; _selectedClipPaths.clear(); });
-        else if (_isAlbumSelectionMode) setState(() { _isAlbumSelectionMode = false; _selectedAlbumNames.clear(); });
-        else if (_isInAlbumDetail) setState(() => _isInAlbumDetail = false);
+        if (_previewingPath != null)
+          setState(() => _previewingPath = null);
+        else if (_isClipSelectionMode)
+          setState(() {
+            _isClipSelectionMode = false;
+            _selectedClipPaths.clear();
+          });
+        else if (_isAlbumSelectionMode)
+          setState(() {
+            _isAlbumSelectionMode = false;
+            _selectedAlbumNames.clear();
+          });
+        else if (_isInAlbumDetail)
+          setState(() => _isInAlbumDetail = false);
       },
       child: _isInAlbumDetail ? _buildDetailView() : _buildLibraryTab(),
     );
@@ -92,11 +112,30 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (mounted) setState(() {});
   }
 
+  Future<void> _openPaywallAndRefresh() async {
+    final upgraded = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => const PaywallScreen()),
+    );
+
+    if (upgraded != true) {
+      return;
+    }
+
+    await UserStatusManager().initialize();
+    if (!mounted) return;
+    setState(() {});
+  }
+
   Widget _buildLibraryTab() {
     final allAlbums = videoManager.clipAlbums; // Vlog 제외 조건 삭제
-    final selectableAlbums = allAlbums.where((a) => a != "일상" && a != "휴지통").toList();
-    final bool isAll = _selectedAlbumNames.length == selectableAlbums.length && _selectedAlbumNames.isNotEmpty;
-    
+    final selectableAlbums = allAlbums
+        .where((a) => a != "일상" && a != "휴지통")
+        .toList();
+    final bool isAll =
+        _selectedAlbumNames.length == selectableAlbums.length &&
+        _selectedAlbumNames.isNotEmpty;
+
     return Scaffold(
       backgroundColor: const Color(0xFFF4F6F8), // App BG Color
       body: GestureDetector(
@@ -110,151 +149,155 @@ class _LibraryScreenState extends State<LibraryScreen> {
         onScaleUpdate: (d) => _handleScaleUpdate(d, false),
         onScaleEnd: (_) => _dragStartIndex = null,
         child: CustomScrollView(
-          controller: _scrollController, // Attach Controller
-          physics: const AlwaysScrollableScrollPhysics(), // Ensure scrolling works
+          controller: _albumScrollController,
+          physics:
+              const AlwaysScrollableScrollPhysics(), // Ensure scrolling works
           slivers: [
             // Library Header
             SliverAppBar(
-            backgroundColor: Colors.white.withOpacity(0.8),
-            surfaceTintColor: Colors.transparent,
-            pinned: true,
-            floating: true,
-            centerTitle: false,
-            title: Row(
-              children: [
-                const Icon(Icons.folder, color: Colors.blueAccent, size: 28),
-                const SizedBox(width: 8),
-                Text(
-                  _isAlbumSelectionMode ? "${_selectedAlbumNames.length} Selected" : "Library",
-                  style: const TextStyle(
-                    color: Colors.black,
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: -0.5,
-                  ),
-                ),
-              ],
-            ),
-            actions: [
-              if (_isAlbumSelectionMode)
-                 IconButton(
-                  icon: Icon(isAll ? Icons.check_box : Icons.check_box_outline_blank, color: Colors.black),
-                  onPressed: _toggleSelectAllAlbums,
-                )
-              else ...[
-                 // PRO Badge (Upgrade)
-                 GestureDetector(
-                   onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PaywallScreen())),
-                   child: Container(
-                     margin: const EdgeInsets.only(right: 12),
-                     width: 40,
-                     height: 40,
-                     decoration: BoxDecoration(
-                       gradient: const LinearGradient(colors: [Colors.amber, Colors.orangeAccent]),
-                       shape: BoxShape.circle,
-                       boxShadow: [
-                         BoxShadow(color: Colors.orange.withOpacity(0.3), blurRadius: 4, offset: const Offset(0, 2))
-                       ],
-                     ),
-                     child: const Icon(Icons.star, color: Colors.white, size: 20),
-                   ),
-                 ),
-                 // Add Media Button (Unified Design)
-                 IconButton(
-                   key: widget.keyPickMedia,
-                   icon: const Icon(Icons.add_circle_outline, color: Colors.black),
-                   onPressed: () => widget.onPickMedia(''),
-                 ),
-              ]
-            ],
-          ),
-          
-          // Album Grid
-          allAlbums.isEmpty
-            ? SliverFillRemaining(
-                child: Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: const [
-                      Icon(Icons.folder_open, color: Colors.grey, size: 60),
-                      SizedBox(height: 16),
-                      Text(
-                        "No albums yet.\nAdd an album to start!",
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.grey),
-                      ),
-                    ],
-                  ),
-                ),
-              )
-            : SliverPadding(
-                padding: const EdgeInsets.all(16),
-                sliver: SliverGrid(
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: _gridColumnCount,
-                    crossAxisSpacing: 16,
-                    mainAxisSpacing: 16,
-                    childAspectRatio: 0.85,
-                  ),
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) {
-                      final albumName = allAlbums[index];
-                      final clipCount = videoManager.albumCounts[albumName] ?? 0;
-                      final isSelected = _selectedAlbumNames.contains(albumName);
-                      final canSelect = albumName != "일상" && albumName != "휴지통"; // 'Vlog' 제외 조건 삭제
-
-                      return MediaWidgets.buildFolderGridItem(
-                        folderName: albumName,
-                        clipCount: clipCount,
-                        isSelected: isSelected,
-                        canSelect: canSelect,
-                        isSelectionMode: _isAlbumSelectionMode,
-                        gridColumnCount: _gridColumnCount,
-                        onTap: () {
-                          if (_isAlbumSelectionMode) {
-                            if (!canSelect) return;
-                            setState(() {
-                              if (isSelected) {
-                                _selectedAlbumNames.remove(albumName);
-                              } else {
-                                _selectedAlbumNames.add(albumName);
-                              }
-                            });
-                          } else {
-                            setState(() {
-                              videoManager.currentAlbum = albumName;
-                              _isInAlbumDetail = true;
-                              _selectedClipPaths.clear();
-                              _isClipSelectionMode = false;
-                            });
-                            _loadClipsFromCurrentAlbum();
-                          }
-                        },
-                        onLongPress: canSelect
-                            ? () {
-                                setState(() {
-                                  _isAlbumSelectionMode = true;
-                                  if (isSelected) {
-                                    _selectedAlbumNames.remove(albumName);
-                                  } else {
-                                    _selectedAlbumNames.add(albumName);
-                                  }
-                                });
-                                hapticFeedback();
-                              }
-                            : null,
-                        getIcon: _getAlbumIcon,
-                        getColor: _getAlbumColor,
-                      );
-                    },
-                    childCount: allAlbums.length,
-                  ),
+              backgroundColor: const Color(0xFFF4F6F8),
+              surfaceTintColor: Colors.transparent,
+              pinned: true,
+              floating: false,
+              centerTitle: false,
+              title: Text(
+                _isAlbumSelectionMode
+                    ? "${_selectedAlbumNames.length}개 선택됨"
+                    : "Library",
+                style: const TextStyle(
+                  color: Color(0xFF303236),
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -1.1,
+                  height: 1,
                 ),
               ),
-        ],
+              toolbarHeight: 88,
+              actions: [
+                if (_isAlbumSelectionMode)
+                  IconButton(
+                    icon: Icon(
+                      isAll ? Icons.check_box : Icons.check_box_outline_blank,
+                      color: Colors.black,
+                    ),
+                    onPressed: _toggleSelectAllAlbums,
+                  )
+                else ...[
+                  GestureDetector(
+                    onTap: _openPaywallAndRefresh,
+                    child: Container(
+                      margin: const EdgeInsets.only(right: 12),
+                      width: 25,
+                      height: 25,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFF4CF00),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.star,
+                        color: Colors.white,
+                        size: 14,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    key: widget.keyPickMedia,
+                    icon: const Icon(Icons.add, color: Colors.black, size: 21),
+                    onPressed: () => _showLibraryAddSheet(),
+                  ),
+                ],
+              ],
+            ),
+
+            // Album Grid
+            allAlbums.isEmpty
+                ? SliverFillRemaining(
+                    child: Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: const [
+                          Icon(Icons.folder_open, color: Colors.grey, size: 60),
+                          SizedBox(height: 16),
+                          Text(
+                            "No albums yet.\nAdd an album to start!",
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(14, 14, 14, 28),
+                    sliver: SliverGrid(
+                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: _gridColumnCount,
+                        crossAxisSpacing: 10,
+                        mainAxisSpacing: 20,
+                        childAspectRatio: 0.75,
+                      ),
+                      delegate: SliverChildBuilderDelegate((context, index) {
+                        final albumName = allAlbums[index];
+                        final clipCount =
+                            videoManager.albumCounts[albumName] ?? 0;
+                        final isSelected = _selectedAlbumNames.contains(
+                          albumName,
+                        );
+                        final canSelect =
+                            albumName != "일상" &&
+                            albumName != "휴지통"; // 'Vlog' 제외 조건 삭제
+
+                        return MediaWidgets.buildFolderGridItem(
+                          folderName: albumName,
+                          clipCount: clipCount,
+                          isSelected: isSelected,
+                          canSelect: canSelect,
+                          isSelectionMode: _isAlbumSelectionMode,
+                          gridColumnCount: _gridColumnCount,
+                          onTap: () {
+                            if (_isAlbumSelectionMode) {
+                              if (!canSelect) return;
+                              setState(() {
+                                if (isSelected) {
+                                  _selectedAlbumNames.remove(albumName);
+                                } else {
+                                  _selectedAlbumNames.add(albumName);
+                                }
+                              });
+                            } else {
+                              setState(() {
+                                videoManager.currentAlbum = albumName;
+                                _isInAlbumDetail = true;
+                                _selectedClipPaths.clear();
+                                _isClipSelectionMode = false;
+                              });
+                              _loadClipsFromCurrentAlbum();
+                            }
+                          },
+                          onLongPress: canSelect
+                              ? () {
+                                  setState(() {
+                                    _isAlbumSelectionMode = true;
+                                    if (isSelected) {
+                                      _selectedAlbumNames.remove(albumName);
+                                    } else {
+                                      _selectedAlbumNames.add(albumName);
+                                    }
+                                  });
+                                  hapticFeedback();
+                                }
+                              : null,
+                          getIcon: _getAlbumIcon,
+                          getColor: _getAlbumColor,
+                        );
+                      }, childCount: allAlbums.length),
+                    ),
+                  ),
+          ],
         ),
       ),
-      floatingActionButton: _isAlbumSelectionMode && _selectedAlbumNames.isNotEmpty
+      floatingActionButton:
+          _isAlbumSelectionMode && _selectedAlbumNames.isNotEmpty
           ? FloatingActionButton.extended(
               onPressed: _handleAlbumBatchDelete,
               backgroundColor: Colors.redAccent,
@@ -264,23 +307,31 @@ class _LibraryScreenState extends State<LibraryScreen> {
           : null,
     );
   }
-  
+
   IconData _getAlbumIcon(String albumName) {
     if (albumName == "일상") return Icons.home;
     if (albumName == "휴지통") return Icons.delete;
     return Icons.folder;
   }
-  
+
   Color _getAlbumColor(String albumName) {
     if (albumName == "일상") return Colors.blue;
-    if (albumName == "휴지통") return Colors.red;
+    if (albumName == "휴지통") return const Color(0xFF7D8594);
     return const Color(0xFFFFD66B);
   }
 
   Widget _buildDetailView() {
+    final visibleClipPaths = videoManager.recordedVideoPaths
+        .where(
+          (path) =>
+              videoManager.isClipVisibleByStorageFilter(path, _storageFilter),
+        )
+        .toList();
+
     // Determine subtitle
-    final int count = videoManager.recordedVideoPaths.length;
+    final int count = visibleClipPaths.length;
     final String subtitle = "$count Clips";
+    final selectionState = _resolveSelectionActionState();
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -289,98 +340,99 @@ class _LibraryScreenState extends State<LibraryScreen> {
         onScaleStart: (d) {
           _isZoomingLocked = false;
           if (_isClipSelectionMode && d.pointerCount == 1) {
-             _startDragSelection(d.focalPoint, true);
+            _startDragSelection(d.focalPoint, true);
           }
         },
         onScaleUpdate: (d) => _handleScaleUpdate(d, true),
         onScaleEnd: (_) => _dragStartIndex = null,
         child: CustomScrollView(
-          controller: _scrollController, // Attach Controller
+          controller: _clipScrollController,
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             // Detail Header
             SliverAppBar(
-            backgroundColor: Colors.white.withOpacity(0.9),
-            surfaceTintColor: Colors.transparent,
-            pinned: true,
-            leading: IconButton(
-              icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black),
-              onPressed: () {
-                if (_isClipSelectionMode) {
-                  setState(() {
-                    _isClipSelectionMode = false;
-                    _selectedClipPaths.clear();
-                  });
-                } else {
-                  setState(() => _isInAlbumDetail = false);
-                }
-              },
-            ),
-            centerTitle: false,
-            title: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  _isClipSelectionMode ? "${_selectedClipPaths.length} Selected" : videoManager.currentAlbum,
-                  style: const TextStyle(
-                    color: Colors.black,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
+              backgroundColor: Colors.white.withOpacity(0.9),
+              surfaceTintColor: Colors.transparent,
+              pinned: true,
+              leading: IconButton(
+                icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black),
+                onPressed: () {
+                  if (_isClipSelectionMode) {
+                    setState(() {
+                      _isClipSelectionMode = false;
+                      _selectedClipPaths.clear();
+                    });
+                  } else {
+                    setState(() => _isInAlbumDetail = false);
+                  }
+                },
+              ),
+              centerTitle: false,
+              title: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _isClipSelectionMode
+                        ? "${_selectedClipPaths.length}개 선택됨"
+                        : "${videoManager.currentAlbum} $count",
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  if (!_isClipSelectionMode)
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        color: Color(0xFF667085),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    if (!_isClipSelectionMode) {
+                      setState(() {
+                        _isClipSelectionMode = true;
+                        _selectedClipPaths = List.from(visibleClipPaths);
+                      });
+                    } else {
+                      _toggleSelectAllClips();
+                    }
+                  },
+                  child: const Text(
+                    'Select All',
+                    style: TextStyle(
+                      color: Color(0xFF1A73E8),
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
-                if (!_isClipSelectionMode)
-                  Text(
-                    subtitle,
-                    style: TextStyle(
-                      color: Colors.grey[500],
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
               ],
             ),
-            actions: [
-              if (_isClipSelectionMode) ...[
-                 if (_selectedClipPaths.length >= 2 && videoManager.currentAlbum != "휴지통")
-                    IconButton(
-                      icon: const Icon(Icons.movie_creation, color: Colors.blueAccent),
-                      tooltip: 'Create Vlog',
-                      onPressed: () {
-                        final pathsCopy = List<String>.from(_selectedClipPaths);
-                        _handleMerge(pathsCopy);
-                        setState(() {
-                          _isClipSelectionMode = false;
-                          _selectedClipPaths.clear();
-                        });
-                      },
-                    ),
-                  IconButton(
-                    icon: Icon(
-                      _selectedClipPaths.length == videoManager.recordedVideoPaths.length
-                          ? Icons.check_box
-                          : Icons.check_box_outline_blank,
-                      color: Colors.black,
-                    ),
-                    onPressed: _toggleSelectAllClips,
-                  ),
-              ] else ...[
-                 // Play Button Eliminated
-                  if (videoManager.currentAlbum != "휴지통") ...[
-                    // Brush button removed
-                    IconButton(
-                      icon: const Icon(Icons.add_photo_alternate_outlined, color: Colors.black54),
-                      tooltip: "Import",
-                      onPressed: () => widget.onPickMedia(''),
-                    ),
-                  ]
-              ]
-            ],
-          ),
 
-          // Clip Grid
-          if (videoManager.recordedVideoPaths.isEmpty)
-             SliverFillRemaining(
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                child: Wrap(
+                  spacing: 8,
+                  children: [
+                    _buildStorageFilterChip('all', '전체'),
+                    _buildStorageFilterChip('device', '기기'),
+                    _buildStorageFilterChip('cloud', '클라우드'),
+                  ],
+                ),
+              ),
+            ),
+
+            // Clip Grid
+            if (visibleClipPaths.isEmpty)
+              SliverFillRemaining(
                 child: Center(
                   key: widget.keyFirstClip,
                   child: const Column(
@@ -392,35 +444,37 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         "No clips.\nRecord something!",
                         textAlign: TextAlign.center,
                         style: TextStyle(color: Colors.grey),
-                      )
+                      ),
                     ],
                   ),
                 ),
-             )
-          else
-            SliverPadding(
-              padding: const EdgeInsets.all(4),
-              sliver: SliverGrid(
-                // key: _clipGridKey removed from here
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: _gridColumnCount,
-                  crossAxisSpacing: 4,
-                  mainAxisSpacing: 4,
-                  childAspectRatio: 1.0,
-                ),
-                delegate: SliverChildBuilderDelegate(
-                  (context, index) {
-                    final path = videoManager.recordedVideoPaths[index];
+              )
+            else
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(8, 8, 8, 210),
+                sliver: SliverGrid(
+                  // key: _clipGridKey removed from here
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: _gridColumnCount,
+                    crossAxisSpacing: 3,
+                    mainAxisSpacing: 3,
+                    childAspectRatio: 1.0,
+                  ),
+                  delegate: SliverChildBuilderDelegate((context, index) {
+                    final path = visibleClipPaths[index];
                     final isSelected = _selectedClipPaths.contains(path);
                     final int selectIdx = _selectedClipPaths.indexOf(path);
-                    
                     return MediaWidgets.buildMediaGridItem(
                       path: path,
                       isSelected: isSelected,
                       selectIndex: selectIdx,
                       isSelectionMode: _isClipSelectionMode,
                       gridColumnCount: _gridColumnCount,
+                      benchmarkStyle: true,
+                      showDurationBadge: true,
+                      statusBadge: videoManager.getClipStatusBadge(path),
                       isFavorite: videoManager.favorites.contains(path),
+                      getDuration: videoManager.getVideoDuration,
                       onTap: () {
                         if (_isClipSelectionMode) {
                           setState(() {
@@ -449,91 +503,121 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       },
                       getThumbnail: videoManager.getThumbnail,
                     );
-                  },
-                  childCount: videoManager.recordedVideoPaths.length,
+                  }, childCount: visibleClipPaths.length),
                 ),
               ),
-            ),
-        ],
+          ],
         ),
       ),
       // Bottom Navigation Eliminated
-      
+
       // Bottom Navigation (Visual Only)
 
-      
-       // Floating Actions (Multi-Select)
-       // Magic Brush (Vlog Create) FAB
-      floatingActionButton: (_isClipSelectionMode && _selectedClipPaths.isNotEmpty)
-          ? MediaWidgets.buildActionPanel(
-              isTrashMode: videoManager.currentAlbum == "휴지통",
-              onCreateVlog: null, // User requested to remove this from FAB
-              onFavorite: () {
-                videoManager.toggleFavoritesBatch(_selectedClipPaths);
-                setState(() {
-                  _isClipSelectionMode = false;
-                  _selectedClipPaths.clear();
-                });
-                hapticFeedback();
-              },
-              onMove: () => _handleMoveOrCopy(true),
-              onCopy: () => _handleMoveOrCopy(false),
-              onDelete: _handleClipBatchDelete,
-              onRestore: () async {
-                for (var path in _selectedClipPaths) {
-                  await videoManager.restoreClip(path);
-                }
-                setState(() {
-                  _isClipSelectionMode = false;
-                  _selectedClipPaths.clear();
-                });
-                await _loadClipsFromCurrentAlbum();
-                hapticFeedback();
-              },
-            )
+      // Floating Actions (Multi-Select)
+      // Magic Brush (Project Create) FAB
+      floatingActionButton:
+          (_isClipSelectionMode && _selectedClipPaths.isNotEmpty)
+          ? (videoManager.currentAlbum == "휴지통"
+                ? MediaWidgets.buildActionPanel(
+                    isTrashMode: true,
+                    onCreateProject: null,
+                    onFavorite: null,
+                    onMove: () {},
+                    onCopy: () {},
+                    onDelete: _handleClipBatchDelete,
+                    onRestore: () async {
+                      for (var path in _selectedClipPaths) {
+                        await videoManager.restoreClip(path);
+                      }
+                      setState(() {
+                        _isClipSelectionMode = false;
+                        _selectedClipPaths.clear();
+                      });
+                      await _loadClipsFromCurrentAlbum();
+                      hapticFeedback();
+                    },
+                  )
+                : MediaWidgets.buildLibrarySelectionPanel(
+                    transferIcon: _transferIconForSelectionState(
+                      selectionState,
+                    ),
+                    onTransfer: _transferHandlerForSelectionState(
+                      selectionState,
+                    ),
+                    onCreateProject:
+                        _selectedClipPaths.length < 2
+                        ? null
+                        : () {
+                            if (_selectedClipPaths.length < 2) return;
+                            final pathsCopy = List<String>.from(
+                              _selectedClipPaths,
+                            );
+                            widget.onMerge(pathsCopy);
+                            setState(() {
+                              _isClipSelectionMode = false;
+                              _selectedClipPaths.clear();
+                            });
+                          },
+                    onFavorite: () {
+                      videoManager.toggleFavoritesBatch(
+                        _selectedClipPaths,
+                      );
+                      setState(() {
+                        _isClipSelectionMode = false;
+                        _selectedClipPaths.clear();
+                      });
+                      hapticFeedback();
+                    },
+                    onCopy: () => _handleMoveOrCopy(false),
+                    onMove: () => _handleMoveOrCopy(true),
+                    onDelete: _handleClipBatchDelete,
+                  ))
           : null,
       floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-      
+
       // Preview Overlay
-      bottomSheet: _previewingPath != null ? SizedBox(
-          height: MediaQuery.of(context).size.height,
-          child: VideoPreviewWidget(
-            filePath: _previewingPath!,
-            favorites: videoManager.favorites,
-            isTrashMode: videoManager.currentAlbum == "휴지통",
-            onToggleFav: (p) {
-               if (videoManager.favorites.contains(p)) {
-                 videoManager.favorites.remove(p);
-               } else {
-                 videoManager.favorites.add(p);
-               }
-               setState(() {});
-               hapticFeedback();
-            },
-            onRestore: (p) async {
-              await videoManager.restoreClip(p);
-              setState(() => _previewingPath = null);
-              await _loadClipsFromCurrentAlbum();
-            },
-            onDelete: (p) async {
-              await _handleSingleClipDelete(p);
-            },
-            onClose: () => setState(() => _previewingPath = null),
-          ),
-      ) : null,
+      bottomSheet: _previewingPath != null
+          ? SizedBox(
+              height: MediaQuery.of(context).size.height,
+              child: VideoPreviewWidget(
+                filePath: _previewingPath!,
+                favorites: videoManager.favorites,
+                isTrashMode: videoManager.currentAlbum == "휴지통",
+                onToggleFav: (p) {
+                  if (videoManager.favorites.contains(p)) {
+                    videoManager.favorites.remove(p);
+                  } else {
+                    videoManager.favorites.add(p);
+                  }
+                  setState(() {});
+                  hapticFeedback();
+                },
+                onRestore: (p) async {
+                  await videoManager.restoreClip(p);
+                  setState(() => _previewingPath = null);
+                  await _loadClipsFromCurrentAlbum();
+                },
+                onDelete: (p) async {
+                  await _handleSingleClipDelete(p);
+                },
+                onClose: () => setState(() => _previewingPath = null),
+              ),
+            )
+          : null,
     );
   }
 
   // --- [제스처 처리] ---
 
   void _startDragSelection(Offset position, bool isClip) {
-    final targetList = isClip 
-        ? videoManager.recordedVideoPaths 
+    final targetList = isClip
+        ? videoManager.recordedVideoPaths
         : videoManager.clipAlbums;
-    
-    double topPad = MediaQuery.of(context).padding.top + kToolbarHeight; 
-    double currentScroll = _scrollController.hasClients ? _scrollController.offset : 0.0;
-    
+
+    double topPad = MediaQuery.of(context).padding.top + kToolbarHeight;
+    final controller = isClip ? _clipScrollController : _albumScrollController;
+    double currentScroll = controller.hasClients ? controller.offset : 0.0;
+
     MediaSelectionHelper.startDragSelection(
       focalPoint: position,
       gridKey: isClip ? _clipGridKey : _albumGridKey,
@@ -564,9 +648,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         _dragStartIndex = index;
         _isDragAdding = isAdding;
       },
-      canSelectItem: isClip 
-          ? null 
-          : (item) => item != "일상" && item != "휴지통",
+      canSelectItem: isClip ? null : (item) => item != "일상" && item != "휴지통",
     );
   }
 
@@ -583,53 +665,37 @@ class _LibraryScreenState extends State<LibraryScreen> {
         });
       },
     );
-    
+
     if (newCount != null) return;
 
     // 드래그 선택 처리
     final isActive = isClip ? _isClipSelectionMode : _isAlbumSelectionMode;
     if (!isActive) return;
-    
-    final targetList = isClip 
-        ? videoManager.recordedVideoPaths 
-        : videoManager.clipAlbums;
-    
-    double topPad = MediaQuery.of(context).padding.top + kToolbarHeight; 
-    double currentScroll = _scrollController.hasClients ? _scrollController.offset : 0.0;
 
-    MediaSelectionHelper.updateDragSelection(
-      focalPoint: details.focalPoint,
-      gridKey: isClip ? _clipGridKey : _albumGridKey,
-      columnCount: _gridColumnCount,
-      childAspectRatio: isClip ? 1.0 : (_gridColumnCount == 5 ? 0.7 : 0.85),
-      targetList: targetList,
-      currentSelection: isClip ? _selectedClipPaths : _selectedAlbumNames,
-      dragStartIndex: _dragStartIndex ?? -1,
-      isDragAdding: _isDragAdding,
-      scrollOffset: currentScroll,
-      topPadding: topPad,
-      onSelectionChanged: (item, isAdding) {
-        setState(() {
-          if (isClip) {
-            if (isAdding) {
-              _selectedClipPaths.add(item);
-            } else {
-              _selectedClipPaths.remove(item);
-            }
-          } else {
-            if (isAdding) {
-              _selectedAlbumNames.add(item);
-            } else {
-              _selectedAlbumNames.remove(item);
-            }
-          }
-        });
-      },
-      // onIndexProcessed removed from helper
-      canSelectItem: isClip 
-          ? null 
-          : (item) => item != "일상" && item != "휴지통",
-    );
+    final targetList = isClip
+        ? videoManager.recordedVideoPaths
+        : videoManager.clipAlbums;
+
+    double topPad = MediaQuery.of(context).padding.top + kToolbarHeight;
+    final controller = isClip ? _clipScrollController : _albumScrollController;
+    double currentScroll = controller.hasClients ? controller.offset : 0.0;
+
+    setState(() {
+      MediaSelectionHelper.updateDragSelection(
+        focalPoint: details.focalPoint,
+        gridKey: isClip ? _clipGridKey : _albumGridKey,
+        columnCount: _gridColumnCount,
+        childAspectRatio: isClip ? 1.0 : (_gridColumnCount == 5 ? 0.7 : 0.85),
+        targetList: targetList,
+        currentSelection: isClip ? _selectedClipPaths : _selectedAlbumNames,
+        dragStartIndex: _dragStartIndex ?? -1,
+        isDragAdding: _isDragAdding,
+        scrollOffset: currentScroll,
+        topPadding: topPad,
+        // onIndexProcessed removed from helper
+        canSelectItem: isClip ? null : (item) => item != "일상" && item != "휴지통",
+      );
+    });
   }
 
   void _toggleSelectAllAlbums() {
@@ -647,14 +713,261 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   void _toggleSelectAllClips() {
+    final visibleClipPaths = videoManager.recordedVideoPaths
+        .where(
+          (path) =>
+              videoManager.isClipVisibleByStorageFilter(path, _storageFilter),
+        )
+        .toList();
     setState(() {
-      if (_selectedClipPaths.length == videoManager.recordedVideoPaths.length) {
+      if (_selectedClipPaths.length == visibleClipPaths.length) {
         _selectedClipPaths.clear();
       } else {
-        _selectedClipPaths = List.from(videoManager.recordedVideoPaths);
+        _selectedClipPaths = List.from(visibleClipPaths);
       }
     });
     hapticFeedback();
+  }
+
+  _SelectionActionState _resolveSelectionActionState() {
+    if (_selectedClipPaths.isEmpty) return _SelectionActionState.mixed;
+
+    var cloudCount = 0;
+
+    for (final path in _selectedClipPaths) {
+      if (videoManager.isClipCloudSynced(path)) {
+        cloudCount++;
+      }
+    }
+
+    if (cloudCount == 0) return _SelectionActionState.local;
+    if (cloudCount == _selectedClipPaths.length)
+      return _SelectionActionState.cloud;
+    return _SelectionActionState.mixed;
+  }
+
+  IconData _transferIconForSelectionState(_SelectionActionState state) {
+    switch (state) {
+      case _SelectionActionState.local:
+        return Icons.cloud_upload_rounded;
+      case _SelectionActionState.cloud:
+        return Icons.download_for_offline_rounded;
+      case _SelectionActionState.mixed:
+        return Icons.sync_disabled_rounded;
+    }
+  }
+
+  VoidCallback? _transferHandlerForSelectionState(_SelectionActionState state) {
+    switch (state) {
+      case _SelectionActionState.local:
+        return _moveSelectedLocalToCloud;
+      case _SelectionActionState.cloud:
+        return _moveSelectedCloudToLocal;
+      case _SelectionActionState.mixed:
+        return null;
+    }
+  }
+
+  Future<void> _moveSelectedLocalToCloud() async {
+    final targets = List<String>.from(_selectedClipPaths);
+    if (targets.isEmpty) return;
+
+    setState(() {
+      _isClipSelectionMode = false;
+      _selectedClipPaths.clear();
+    });
+
+    for (final path in targets) {
+      videoManager.markClipTransferPendingUpload(path);
+    }
+
+    unawaited(_moveSelectedLocalToCloudInBackground(targets));
+  }
+
+  Future<void> _moveSelectedLocalToCloudInBackground(
+    List<String> targets,
+  ) async {
+    var success = 0;
+    var failed = 0;
+    String? firstErrorCode;
+    String? firstErrorCopy;
+
+    for (final path in targets) {
+      try {
+        if (videoManager.isClipCloudSynced(path)) {
+          videoManager.markClipTransferUploadFailed(path);
+          failed++;
+          continue;
+        }
+        final file = File(path);
+        if (!await file.exists()) {
+          videoManager.markClipTransferUploadFailed(path);
+          failed++;
+          continue;
+        }
+
+        final videoId = await _cloudService.uploadVideoImmediate(
+          videoFile: file,
+          albumName: videoManager.currentAlbum,
+          isFavorite: videoManager.favorites.contains(path),
+          localPath: path,
+        );
+
+        if (videoId == null) {
+          firstErrorCode ??= _cloudService.lastImmediateUploadErrorCode;
+          firstErrorCopy ??= _cloudService.lastImmediateUploadErrorCopy;
+          videoManager.markClipTransferUploadFailed(path);
+          failed++;
+          continue;
+        }
+
+        // UX 수정:
+        // "클라우드로 이동" 이후 Library에서 항목이 완전히 사라지는 문제를 방지하기 위해
+        // 로컬 파일을 즉시 삭제하지 않고, 클라우드 동기화 상태만 마킹한다.
+        // (필요 시 별도 '기기에서 삭제' 액션으로 정리)
+        await videoManager.markClipCloudSynced(path);
+        videoManager.clearClipTransferUiState(path);
+        success++;
+      } catch (_) {
+        videoManager.markClipTransferUploadFailed(path);
+        failed++;
+      }
+    }
+
+    final text = failed == 0
+        ? '클라우드로 $success개 이동 완료'
+        : '클라우드 이동 완료 $success개, 실패 $failed개';
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+    }
+
+    if (failed > 0 && mounted) {
+      final guide = _cloudMoveFailureGuide(
+        errorCode: firstErrorCode,
+        fallback: firstErrorCopy,
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(guide),
+          duration: const Duration(seconds: 6),
+          action: (firstErrorCode == 'cloud_api_disabled')
+              ? SnackBarAction(
+                  label: '복구절차',
+                  onPressed: _showCloudApiRecoveryDialog,
+                )
+              : null,
+        ),
+      );
+    }
+  }
+
+  String _cloudMoveFailureGuide({
+    required String? errorCode,
+    required String? fallback,
+  }) {
+    switch (errorCode) {
+      case 'cloud_api_disabled':
+        return '서버 설정 문제로 클라우드 이동이 막혀 있어요. Firestore API 활성화 후 다시 시도해주세요.';
+      case 'permission_denied':
+        return '권한 문제로 클라우드 이동에 실패했어요. 로그인/규칙 설정을 확인해주세요.';
+      case 'storage_limit':
+      case 'quota_exceeded':
+        return '저장 용량 제한으로 클라우드 이동에 실패했어요. 용량 정리 후 다시 시도해주세요.';
+      case 'auth_required':
+        return '로그인이 필요해요. 로그인 후 다시 시도해주세요.';
+      default:
+        return fallback ?? '일부 항목의 클라우드 이동이 실패했어요. 잠시 후 다시 시도해주세요.';
+    }
+  }
+
+  void _showCloudApiRecoveryDialog() {
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('클라우드 설정 복구 절차'),
+        content: const Text(
+          '1) Firebase 프로젝트에서 Cloud Firestore API를 활성화하세요.\n'
+          '2) 활성화 직후에는 전파까지 수 분 소요될 수 있어요.\n'
+          '3) 앱을 다시 실행하고 클라우드 이동을 재시도하세요.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('확인'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _moveSelectedCloudToLocal() async {
+    final targets = List<String>.from(_selectedClipPaths);
+    if (targets.isEmpty) return;
+
+    setState(() {
+      _isClipSelectionMode = false;
+      _selectedClipPaths.clear();
+    });
+
+    for (final path in targets) {
+      videoManager.markClipTransferPendingDownload(path);
+    }
+
+    unawaited(_moveSelectedCloudToLocalInBackground(targets));
+  }
+
+  Future<void> _moveSelectedCloudToLocalInBackground(
+    List<String> targets,
+  ) async {
+    var success = 0;
+    var failed = 0;
+
+    for (final path in targets) {
+      try {
+        if (!videoManager.isClipCloudSynced(path)) {
+          videoManager.markClipTransferDownloadFailed(path);
+          failed++;
+          continue;
+        }
+
+        final ok = await _cloudService.deleteVideoByLocalPath(path);
+        if (!ok) {
+          videoManager.markClipTransferDownloadFailed(path);
+          failed++;
+          continue;
+        }
+
+        await videoManager.unmarkClipCloudSynced(path);
+        videoManager.clearClipTransferUiState(path);
+        success++;
+      } catch (_) {
+        videoManager.markClipTransferDownloadFailed(path);
+        failed++;
+      }
+    }
+
+    final text = failed == 0
+        ? '로컬로 $success개 이동 완료'
+        : '로컬 이동 완료 $success개, 실패 $failed개';
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+    }
+  }
+
+  Widget _buildStorageFilterChip(String value, String label) {
+    final selected = _storageFilter == value;
+    return ChoiceChip(
+      label: Text(label),
+      selected: selected,
+      onSelected: (_) {
+        setState(() {
+          _storageFilter = value;
+          _selectedClipPaths.clear();
+          _isClipSelectionMode = false;
+        });
+      },
+    );
   }
 
   // --- [액션 핸들러] ---
@@ -713,29 +1026,44 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   Future<void> _handleSingleClipDelete(String path) async {
     bool isTrash = videoManager.currentAlbum == "휴지통";
-    if (isTrash) {
-      bool? ok = await MediaDialogs.showConfirmDialog(
-        context: context,
-        title: "영구 삭제",
-        content: "이 클립을 삭제할까요?",
-      );
-      if (ok != true) return;
-      await File(path).delete();
-    } else {
-      await videoManager.moveToTrash(path);
+    try {
+      if (isTrash) {
+        bool? ok = await MediaDialogs.showConfirmDialog(
+          context: context,
+          title: "영구 삭제",
+          content: "이 클립을 삭제할까요?",
+        );
+        if (ok != true) return;
+        await videoManager.deletePermanently(path);
+      } else {
+        await videoManager.moveToTrash(path);
+      }
+      if (!mounted) return;
+      setState(() => _previewingPath = null);
+      await _loadClipsFromCurrentAlbum();
+      hapticFeedback();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('클립 삭제 중 오류가 발생했습니다.')));
     }
-    setState(() => _previewingPath = null);
-    await _loadClipsFromCurrentAlbum();
-    hapticFeedback();
   }
 
   Future<void> _handleMoveOrCopy(bool isMove) async {
+    await videoManager.initAlbumSystem();
+    if (!mounted) return;
+
     final String? result = await MediaDialogs.showMoveOrCopyDialog(
       context: context,
       isMove: isMove,
       folderList: videoManager.clipAlbums,
       currentFolder: videoManager.currentAlbum,
       excludeFolders: ["휴지통"],
+      itemSubtitleBuilder: (albumName) {
+        final count = videoManager.albumCounts[albumName] ?? 0;
+        return '$count clips';
+      },
     );
 
     if (result == null) return;
@@ -753,7 +1081,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     await videoManager.executeTransfer(targetAlbum, isMove, _selectedClipPaths);
     await _loadClipsFromCurrentAlbum();
     if (!mounted) return;
-    
+
     setState(() {
       _selectedClipPaths.clear();
       _isClipSelectionMode = false;
@@ -762,16 +1090,52 @@ class _LibraryScreenState extends State<LibraryScreen> {
     hapticFeedback();
   }
 
-  Future<void> _handleMerge(List<String> paths) async {
-    if (paths.length < 2) return;
-    
-    // Create Project
-    final project = await videoManager.createProject(paths);
-    
-    if (!mounted) return;
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => VideoEditScreen(project: project)),
+  Future<void> _showLibraryAddSheet() async {
+    final String? action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 52,
+                  height: 6,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFD4D9E0),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                ListTile(
+                  leading: const Icon(Icons.add_photo_alternate_outlined),
+                  title: const Text('미디어 가져오기'),
+                  onTap: () => Navigator.pop(context, 'import'),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.create_new_folder_outlined),
+                  title: const Text('새 앨범 만들기'),
+                  onTap: () => Navigator.pop(context, 'album'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
+
+    if (!mounted || action == null) return;
+    if (action == 'import') {
+      widget.onPickMedia('');
+    } else if (action == 'album') {
+      _showCreateAlbumDialog();
+    }
   }
 }

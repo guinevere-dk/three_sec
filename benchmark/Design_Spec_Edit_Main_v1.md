@@ -1,0 +1,179 @@
+규칙
+1. 벤치마킹 이미지이므로 모든 이미지들의 공통적인 기능에 대한 디자인이 약간씩 다르다.
+2. Edit 화면의 공통적인 디자인은 Design_Spec_Edit_Main_v1을 따른다.
+3. 디자인을 따르는 것이지, 글자나 내부 기능까지 따라하는 것은 아니다.
+4. 글자, 내부 기능은 현재 앱 그대로 유지한다. (ex. 좌상단 버튼은 X로 유지)
+
+
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>3s Video Edit Studio</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#2b8cee",
+                        "background-light": "#F8F9FA",
+                        "background-dark": "#101922",
+                        "text-primary-light": "#0d141b",
+                        "text-primary-dark": "#ffffff",
+                        "text-secondary-light": "#4c739a",
+                        "text-secondary-dark": "#94a3b8",
+                    },
+                    fontFamily: {
+                        "display": ["Inter", "sans-serif"]
+                    },
+                    borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+                },
+            },
+        }
+    </script>
+<style>
+        /* Custom Scrollbar Hide */
+        .scrollbar-hide::-webkit-scrollbar {
+            display: none;
+        }
+        .scrollbar-hide {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background-light dark:bg-background-dark font-display antialiased">
+<div class="relative flex h-full min-h-screen w-full flex-col overflow-hidden max-w-md mx-auto shadow-2xl bg-background-light dark:bg-background-dark">
+<!-- Top App Bar -->
+<header class="flex items-center justify-between p-4 z-20 bg-background-light/95 dark:bg-background-dark/95 backdrop-blur-sm sticky top-0">
+<!-- Left: Magic Wand (AI) with Badge -->
+<button class="relative flex items-center justify-center p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/10 transition-colors group">
+<span class="material-symbols-outlined text-text-primary-light dark:text-text-primary-dark">auto_fix_high</span>
+<span class="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-[9px] font-bold text-black border border-white dark:border-background-dark">P</span>
+</button>
+<!-- Center: Title -->
+<h1 class="text-text-primary-light dark:text-text-primary-dark text-lg font-bold leading-tight tracking-tight flex-1 text-center truncate px-4">
+                Untitled Project
+            </h1>
+<!-- Right: Done Button -->
+<button class="flex items-center justify-center px-4 py-1.5 rounded-full bg-primary text-white text-sm font-bold leading-normal shadow-sm hover:bg-primary/90 transition-colors">
+                Done
+            </button>
+</header>
+<!-- Main Content Area -->
+<main class="flex-1 flex flex-col justify-center items-center relative w-full h-full overflow-hidden px-4 pt-2 pb-6">
+<!-- Video Preview Container (9:16 Aspect Ratio) -->
+<div class="relative w-full max-w-[320px] aspect-[9/16] rounded-2xl overflow-hidden shadow-lg bg-black group">
+<!-- Video Image -->
+<div class="absolute inset-0 bg-cover bg-center" data-alt="Vertical cinematic travel vlog shot of mountains" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuA_iK23kJTF3KUGvTQJuOU605TYiEFkeCjWbjtDI4PujSXrvgAbSnBq7VtdzvktVvfcv9dEJJZR6axMc5A0opirtsMYeyoMgo3kCtgDihXgzHO7gA8oJU0ai3PJv5qTDGkPGM1M_WOfSiPB2je1u6Fnu1prUkmv_qwEYwR2bBrkwfQnh4E7OEVkJMij0yx7YfTIawJfHMIseOG-zIijxHscsUUBV-aTfCGR4AcQ5AKUqesckEcyGgQg7heQsc2lww6zRIe-A9znm1ow");'></div>
+<!-- Overlay Gradient -->
+<div class="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/40 pointer-events-none"></div>
+<!-- Play Button (Centered) -->
+<button class="absolute inset-0 m-auto flex items-center justify-center size-16 rounded-full bg-white/20 backdrop-blur-sm text-white hover:bg-white/30 transition-all opacity-0 group-hover:opacity-100">
+<span class="material-symbols-outlined text-4xl fill-current">play_arrow</span>
+</button>
+<!-- Floating Landscape Toggle -->
+<button class="absolute bottom-4 right-4 z-10 flex items-center justify-center size-10 rounded-full bg-black/40 backdrop-blur-md text-white hover:bg-black/60 transition-colors border border-white/10 shadow-sm">
+<span class="material-symbols-outlined text-xl">crop_landscape</span>
+</button>
+<!-- Video Progress Overlay (Minimal) -->
+<div class="absolute bottom-4 left-4 right-16 flex flex-col gap-1">
+<div class="flex items-center justify-between text-[10px] font-medium text-white/90">
+<span>0:04</span>
+<span>0:15</span>
+</div>
+<div class="h-1 w-full bg-white/30 rounded-full overflow-hidden">
+<div class="h-full bg-white w-1/3 rounded-full"></div>
+</div>
+</div>
+</div>
+</main>
+<!-- Timeline & Toolbar Area -->
+<div class="w-full flex flex-col gap-0 bg-background-light dark:bg-background-dark z-20 pb-safe">
+<!-- Timeline Section -->
+<div class="w-full px-0 py-4">
+<div class="flex items-center justify-center mb-2">
+<div class="w-1 h-3 bg-primary rounded-full"></div> <!-- Playhead Indicator -->
+</div>
+<div class="flex overflow-x-auto scrollbar-hide px-4 gap-2 snap-x snap-mandatory py-2">
+<!-- Clip 1 -->
+<div class="shrink-0 snap-center relative size-16 rounded-xl overflow-hidden border-2 border-transparent opacity-60 hover:opacity-100 transition-opacity">
+<div class="absolute inset-0 bg-cover bg-center" data-alt="Abstract blurry cityscape bokeh" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuBtyjxq0jp0f1VCGd7AhxPan0_w_Me_ulo0WEKP2ZaiqlUx1BBMLdlro3gKtTb-1ch09JuAASOeS10OugCgPKSK3VsDHfMBx6HRv6qx9B0CXP6JDKS94ntEIHJae1tL7IpfaS0rD9ZU5-Sk28aorUgf8eImG0iwvgdhE1FEwtC2dTC0FRn_2ZcaiySeXPqTUpbaxyCOJSgvMyH2ChINSqwW4_0-RK0CQkuMaHcpMmM2BCI0WmSp66zSArL3IYXt3PqRsGUuQFDoi9Na");'></div>
+<div class="absolute bottom-1 right-1 text-[9px] font-bold text-white bg-black/50 px-1 rounded">2.3s</div>
+</div>
+<!-- Clip 2 (Selected) -->
+<div class="shrink-0 snap-center relative size-16 rounded-xl overflow-hidden ring-4 ring-primary ring-offset-2 ring-offset-background-light dark:ring-offset-background-dark z-10 shadow-md">
+<div class="absolute inset-0 bg-cover bg-center" data-alt="Vertical mountain landscape view" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuCwMWUKAAhTHPZUtjmQzhDd9OHgU_ijgKh-GUiaaaexI7hj9HXbzEhztPnXqr-HJg42sIE3XFzfuf1LEXRCCMBbmryWa1dy1C4Tvp8LOURaiLTRXNn8n8q42hsydsXIEHfgHEQwU1ivvtr6pdaP4CHy6HLjuLK7-D_bgx1HK11YsfA5sOAvqu26ZKv0VmuPT6kGff3BVFgoMBD-B1k4s8Nwyb0J0gGv8PzL3EU5Euoe6YFq6Yckx4J2e2fxal2zUce0jEAzjNTooiHo");'></div>
+<div class="absolute inset-0 ring-1 ring-inset ring-white/20"></div>
+<div class="absolute bottom-1 right-1 text-[9px] font-bold text-white bg-black/50 px-1 rounded">4.1s</div>
+</div>
+<!-- Clip 3 -->
+<div class="shrink-0 snap-center relative size-16 rounded-xl overflow-hidden border-2 border-transparent opacity-60 hover:opacity-100 transition-opacity">
+<div class="absolute inset-0 bg-cover bg-center" data-alt="Man looking at mountain view from behind" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuBZx68yXZhM-AG-_T7ESgdhs3lPpdXzsUc7lPLNBVD394hVP6xNUHED33LGEGk4oegyWoKSkB0qeTaJWyStubCHBSDv5md0fEAYxZ17OaQz3z1jfyyXCsnFL7CizFYOuNfX_0NL_J2A0_-Giqz2BYQd0MmTmL5me9QoFRSYpZUH2E3D8xdC1e-7F0KDf2fn4PBI5sWhaY-W1F7K1vQdzSYyoEUPkJ5VrV6K5Vq-3YXIamXa7Dn42T-J2SR_B0afocUO1p6YR4Y-2MGq");'></div>
+<div class="absolute bottom-1 right-1 text-[9px] font-bold text-white bg-black/50 px-1 rounded">3.0s</div>
+</div>
+<!-- Clip 4 -->
+<div class="shrink-0 snap-center relative size-16 rounded-xl overflow-hidden border-2 border-transparent opacity-60 hover:opacity-100 transition-opacity">
+<div class="absolute inset-0 bg-cover bg-center" data-alt="Forest trees sunlight" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuBOeHMrw5kZOyBvSc0Ttow09B73tyqlT4c3DWf3l8aORku_Xb4Vhghqn4HQ9jTyfjj7ZXe2YSUpVTtkIsa_r2KwXYkbKuDkDs_ZMSiBb7tJVQv98bquMaEFPpIFEicUuTt9-uQy5UDKpHMbUILpnvgP8phgAFVW5wQ1UGnuFfV0p0oUYfYZNc6f22ko4Gfd8ZBF8eaYC9RxrCLD5UybtxdCiuctvmrHmKMWdN-TtuinBZu7amg7zNlsvyESPuEuNEF1geWpFdFc2HG7");'></div>
+<div class="absolute bottom-1 right-1 text-[9px] font-bold text-white bg-black/50 px-1 rounded">1.5s</div>
+</div>
+<!-- Add Clip Button -->
+<button class="shrink-0 snap-center flex items-center justify-center size-16 rounded-xl border-2 border-dashed border-text-secondary-light/40 hover:border-primary/50 text-text-secondary-light hover:text-primary transition-colors bg-white/50 dark:bg-black/20">
+<span class="material-symbols-outlined">add</span>
+</button>
+</div>
+</div>
+<!-- Smart Toolbar -->
+<div class="flex items-center justify-between px-6 pb-8 pt-2">
+<!-- Edit -->
+<button class="flex flex-col items-center gap-1.5 group">
+<div class="p-3 rounded-2xl bg-white dark:bg-gray-800 shadow-sm border border-gray-100 dark:border-gray-700 text-text-primary-light dark:text-text-primary-dark group-hover:bg-primary group-hover:text-white group-hover:border-primary transition-all">
+<span class="material-symbols-outlined text-[24px]">content_cut</span>
+</div>
+<span class="text-[11px] font-medium text-text-secondary-light dark:text-text-secondary-dark group-hover:text-primary transition-colors">Edit</span>
+</button>
+<!-- Speed -->
+<button class="flex flex-col items-center gap-1.5 group">
+<div class="p-3 rounded-2xl bg-white dark:bg-gray-800 shadow-sm border border-gray-100 dark:border-gray-700 text-text-primary-light dark:text-text-primary-dark group-hover:bg-primary group-hover:text-white group-hover:border-primary transition-all">
+<span class="material-symbols-outlined text-[24px]">speed</span>
+</div>
+<span class="text-[11px] font-medium text-text-secondary-light dark:text-text-secondary-dark group-hover:text-primary transition-colors">Speed</span>
+</button>
+<!-- Transform -->
+<button class="flex flex-col items-center gap-1.5 group">
+<div class="p-3 rounded-2xl bg-white dark:bg-gray-800 shadow-sm border border-gray-100 dark:border-gray-700 text-text-primary-light dark:text-text-primary-dark group-hover:bg-primary group-hover:text-white group-hover:border-primary transition-all">
+<span class="material-symbols-outlined text-[24px]">crop_rotate</span>
+</div>
+<span class="text-[11px] font-medium text-text-secondary-light dark:text-text-secondary-dark group-hover:text-primary transition-colors">Transform</span>
+</button>
+<!-- Sound -->
+<button class="flex flex-col items-center gap-1.5 group">
+<div class="p-3 rounded-2xl bg-white dark:bg-gray-800 shadow-sm border border-gray-100 dark:border-gray-700 text-text-primary-light dark:text-text-primary-dark group-hover:bg-primary group-hover:text-white group-hover:border-primary transition-all">
+<span class="material-symbols-outlined text-[24px]">volume_up</span>
+</div>
+<span class="text-[11px] font-medium text-text-secondary-light dark:text-text-secondary-dark group-hover:text-primary transition-colors">Sound</span>
+</button>
+<!-- AI Effects -->
+<button class="flex flex-col items-center gap-1.5 group">
+<div class="p-3 rounded-2xl bg-gradient-to-tr from-purple-100 to-blue-100 dark:from-purple-900/30 dark:to-blue-900/30 shadow-sm border border-purple-200 dark:border-purple-800 text-purple-600 dark:text-purple-300 group-hover:from-purple-600 group-hover:to-blue-600 group-hover:text-white group-hover:border-transparent transition-all">
+<span class="material-symbols-outlined text-[24px]">auto_awesome</span>
+</div>
+<span class="text-[11px] font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-blue-600 dark:from-purple-400 dark:to-blue-400 group-hover:text-primary transition-colors">Effects</span>
+</button>
+</div>
+</div>
+</div>
+</body></html>

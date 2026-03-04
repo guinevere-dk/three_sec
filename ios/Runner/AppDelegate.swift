@@ -21,10 +21,24 @@ import AVFoundation
                     result(FlutterError(code: "INVALID_ARGS", message: "Invalid arguments", details: nil))
                     return
                 }
-                
+
                 self?.mergeVideos(paths: paths, outputPath: outputPath, result: result)
+            } else if call.method == "normalizeVideoDuration" {
+                guard let args = call.arguments as? [String: Any],
+                      let inputPath = args["inputPath"] as? String,
+                      let outputPath = args["outputPath"] as? String,
+                      let targetDurationMs = args["targetDurationMs"] as? NSNumber else {
+                    result(FlutterError(code: "INVALID_ARGS", message: "Invalid normalize arguments", details: nil))
+                    return
+                }
+
+                self?.normalizeVideoDuration(
+                    inputPath: inputPath,
+                    outputPath: outputPath,
+                    targetDurationMs: targetDurationMs.int64Value,
+                    result: result
+                )
             } else if call.method == "convertImageToVideo" {
-                // 추후 구현 예정
                 result(FlutterMethodNotImplemented)
             } else {
                 result(FlutterMethodNotImplemented)
@@ -41,16 +55,23 @@ import AVFoundation
         let audioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
         
         var currentTime = CMTime.zero
-        
-        // 1. 영상 트랙 병합
+
         for path in paths {
             let asset = AVURLAsset(url: URL(fileURLWithPath: path))
             do {
                 if let assetVideoTrack = asset.tracks(withMediaType: .video).first {
-                    try videoTrack?.insertTimeRange(CMTimeRangeMake(start: .zero, duration: asset.duration), of: assetVideoTrack, at: currentTime)
+                    try videoTrack?.insertTimeRange(
+                        CMTimeRange(start: .zero, duration: asset.duration),
+                        of: assetVideoTrack,
+                        at: currentTime
+                    )
                 }
                 if let assetAudioTrack = asset.tracks(withMediaType: .audio).first {
-                    try audioTrack?.insertTimeRange(CMTimeRangeMake(start: .zero, duration: asset.duration), of: assetAudioTrack, at: currentTime)
+                    try audioTrack?.insertTimeRange(
+                        CMTimeRange(start: .zero, duration: asset.duration),
+                        of: assetAudioTrack,
+                        at: currentTime
+                    )
                 }
                 currentTime = CMTimeAdd(currentTime, asset.duration)
             } catch {
@@ -58,22 +79,20 @@ import AVFoundation
                 return
             }
         }
-        
-        // 2. 내보내기 세션 설정
+
         guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPreset1920x1080) else {
             result(FlutterError(code: "EXPORT_SESSION_ERROR", message: "Failed to create export session", details: nil))
             return
         }
-        
-        exportSession.outputURL = URL(fileURLWithPath: outputPath)
-        exportSession.outputFileType = .mp4
-        exportSession.shouldOptimizeForNetworkUse = true
-        
-        // 3. 기존 파일 삭제 및 내보내기 시작
+
         if FileManager.default.fileExists(atPath: outputPath) {
             try? FileManager.default.removeItem(atPath: outputPath)
         }
-        
+
+        exportSession.outputURL = URL(fileURLWithPath: outputPath)
+        exportSession.outputFileType = .mp4
+        exportSession.shouldOptimizeForNetworkUse = true
+
         exportSession.exportAsynchronously {
             DispatchQueue.main.async {
                 switch exportSession.status {
@@ -85,6 +104,100 @@ import AVFoundation
                     result(FlutterError(code: "EXPORT_CANCELLED", message: "Export cancelled", details: nil))
                 default:
                     result(FlutterError(code: "UNKNOWN_ERROR", message: "Unknown error during export", details: nil))
+                }
+            }
+        }
+    }
+
+    private func normalizeVideoDuration(
+        inputPath: String,
+        outputPath: String,
+        targetDurationMs: Int64,
+        result: @escaping FlutterResult
+    ) {
+        guard targetDurationMs > 0 else {
+            result(FlutterError(code: "INVALID_DURATION", message: "targetDurationMs must be greater than 0", details: nil))
+            return
+        }
+
+        let inputURL = URL(fileURLWithPath: inputPath)
+        let asset = AVURLAsset(url: inputURL)
+        let sourceDurationMs = Int64(asset.duration.seconds * 1000)
+        if sourceDurationMs <= 0 {
+            result(FlutterError(code: "INVALID_SOURCE_DURATION", message: "Could not determine source duration", details: nil))
+            return
+        }
+
+        guard let sourceVideoTrack = asset.tracks(withMediaType: .video).first else {
+            result(FlutterError(code: "INVALID_SOURCE", message: "Source video has no video track", details: nil))
+            return
+        }
+
+        let composition = AVMutableComposition()
+        guard let outputVideoTrack = composition.addMutableTrack(
+            withMediaType: .video,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ) else {
+            result(FlutterError(code: "COMPOSITION_ERROR", message: "Failed to create output video track", details: nil))
+            return
+        }
+        let outputAudioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+
+        let sourceAudioTrack = asset.tracks(withMediaType: .audio).first
+        var remainingMs = targetDurationMs
+        var currentTime = CMTime.zero
+
+        while remainingMs > 0 {
+            let clipMs = min(remainingMs, sourceDurationMs)
+            let clipDuration = CMTime(value: clipMs, timescale: 1000)
+
+            do {
+                try outputVideoTrack.insertTimeRange(
+                    CMTimeRange(start: .zero, duration: clipDuration),
+                    of: sourceVideoTrack,
+                    at: currentTime
+                )
+                if let sourceAudioTrack = sourceAudioTrack {
+                    try outputAudioTrack?.insertTimeRange(
+                        CMTimeRange(start: .zero, duration: clipDuration),
+                        of: sourceAudioTrack,
+                        at: currentTime
+                    )
+                }
+            } catch {
+                result(FlutterError(code: "INSERT_ERROR", message: error.localizedDescription, details: nil))
+                return
+            }
+
+            remainingMs -= clipMs
+            currentTime = CMTimeAdd(currentTime, clipDuration)
+        }
+
+        if FileManager.default.fileExists(atPath: outputPath) {
+            try? FileManager.default.removeItem(atPath: outputPath)
+        }
+
+        guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPreset1920x1080) else {
+            result(FlutterError(code: "EXPORT_SESSION_ERROR", message: "Failed to create export session", details: nil))
+            return
+        }
+
+        exporter.outputURL = URL(fileURLWithPath: outputPath)
+        exporter.outputFileType = .mp4
+        exporter.shouldOptimizeForNetworkUse = true
+        exporter.timeRange = CMTimeRange(start: .zero, duration: CMTime(value: targetDurationMs, timescale: 1000))
+
+        exporter.exportAsynchronously {
+            DispatchQueue.main.async {
+                switch exporter.status {
+                case .completed:
+                    result("SUCCESS")
+                case .failed:
+                    result(FlutterError(code: "EXPORT_FAILED", message: exporter.error?.localizedDescription, details: nil))
+                case .cancelled:
+                    result(FlutterError(code: "EXPORT_CANCELLED", message: "Export cancelled", details: nil))
+                default:
+                    result(FlutterError(code: "UNKNOWN_ERROR", message: "Unknown export status: \(exporter.status)", details: nil))
                 }
             }
         }

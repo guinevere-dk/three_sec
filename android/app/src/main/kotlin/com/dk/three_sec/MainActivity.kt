@@ -21,7 +21,6 @@ import android.text.style.RelativeSizeSpan
 // Media3 Imports
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
-import androidx.media3.common.C
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.audio.ChannelMixingAudioProcessor
 import androidx.media3.common.audio.BaseAudioProcessor
@@ -54,6 +53,36 @@ import android.media.MediaMetadataRetriever
 
 class MainActivity: FlutterActivity() {
     private val CHANNEL = "com.dk.three_sec/video_engine"
+
+    private fun toMediaUri(pathOrUri: String): Uri {
+        val parsed = Uri.parse(pathOrUri)
+        return if (parsed.scheme.isNullOrBlank()) {
+            Uri.fromFile(File(pathOrUri))
+        } else {
+            parsed
+        }
+    }
+
+    private fun validateReadableInput(inputPath: String): Pair<Uri, String?> {
+        val uri = toMediaUri(inputPath)
+        return when (uri.scheme?.lowercase()) {
+            "file" -> {
+                val filePath = uri.path
+                if (filePath.isNullOrBlank()) {
+                    uri to "File URI path is invalid: $inputPath"
+                } else {
+                    val inputFile = File(filePath)
+                    if (!inputFile.exists()) {
+                        uri to "Input file does not exist: $filePath"
+                    } else {
+                        uri to null
+                    }
+                }
+            }
+            "content" -> uri to null
+            else -> uri to "Unsupported URI scheme: ${uri.scheme ?: "null"}"
+        }
+    }
 
     // 🎛️ [디자인 컨트롤 타워] 여기서 수치만 바꾸면 즉시 반영됩니다.
     companion object {
@@ -102,19 +131,23 @@ class MainActivity: FlutterActivity() {
                     // Video Effects
                     val videoEffects = call.argument<Map<String, Any>>("videoEffects") ?: emptyMap()
                     
+                    val startTimes = call.argument<List<Long>>("startTimes") ?: emptyList()
+                    val endTimes = call.argument<List<Long>>("endTimes") ?: emptyList()
+                    
                     Log.d("3S_4K", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                     Log.d("3S_4K", "mergeVideos 호출 (Flutter -> Native)")
                     Log.d("3S_4K", "  - paths: $paths")
+                    Log.d("3S_4K", "  - trim: start=$startTimes, end=$endTimes") // Log trim info
                     Log.d("3S_4K", "  - outputPath: $outputPath")
                     Log.d("3S_4K", "  - audioConfig: $audioChanges (To be implemented)")
                     Log.d("3S_4K", "  - bgmPath: $bgmPath, vol: $bgmVolume")
                     
                     if (paths != null && outputPath != null && paths.isNotEmpty()) {
                         mergeVideos(
-                            paths, 
-                            outputPath, 
+                            paths,
+                            outputPath,
                             subtitles,
-                            forceWatermark, 
+                            forceWatermark,
                             quality,
                             userTier,
                             videoEffects,
@@ -122,6 +155,8 @@ class MainActivity: FlutterActivity() {
                             forceMuteOriginal,
                             enableNoiseSuppression,
                             bgmVolume,
+                            startTimes,
+                            endTimes,
                             result
                         )
                     } else {
@@ -206,8 +241,170 @@ class MainActivity: FlutterActivity() {
                         result.error("INVALID_ARGS", "필수 인자가 누락되었습니다.", null)
                     }
                 }
+                "normalizeVideoDuration" -> {
+                    val inputPath = call.argument<String>("inputPath")
+                    val outputPath = call.argument<String>("outputPath")
+                    val args = call.arguments as? Map<*, *>
+                    val rawTargetDuration = args?.get("targetDurationMs")
+                    val targetDurationMs = when (rawTargetDuration) {
+                        is Long -> rawTargetDuration
+                        is Int -> rawTargetDuration.toLong()
+                        is Double -> rawTargetDuration.toLong()
+                        is Float -> rawTargetDuration.toLong()
+                        is Number -> rawTargetDuration.toLong()
+                        is String -> rawTargetDuration.toLongOrNull() ?: 3000L
+                        else -> 3000L
+                    }
+
+                    Log.d(
+                        "3S_NORMALIZE",
+                        "normalizeVideoDuration argType=${rawTargetDuration?.javaClass?.name} value=$rawTargetDuration parsedMs=$targetDurationMs"
+                    )
+
+                    if (inputPath != null && outputPath != null) {
+                        normalizeVideoDuration(
+                            inputPath = inputPath,
+                            outputPath = outputPath,
+                            targetDurationMs = targetDurationMs,
+                            result = result
+                        )
+                    } else {
+                        result.error("INVALID_ARGS", "inputPath or outputPath is missing", null)
+                    }
+                }
+                "getVideoDurationMs" -> {
+                    val inputPath = call.argument<String>("inputPath")
+                    if (inputPath != null) {
+                        getVideoDurationMs(inputPath, result)
+                    } else {
+                        result.error("INVALID_ARGS", "inputPath is missing", null)
+                    }
+                }
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    private fun getVideoDurationMs(
+        inputPath: String,
+        result: MethodChannel.Result
+    ) {
+        var retriever: MediaMetadataRetriever? = null
+        try {
+            val (sourceUri, inputError) = validateReadableInput(inputPath)
+            if (inputError != null) {
+                result.error("INPUT_NOT_FOUND", inputError, null)
+                return
+            }
+
+            retriever = MediaMetadataRetriever()
+            retriever.setDataSource(this, sourceUri)
+            val durationMs =
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    ?.toLongOrNull()
+                    ?: 0L
+
+            if (durationMs <= 0L) {
+                result.error("INVALID_SOURCE_DURATION", "Could not determine source duration", null)
+                return
+            }
+
+            result.success(durationMs)
+        } catch (e: Exception) {
+            Log.e("3S_NORMALIZE", "getVideoDurationMs failed: ${e.message}", e)
+            result.error("DURATION_FAILED", "getVideoDurationMs failed: ${e.message}", null)
+        } finally {
+            retriever?.release()
+        }
+    }
+
+    private fun normalizeVideoDuration(
+        inputPath: String,
+        outputPath: String,
+        targetDurationMs: Long,
+        result: MethodChannel.Result
+    ) {
+        try {
+            if (targetDurationMs <= 0L) {
+                result.error("INVALID_DURATION", "targetDurationMs must be greater than 0", null)
+                return
+            }
+
+            val (sourceUri, inputError) = validateReadableInput(inputPath)
+            if (inputError != null) {
+                result.error("INPUT_NOT_FOUND", inputError, null)
+                return
+            }
+
+            val retriever = MediaMetadataRetriever()
+            retriever.setDataSource(this, sourceUri)
+            val sourceDurationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            retriever.release()
+
+            if (sourceDurationMs <= 0L) {
+                result.error("INVALID_SOURCE_DURATION", "Could not determine source duration", null)
+                return
+            }
+
+            val outputFile = File(outputPath)
+            if (outputFile.exists()) {
+                outputFile.delete()
+            }
+
+            val clipMs = kotlin.math.min(sourceDurationMs, targetDurationMs)
+            val clippingConfig = MediaItem.ClippingConfiguration.Builder()
+                .setStartPositionMs(0L)
+                .setEndPositionMs(clipMs)
+                .build()
+
+            val clippedItem = MediaItem.Builder()
+                .setUri(sourceUri)
+                .setMediaId("normalize_trim")
+                .setClippingConfiguration(clippingConfig)
+                .build()
+
+            val editedItems = arrayListOf(
+                EditedMediaItem.Builder(clippedItem).build()
+            )
+
+            val sequence = EditedMediaItemSequence(editedItems)
+            val composition = Composition.Builder(listOf(sequence))
+                .setTransmuxAudio(false)
+                .setTransmuxVideo(false)
+                .build()
+
+            val transformer = Transformer.Builder(context)
+                .setVideoMimeType(MimeTypes.VIDEO_H264)
+                .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                .addListener(object : Transformer.Listener {
+                    override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                        Handler(Looper.getMainLooper()).post {
+                            Log.d("3S_NORMALIZE", "normalizeVideoDuration complete: $outputPath (${exportResult.durationMs}ms)")
+                            result.success("SUCCESS")
+                        }
+                    }
+
+                    override fun onError(
+                        composition: Composition,
+                        exportResult: ExportResult,
+                        exportException: ExportException
+                    ) {
+                        Handler(Looper.getMainLooper()).post {
+                            Log.e("3S_NORMALIZE", "normalizeVideoDuration failed: ${exportException.message}", exportException)
+                            result.error(
+                                "NORMALIZE_FAILED",
+                                "normalizeVideoDuration failed: ${exportException.message}",
+                                null
+                            )
+                        }
+                    }
+                })
+                .build()
+
+            transformer.start(composition, outputPath)
+        } catch (e: Exception) {
+            Log.e("3S_NORMALIZE", "normalizeVideoDuration setup failed: ${e.message}", e)
+            result.error("NORMALIZE_SETUP_FAILED", "normalizeVideoDuration setup failed: ${e.message}", null)
         }
     }
 
@@ -366,6 +563,8 @@ class MainActivity: FlutterActivity() {
         forceMuteOriginal: Boolean,
         enableNoiseSuppression: Boolean,
         bgmVolume: Float,
+        startTimes: List<Long>, // ✅ Add startTimes
+        endTimes: List<Long>,   // ✅ Add endTimes
         result: MethodChannel.Result
     ) {
         Log.d("3S_4K", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -401,8 +600,22 @@ class MainActivity: FlutterActivity() {
         
         // 4. EditedMediaItem 리스트 생성 (비디오 트랙)
         val videoSequence = ArrayList<EditedMediaItem>()
-        for (path in paths) {
-            val mediaItem = MediaItem.fromUri(Uri.parse(path))
+        for ((i, path) in paths.withIndex()) {
+            val startTime = if (i < startTimes.size) startTimes[i] else 0L
+            val endTime = if (i < endTimes.size) endTimes[i] else 0L
+            
+            // ✅ Clipping Configuration
+            val clippingBuilder = MediaItem.ClippingConfiguration.Builder()
+                .setStartPositionMs(startTime)
+            
+            if (endTime > 0) {
+                 clippingBuilder.setEndPositionMs(endTime)
+            }
+            
+            val mediaItem = MediaItem.Builder()
+                .setUri(toMediaUri(path))
+                .setClippingConfiguration(clippingBuilder.build())
+                .build()
             
             // 비디오 Effects (GPU 필터 + 오버레이)
             val allVideoEffects = mutableListOf<Any>()
@@ -459,7 +672,7 @@ class MainActivity: FlutterActivity() {
                 
                 Log.d("3S_AUDIO", "  - BGM 길이: ${bgmDurationMs}ms (${bgmDurationMs / 1000.0}초)")
                 
-                val bgmMediaItem = MediaItem.fromUri(Uri.parse(bgmPath))
+                val bgmMediaItem = MediaItem.fromUri(toMediaUri(bgmPath))
                 
                 // 🎵 Fade Out 프로세서 생성 (BGM 마지막 0.5초)
                 val fadeOutProcessor = FadeOutAudioProcessor(
@@ -1006,7 +1219,7 @@ class MainActivity: FlutterActivity() {
 
                 try {
                     // 1. MediaItem 생성
-                    val baseMediaItem = MediaItem.fromUri(Uri.parse(inputPath))
+                    val baseMediaItem = MediaItem.fromUri(toMediaUri(inputPath))
                     
                     // 2. ClippingConfiguration 설정
                     val clippingConfig = MediaItem.ClippingConfiguration.Builder()
@@ -1178,7 +1391,7 @@ class MainActivity: FlutterActivity() {
 
         try {
             // 1. MediaItem 생성
-            val mediaItem = MediaItem.fromUri(Uri.parse(inputPath))
+            val mediaItem = MediaItem.fromUri(toMediaUri(inputPath))
 
             // 2. 🎵 오디오 프로세서 (노이즈 억제)
             val audioProcessors = mutableListOf<AudioProcessor>()
@@ -1238,7 +1451,7 @@ class MainActivity: FlutterActivity() {
                 val bgmDurationMs = durationStr?.toLongOrNull() ?: 0L
                 retriever.release()
 
-                val bgmMediaItem = MediaItem.fromUri(Uri.parse(bgmPath))
+                val bgmMediaItem = MediaItem.fromUri(toMediaUri(bgmPath))
                 val fadeOutProcessor = FadeOutAudioProcessor(
                     fadeOutDurationMs = 500L,
                     totalDurationMs = bgmDurationMs

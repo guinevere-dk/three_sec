@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:flutter/services.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
+import 'package:in_app_purchase_android/billing_client_wrappers.dart';
 import 'package:in_app_purchase_android/in_app_purchase_android.dart';
 import 'package:in_app_purchase_storekit/in_app_purchase_storekit.dart';
 import '../managers/user_status_manager.dart';
@@ -21,6 +21,8 @@ enum IAPSubscriptionCycle { monthly, annual }
 
 enum IAPSubscriptionTier { standard, premium }
 
+enum IAPPlanChangeType { newPurchase, upgrade, downgrade, noChange }
+
 class IAPService {
   static final IAPService _instance = IAPService._internal();
   factory IAPService() => _instance;
@@ -31,23 +33,28 @@ class IAPService {
 
   /// 상품 ID 정의
   // Requested Product IDs
-  static const String premiumMonthly = 'three_sec_premium_monthly';
-  static const String premiumAnnual = 'three_sec_premium_annual';
+  static const String standardMonthly = '3s_standard_monthly';
+  static const String standardAnnual = '3s_standard_annual';
+  static const String premiumMonthly = '3s_premium_monthly';
+  static const String premiumAnnual = '3s_premium_annual';
 
   /// 상품 ID 맵 (사이클 ↔ 등급)
-  // We only have Premium IDs now based on request. 
-  // Standard might be free or handled differently, but mapping here for Premium.
-  static const Map<IAPSubscriptionCycle, Map<IAPSubscriptionTier, String>> _productIdMap = {
+  static const Map<IAPSubscriptionCycle, Map<IAPSubscriptionTier, String>>
+  _productIdMap = {
     IAPSubscriptionCycle.monthly: {
+      IAPSubscriptionTier.standard: standardMonthly,
       IAPSubscriptionTier.premium: premiumMonthly,
     },
     IAPSubscriptionCycle.annual: {
+      IAPSubscriptionTier.standard: standardAnnual,
       IAPSubscriptionTier.premium: premiumAnnual,
     },
   };
 
   /// 💡 [업데이트] 상품 ID 리스트 (Map 기반)
   static const List<String> _productIds = [
+    standardMonthly,
+    standardAnnual,
     premiumMonthly,
     premiumAnnual,
   ];
@@ -56,8 +63,7 @@ class IAPService {
   static String? productIdFor({
     required IAPSubscriptionCycle cycle,
     required IAPSubscriptionTier tier,
-  }) =>
-      _productIdMap[cycle]?[tier];
+  }) => _productIdMap[cycle]?[tier];
 
   bool _isInitialized = false;
   bool _isAvailable = false;
@@ -67,6 +73,8 @@ class IAPService {
 
   /// 진행 중인 구매 (중복 구매 방지)
   bool _isPurchasing = false;
+
+  DateTime? _lastProductQueryAt;
 
   /// 초기화 여부
   bool get isInitialized => _isInitialized;
@@ -90,8 +98,14 @@ class IAPService {
     }
 
     try {
+      print(
+        '[IAPService][Diag] initialize() 시작 | platform=${Platform.operatingSystem}',
+      );
+      print('[IAPService][Diag] 요청 상품 ID 목록: $_productIds');
+
       // 1. 스토어 연결 확인
       _isAvailable = await _iap.isAvailable();
+      print('[IAPService][Diag] _iap.isAvailable() = $_isAvailable');
       if (!_isAvailable) {
         print('[IAPService] 스토어를 사용할 수 없습니다');
         return false;
@@ -127,20 +141,47 @@ class IAPService {
   /// 상품 정보 로드
   Future<bool> _loadProducts() async {
     try {
+      _lastProductQueryAt = DateTime.now();
+      final stopwatch = Stopwatch()..start();
+
+      print(
+        '[IAPService][Diag] queryProductDetails() 호출 시작 @ ${_lastProductQueryAt!.toIso8601String()}',
+      );
+      print(
+        '[IAPService][Diag] query set size=${_productIds.length}, ids=$_productIds',
+      );
+
       // 스토어에서 상품 정보 조회
       final ProductDetailsResponse response = await _iap.queryProductDetails(
         _productIds.toSet(),
       );
 
+      stopwatch.stop();
+      print(
+        '[IAPService][Diag] queryProductDetails() 완료 | elapsedMs=${stopwatch.elapsedMilliseconds}',
+      );
+      print(
+        '[IAPService][Diag] 응답 요약 | found=${response.productDetails.length}, notFound=${response.notFoundIDs.length}, hasError=${response.error != null}',
+      );
+
       // 조회 실패 처리
       if (response.error != null) {
-        print('[IAPService] 상품 조회 에러: ${response.error!.message}');
+        print(
+          '[IAPService] 상품 조회 에러: source=${response.error!.source}, code=${response.error!.code}, message=${response.error!.message}, details=${response.error!.details}',
+        );
         return false;
       }
 
       // 찾을 수 없는 상품 ID 로깅
       if (response.notFoundIDs.isNotEmpty) {
         print('[IAPService] 찾을 수 없는 상품 ID: ${response.notFoundIDs}');
+
+        final missing = response.notFoundIDs.toSet();
+        final requested = _productIds.toSet();
+        final matched = requested.difference(missing);
+        print(
+          '[IAPService][Diag] notFound 분석 | matched=$matched, missing=$missing',
+        );
       }
 
       // 상품이 하나도 없으면 실패
@@ -154,13 +195,16 @@ class IAPService {
       // 상품 정보 로깅
       for (var product in _products) {
         print(
-          '[IAPService] 상품: ${product.id} | ${product.title} | ${product.price}',
+          '[IAPService] 상품: ${product.id} | ${product.title} | ${product.price} | currency=${product.currencyCode}',
         );
       }
 
       return true;
     } catch (e, stackTrace) {
       print('[IAPService] 상품 로드 실패: $e');
+      print(
+        '[IAPService][Diag] 예외 발생 시점 | lastQueryAt=${_lastProductQueryAt?.toIso8601String()} | platform=${Platform.operatingSystem}',
+      );
       print(stackTrace);
       return false;
     }
@@ -195,26 +239,47 @@ class IAPService {
     try {
       _isPurchasing = true;
 
-      // 구매 파라미터 생성
-      final PurchaseParam purchaseParam = PurchaseParam(
-        productDetails: product,
+      final userManager = UserStatusManager();
+      final currentTier = userManager.currentTier;
+      final currentProductId = userManager.productId;
+      final targetTier = _tierFromProductId(productId);
+      final changeType = _resolvePlanChangeType(
+        currentTier: currentTier,
+        targetTier: targetTier,
       );
 
-      // 구매 요청
-      // lifetime 상품은 비소모성(non-consumable), 월간은 구독(subscription)
-      final bool isSubscription = productId.contains('monthly');
+      print(
+        '[IAPService][PlanChange] request '
+        'currentTier=$currentTier currentProductId=$currentProductId '
+        'targetTier=$targetTier targetProductId=$productId changeType=$changeType',
+      );
 
-      bool success;
-      if (isSubscription) {
-        success = await _iap.buyNonConsumable(purchaseParam: purchaseParam);
+      // 구매 파라미터 생성
+      PurchaseParam purchaseParam;
+      if (Platform.isAndroid) {
+        purchaseParam = await _buildAndroidPurchaseParam(
+          product: product,
+          currentProductId: currentProductId,
+          changeType: changeType,
+        );
       } else {
-        success = await _iap.buyNonConsumable(purchaseParam: purchaseParam);
+        purchaseParam = PurchaseParam(productDetails: product);
       }
+
+      // 구매 요청
+      final success = await _iap.buyNonConsumable(purchaseParam: purchaseParam);
 
       if (!success) {
         print('[IAPService] 구매 요청 실패: $productId');
         _isPurchasing = false;
         return false;
+      }
+
+      if (changeType == IAPPlanChangeType.downgrade) {
+        await _reservePendingDowngrade(
+          targetTier: targetTier,
+          targetProductId: productId,
+        );
       }
 
       print('[IAPService] 구매 요청 성공: $productId');
@@ -323,7 +388,7 @@ class IAPService {
         // await _verifyWithServer(token);
       } else if (Platform.isIOS) {
         // iOS: App Store 영수증 검증
-        final iosPurchase = purchase as AppStorePurchaseDetails;
+        purchase as AppStorePurchaseDetails;
 
         // TODO: 백엔드 서버로 영수증 전송 및 검증
         // final receipt = iosPurchase.verificationData.serverVerificationData;
@@ -343,20 +408,42 @@ class IAPService {
   Future<void> _deliverProduct(PurchaseDetails purchase) async {
     try {
       final productId = purchase.productID;
+      final userManager = UserStatusManager();
+
+      final targetPlanTier = _tierFromProductId(productId);
+      final currentPlanChangeType = _resolvePlanChangeType(
+        currentTier: userManager.currentTier,
+        targetTier: targetPlanTier,
+      );
+
+      // Google Play deferred 다운그레이드의 경우
+      // 현재 entitlement를 유지하고 예약 정보만 유지/갱신한다.
+      if (currentPlanChangeType == IAPPlanChangeType.downgrade) {
+        await _reservePendingDowngrade(
+          targetTier: targetPlanTier,
+          targetProductId: productId,
+        );
+        print(
+          '[IAPService][PlanChange] deferred downgrade purchase delivered '
+          '-> keep current tier, preserve pending change',
+        );
+        return;
+      }
 
       // 상품 ID에 따라 등급 결정
-      // 상품 ID에 따라 등급 결정
       UserTier tier;
-      if (productId == premiumMonthly || productId == premiumAnnual) {
+      if (productId == standardMonthly || productId == standardAnnual) {
+        tier = UserTier.standard;
+      } else if (productId == premiumMonthly || productId == premiumAnnual) {
         tier = UserTier.premium;
       } else {
         // Fallback or Unknown
         print('[IAPService] 알 수 없는 상품 ID (기본 처리): $productId');
-        tier = UserTier.premium; // Assume premium for now since we only sell premium
+        tier = UserTier
+            .premium; // Assume premium for now since we only sell premium
       }
 
       // UserStatusManager를 통해 등급 업데이트
-      final userManager = UserStatusManager();
       final success = await userManager.setTier(
         tier,
         productId: productId,
@@ -368,14 +455,16 @@ class IAPService {
 
       if (success) {
         print('[IAPService] ✓ 사용자 등급 업데이트 완료: $tier');
-        
+
+        await userManager.clearPendingTierChange();
+
         // Firestore에 동기화
         final authService = AuthService();
         final purchaseDateTime = DateTime.fromMillisecondsSinceEpoch(
           int.tryParse(purchase.transactionDate ?? '0') ??
               DateTime.now().millisecondsSinceEpoch,
         );
-        
+
         await authService.syncSubscriptionToFirestore(
           tier: tier,
           productId: productId,
@@ -413,6 +502,82 @@ class IAPService {
     }
   }
 
+  /// Google Play 복귀 시 구독 해지(auto-renew off) 상태를 로컬/Firestore에 반영
+  ///
+  /// 정책:
+  /// - 해지 직후 즉시 Free 강등은 하지 않음
+  /// - 현재 플랜은 만료 시점까지 유지
+  /// - `nextTier=free` 예약을 저장해 UI에 `현재 → Free`를 노출
+  Future<void> syncCancellationStateFromStore({
+    String reason = 'manual_refresh',
+  }) async {
+    if (!Platform.isAndroid) return;
+
+    try {
+      if (!_isInitialized) {
+        await initialize();
+      }
+
+      final userManager = UserStatusManager();
+      await userManager.initialize();
+      if (userManager.currentTier == UserTier.free) {
+        return;
+      }
+
+      final currentProductId = userManager.productId;
+      final purchase = await _findGooglePlayPurchaseDetails(currentProductId);
+      if (purchase == null) {
+        print(
+          '[IAPService][CancelSync] skip: no matching purchase found '
+          '(reason=$reason, currentProductId=$currentProductId)',
+        );
+        return;
+      }
+
+      final autoRenewing = purchase.billingClientPurchase.isAutoRenewing;
+      print(
+        '[IAPService][CancelSync] queried purchase '
+        'productId=${purchase.productID} autoRenewing=$autoRenewing reason=$reason',
+      );
+
+      if (autoRenewing) {
+        if (userManager.nextTier == UserTier.free) {
+          await userManager.clearPendingTierChange();
+          await AuthService().syncSubscriptionToFirestore(
+            tier: userManager.currentTier,
+            productId: userManager.productId ?? purchase.productID,
+            purchaseDate: userManager.purchaseDate,
+          );
+        }
+        return;
+      }
+
+      final effectiveAt =
+          userManager.estimatedExpiryAt ??
+          DateTime.now().add(const Duration(days: 30));
+
+      await userManager.setPendingTierChange(
+        nextTier: UserTier.free,
+        effectiveAt: effectiveAt,
+      );
+
+      await AuthService().syncPendingSubscriptionChangeToFirestore(
+        nextTier: UserTier.free,
+        nextProductId: userManager.productId ?? purchase.productID,
+        effectiveAt: effectiveAt,
+        reason: 'user_cancelled_in_play_$reason',
+      );
+
+      print(
+        '[IAPService][CancelSync] cancellation reserved '
+        'currentTier=${userManager.currentTier} -> free at=$effectiveAt',
+      );
+    } catch (e, stackTrace) {
+      print('[IAPService][CancelSync] failed: $e');
+      print(stackTrace);
+    }
+  }
+
   /// 특정 상품 정보 조회
   ProductDetails? getProduct(String productId) {
     try {
@@ -442,5 +607,129 @@ class IAPService {
   void dispose() {
     _subscription.cancel();
     print('[IAPService] 서비스 종료');
+  }
+
+  IAPSubscriptionTier _tierFromProductId(String productId) {
+    if (productId == standardMonthly || productId == standardAnnual) {
+      return IAPSubscriptionTier.standard;
+    }
+    return IAPSubscriptionTier.premium;
+  }
+
+  IAPPlanChangeType _resolvePlanChangeType({
+    required UserTier currentTier,
+    required IAPSubscriptionTier targetTier,
+  }) {
+    final current = switch (currentTier) {
+      UserTier.free => null,
+      UserTier.standard => IAPSubscriptionTier.standard,
+      UserTier.premium => IAPSubscriptionTier.premium,
+    };
+
+    if (current == null) return IAPPlanChangeType.newPurchase;
+    if (current == targetTier) return IAPPlanChangeType.noChange;
+    if (current == IAPSubscriptionTier.standard &&
+        targetTier == IAPSubscriptionTier.premium) {
+      return IAPPlanChangeType.upgrade;
+    }
+    return IAPPlanChangeType.downgrade;
+  }
+
+  Future<PurchaseParam> _buildAndroidPurchaseParam({
+    required ProductDetails product,
+    required String? currentProductId,
+    required IAPPlanChangeType changeType,
+  }) async {
+    if (changeType == IAPPlanChangeType.newPurchase ||
+        changeType == IAPPlanChangeType.noChange) {
+      return GooglePlayPurchaseParam(productDetails: product);
+    }
+
+    final previous = await _findGooglePlayPurchaseDetails(currentProductId);
+    if (previous == null) {
+      print(
+        '[IAPService][PlanChange] Android old purchase not found, fallback normal purchase',
+      );
+      return GooglePlayPurchaseParam(productDetails: product);
+    }
+
+    final replacementMode = changeType == IAPPlanChangeType.upgrade
+        ? ReplacementMode.chargeProratedPrice
+        : ReplacementMode.deferred;
+
+    return GooglePlayPurchaseParam(
+      productDetails: product,
+      changeSubscriptionParam: ChangeSubscriptionParam(
+        oldPurchaseDetails: previous,
+        replacementMode: replacementMode,
+      ),
+    );
+  }
+
+  Future<GooglePlayPurchaseDetails?> _findGooglePlayPurchaseDetails(
+    String? currentProductId,
+  ) async {
+    if (!Platform.isAndroid) return null;
+
+    try {
+      final addition = _iap
+          .getPlatformAddition<InAppPurchaseAndroidPlatformAddition>();
+      final response = await addition.queryPastPurchases();
+
+      if (response.error != null) {
+        print(
+          '[IAPService][PlanChange] queryPastPurchases error: ${response.error}',
+        );
+      }
+
+      for (final purchase in response.pastPurchases) {
+        if (currentProductId != null &&
+            purchase.productID == currentProductId) {
+          return purchase;
+        }
+      }
+
+      for (final purchase in response.pastPurchases) {
+        if (_productIds.contains(purchase.productID)) {
+          return purchase;
+        }
+      }
+    } catch (e, stackTrace) {
+      print('[IAPService][PlanChange] failed to load past purchases: $e');
+      print(stackTrace);
+    }
+    return null;
+  }
+
+  Future<void> _reservePendingDowngrade({
+    required IAPSubscriptionTier targetTier,
+    required String targetProductId,
+  }) async {
+    final userManager = UserStatusManager();
+    final authService = AuthService();
+
+    final effectiveAt =
+        userManager.estimatedExpiryAt ??
+        DateTime.now().add(const Duration(days: 30));
+    final nextTier = targetTier == IAPSubscriptionTier.premium
+        ? UserTier.premium
+        : UserTier.standard;
+
+    await userManager.setPendingTierChange(
+      nextTier: nextTier,
+      effectiveAt: effectiveAt,
+    );
+
+    await authService.syncPendingSubscriptionChangeToFirestore(
+      nextTier: nextTier,
+      nextProductId: targetProductId,
+      effectiveAt: effectiveAt,
+      reason: 'user_requested_downgrade',
+    );
+
+    print(
+      '[IAPService][PlanChange] downgrade scheduled '
+      'nextTier=$nextTier effectiveAt=$effectiveAt targetProductId=$targetProductId',
+    );
   }
 }

@@ -47,6 +47,30 @@ service cloud.firestore {
       allow delete: if request.auth != null 
                     && request.auth.uid == resource.data.uid;
     }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 🧾 Vlog 프로젝트 메타데이터: vlog_projects/{projectId}
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    match /vlog_projects/{projectId} {
+      // ✅ 읽기: 인증된 본인의 프로젝트만
+      allow read: if request.auth != null
+                  && request.auth.uid == resource.data.uid;
+
+      // ✅ 생성: 인증 사용자 + uid 일치 + 최소 필수 필드 검증
+      allow create: if request.auth != null
+                    && request.auth.uid == request.resource.data.uid
+                    && isValidVlogProjectMetadata();
+
+      // ✅ 업데이트: 인증된 본인 + uid 불변
+      allow update: if request.auth != null
+                    && request.auth.uid == resource.data.uid
+                    && request.resource.data.uid == resource.data.uid
+                    && isValidVlogProjectMetadata();
+
+      // ✅ 삭제: 인증된 본인만
+      allow delete: if request.auth != null
+                    && request.auth.uid == resource.data.uid;
+    }
     
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 🛡️ 보안 함수
@@ -63,8 +87,36 @@ service cloud.firestore {
           && data.storagePath is string
           && data.albumName is string
           && data.isFavorite is bool
-          && data.fileSize is int
-          && data.uploadStatus in ['queued', 'uploading', 'completed', 'failed'];
+           && data.fileSize is int
+           && data.uploadStatus in ['queued', 'uploading', 'completed', 'failed'];
+    }
+
+    /// 유효한 vlog 프로젝트 메타데이터 검증
+    function isValidVlogProjectMetadata() {
+      let data = request.resource.data;
+
+      return data.keys().hasAll([
+               'uid',
+               'localProjectId',
+               'title',
+               'clipPaths',
+               'clipCount',
+               'folderName',
+               'lockState',
+               'clientCreatedAt',
+               'clientUpdatedAt',
+               'deleted'
+             ])
+             && data.uid is string
+             && data.localProjectId is string
+             && data.title is string
+             && data.clipPaths is list
+             && data.clipCount is int
+             && data.folderName is string
+             && data.lockState is string
+             && data.clientCreatedAt is timestamp
+             && data.clientUpdatedAt is timestamp
+             && data.deleted is bool;
     }
   }
 }

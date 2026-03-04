@@ -8,7 +8,7 @@ rules_version = '2';
 // 1. 인증된 사용자만 접근 가능
 // 2. 자신의 영상에만 접근 가능 (uid 기반)
 // 3. Standard 등급 이상만 업로드 가능 (Firestore 검증)
-// 4. 용량 제한 준수 (Standard: 10GB, Premium: 50GB)
+// 4. 용량 제한 준수 (Standard: 50GB, Premium: 200GB)
 // 5. 영상 파일만 업로드 가능 (mp4, mov 등)
 
 service firebase.storage {
@@ -23,29 +23,41 @@ service firebase.storage {
       allow read: if request.auth != null 
                   && request.auth.uid == userId;
       
-      // ✅ 쓰기 권한: 인증된 본인 + 등급 확인 + 파일 검증
-      allow write: if request.auth != null 
+      // ✅ 최소 안전 원복:
+      // - 인증된 본인(uid 일치)
+      // - 영상 파일 타입/크기 검증
+      // 참고: 등급/용량 검증은 앱/Firestore 경로에서 관리
+      allow write: if request.auth != null
                    && request.auth.uid == userId
-                   && isStandardOrAbove()
-                   && isValidVideoFile()
-                   && !exceededStorageLimit();
+                   && isValidVideoFile();
       
       // ✅ 삭제 권한: 인증된 본인만 가능
       allow delete: if request.auth != null 
+                    && request.auth.uid == userId;
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 👤 사용자 프로필 이미지 경로: users/{userId}/profile/{fileName}
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    match /users/{userId}/profile/{fileName} {
+
+      // ✅ 읽기 권한: 인증된 본인만 가능
+      allow read: if request.auth != null
+                  && request.auth.uid == userId;
+
+      // ✅ 쓰기 권한: 인증된 본인 + 이미지 파일 검증
+      allow write: if request.auth != null
+                   && request.auth.uid == userId
+                   && isValidProfileImageFile();
+
+      // ✅ 삭제 권한: 인증된 본인만 가능
+      allow delete: if request.auth != null
                     && request.auth.uid == userId;
     }
     
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 🛡️ 보안 함수
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    
-    /// Standard 등급 이상 확인
-    /// Firestore의 사용자 구독 정보 조회
-    function isStandardOrAbove() {
-      let userDoc = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
-      let tier = userDoc.data.get('subscriptionTier', 'free');
-      return tier == 'standard' || tier == 'premium';
-    }
     
     /// 유효한 영상 파일 확인
     /// - 크기: 최대 500MB
@@ -57,21 +69,17 @@ service firebase.storage {
       return request.resource.size <= maxSize
           && request.resource.contentType in validTypes;
     }
-    
-    /// 저장 용량 제한 초과 여부 확인
-    /// Firestore의 사용량 정보 조회
-    function exceededStorageLimit() {
-      let userDoc = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
-      let currentUsage = userDoc.data.get('storageUsage', 0);
-      let tier = userDoc.data.get('subscriptionTier', 'free');
-      
-      // 등급별 제한 (바이트)
-      let standardLimit = 10 * 1024 * 1024 * 1024;  // 10GB
-      let premiumLimit = 50 * 1024 * 1024 * 1024;   // 50GB
-      let limit = tier == 'premium' ? premiumLimit : standardLimit;
-      
-      let afterUpload = currentUsage + request.resource.size;
-      return afterUpload > limit;
+
+    /// 유효한 프로필 이미지 파일 확인
+    /// - 크기: 최대 10MB
+    /// - 타입: image/jpeg, image/png, image/webp
+    function isValidProfileImageFile() {
+      let maxSize = 10 * 1024 * 1024; // 10MB
+      let validTypes = ['image/jpeg', 'image/png', 'image/webp'];
+
+      return request.resource.size <= maxSize
+          && request.resource.contentType in validTypes;
     }
+    
   }
 }

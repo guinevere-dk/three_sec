@@ -1,32 +1,5 @@
-
 import 'package:flutter/material.dart';
-
-/// 비파괴 편집을 위한 클립 모델
-class ClipModel {
-  final String path;
-  final String id; // Unique ID for identifying clips
-  Duration startTime;
-  Duration endTime;
-  Duration totalDuration;
-
-  ClipModel({
-    required this.path,
-    required this.id,
-    this.startTime = Duration.zero,
-    required this.endTime,
-    required this.totalDuration,
-  });
-
-  ClipModel copy() {
-    return ClipModel(
-      path: path,
-      id: id,
-      startTime: startTime,
-      endTime: endTime,
-      totalDuration: totalDuration,
-    );
-  }
-}
+import 'package:three_s/models/vlog_project.dart';
 
 /// Command Pattern Base Class
 abstract class EditCommand {
@@ -36,7 +9,7 @@ abstract class EditCommand {
 
 /// Trim Command
 class TrimCommand implements EditCommand {
-  final ClipModel clip;
+  final VlogClip clip;
   final Duration newStartTime;
   final Duration newEndTime;
   
@@ -51,14 +24,14 @@ class TrimCommand implements EditCommand {
   void execute() {
     clip.startTime = newStartTime;
     clip.endTime = newEndTime;
-    debugPrint("[TrimCommand] Executed: ${clip.id} -> $newStartTime ~ $newEndTime");
+    debugPrint("[TrimCommand] Executed: ${clip.path} -> $newStartTime ~ $newEndTime");
   }
 
   @override
   void undo() {
     clip.startTime = _oldStartTime;
     clip.endTime = _oldEndTime;
-    debugPrint("[TrimCommand] Undone: ${clip.id} -> $_oldStartTime ~ $_oldEndTime");
+    debugPrint("[TrimCommand] Undone: ${clip.path} -> $_oldStartTime ~ $_oldEndTime");
   }
 }
 

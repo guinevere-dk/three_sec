@@ -56,3 +56,9 @@ app.*.map.json
 
 # --- Environment Secrets ---
 .env*
+
+# --- Local analysis artifacts ---
+analysis*.txt
+analyze*.json
+analyze*.txt
+*_log.txt

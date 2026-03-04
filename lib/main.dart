@@ -23,19 +23,65 @@ import 'managers/user_status_manager.dart';
 import 'services/iap_service.dart';
 import 'services/auth_service.dart';
 import 'services/cloud_service.dart';
-import 'screens/paywall_screen.dart';
+import 'services/notification_settings_service.dart';
 import 'screens/login_screen.dart';
 import 'screens/profile_screen.dart';
 import 'screens/capture_screen.dart';
 import 'screens/library_screen.dart';
-import 'screens/vlog_screen.dart';
+import 'screens/project_screen.dart';
 import 'managers/video_manager.dart';
+import 'models/vlog_project.dart';
 import 'screens/video_edit_screen.dart';
 import 'screens/clip_extractor_screen.dart'; // ✅ 추가
 import 'widgets/video_widgets.dart';
 import 'utils/haptics.dart';
 
 late List<CameraDescription> cameras;
+final Stopwatch appLaunchStopwatch = Stopwatch();
+bool _didLogFirstCameraPreviewReady = false;
+
+void logFirstCameraPreviewReady() {
+  if (_didLogFirstCameraPreviewReady) return;
+  _didLogFirstCameraPreviewReady = true;
+  if (!appLaunchStopwatch.isRunning) return;
+  appLaunchStopwatch.stop();
+  debugPrint(
+    '[Startup][TTFF] app_launch_to_camera_preview_ms=${appLaunchStopwatch.elapsedMilliseconds}',
+  );
+}
+
+Future<void> _warmUpStartupServices() async {
+  try {
+    final userStatusManager = UserStatusManager();
+    await userStatusManager.initialize();
+
+    final downgraded = await userStatusManager.evaluateAndAutoDowngradeIfExpired(
+      reason: 'startup_warmup',
+    );
+    if (downgraded) {
+      await AuthService().syncFreeTierToFirestore(
+        reason: 'startup_warmup_auto_downgrade',
+      );
+    }
+  } catch (e) {
+    debugPrint('[Startup] UserStatusManager initialize failed: $e');
+  }
+
+  try {
+    await IAPService().initialize();
+  } catch (e) {
+    debugPrint('[Startup] IAPService initialize failed: $e');
+  }
+}
+
+Future<List<CameraDescription>> _loadAvailableCameras() async {
+  try {
+    return await availableCameras();
+  } catch (e) {
+    debugPrint('카메라를 찾을 수 없습니다: $e');
+    return [];
+  }
+}
 
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
@@ -44,7 +90,30 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (!appLaunchStopwatch.isRunning) {
+    appLaunchStopwatch.start();
+  }
+
+  // 전역 Flutter/Platform 예외 로깅 (런타임 진단 강화)
+  FlutterError.onError = (FlutterErrorDetails details) {
+    final exception = details.exceptionAsString();
+    final stack = details.stack?.toString() ?? 'no-stack';
+    debugPrint('[GlobalFlutterError] $exception');
+    if (exception.contains('ParentDataWidget')) {
+      debugPrint('[GlobalFlutterError][ParentDataWidget] $exception');
+    }
+    debugPrint('[GlobalFlutterError][Stack]\n$stack');
+    FlutterError.presentError(details);
+  };
+
+  PlatformDispatcher.instance.onError = (error, stack) {
+    debugPrint('[GlobalPlatformError] $error');
+    debugPrint('[GlobalPlatformError][Stack]\n$stack');
+    return true;
+  };
   
+  final cameraFuture = _loadAvailableCameras();
+
   // Firebase 초기화
   try {
     await Firebase.initializeApp();
@@ -55,15 +124,9 @@ Future<void> main() async {
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
   
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-  try {
-    cameras = await availableCameras();
-  } catch (e) {
-    debugPrint("카메라를 찾을 수 없습니다: $e");
-    cameras = [];
-  }
-  await UserStatusManager().initialize();
-  await IAPService().initialize();
+  cameras = await cameraFuture;
   runApp(const MyApp());
+  unawaited(_warmUpStartupServices());
 }
 
 class MyApp extends StatelessWidget {
@@ -114,27 +177,31 @@ class AuthGate extends StatelessWidget {
   Widget build(BuildContext context) {
     final authService = AuthService();
 
-    return StreamBuilder(
-      stream: authService.authStateChanges,
-      builder: (context, snapshot) {
-        // 로딩 중
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            body: Center(
-              child: CircularProgressIndicator(),
-            ),
-          );
-        }
+    return ValueListenableBuilder<bool>(
+      valueListenable: authService.sessionBootstrapInProgress,
+      builder: (context, isBootstrapping, _) => StreamBuilder(
+        initialData: authService.currentUser,
+        stream: authService.authStateChanges,
+        builder: (context, snapshot) {
+          // 로그인 상태 확인
+          if (snapshot.hasData && snapshot.data != null) {
+            // 로그인 직후 구독 동기화가 끝날 때까지 게이트에서 대기
+            if (isBootstrapping) {
+              return const Scaffold(
+                body: Center(
+                  child: CircularProgressIndicator(),
+                ),
+              );
+            }
 
-        // 로그인 상태 확인
-        if (snapshot.hasData && snapshot.data != null) {
-          // 로그인 완료 → 메인 화면
-          return const MainNavigationScreen();
-        } else {
-          // 로그인 안 됨 → 로그인 화면
-          return const LoginScreen();
-        }
-      },
+            // 로그인 완료 + 세션 부트스트랩 완료 → 메인 화면
+            return const MainNavigationScreen();
+          } else {
+            // 로그인 안 됨 → 로그인 화면
+            return const LoginScreen();
+          }
+        },
+      ),
     );
   }
 }
@@ -146,7 +213,7 @@ class MainNavigationScreen extends StatefulWidget {
 }
 
 class _MainNavigationScreenState extends State<MainNavigationScreen>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   
   // 💡 [핵심] 네이티브 엔진과 통신하는 직통 채널 개설
   static const platform = MethodChannel('com.dk.three_sec/video_engine');
@@ -164,17 +231,36 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   final GlobalKey keyPickMedia = GlobalKey();
 
   bool _isConverting = false;
-  bool _notificationPermissionRequested = false;
+  bool _isPreparingProject = false;
+  bool _didBindVideoManager = false;
+  late VideoManager videoManager;
 
   @override
   void initState() {
     super.initState();
-    _refreshData();
+    WidgetsBinding.instance.addObserver(this);
     _initFirebaseMessaging();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 자동 전체 백업 트리거 축소:
+    // 앱 resume 시점의 일괄 enqueue는 사용자가 선택한 일부 클립 업로드와 충돌할 수 있어 비활성화.
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_didBindVideoManager) return;
+    videoManager = Provider.of<VideoManager>(context, listen: false);
+    _didBindVideoManager = true;
+    _refreshData();
   }
 
   Future<void> _initFirebaseMessaging() async {
     if (kIsWeb) return;
+    final notificationSettingsService = NotificationSettingsService.instance;
+
     FirebaseMessaging.onMessage.listen((message) {
       final title = message.notification?.title;
       if (title != null) {
@@ -196,9 +282,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     });
 
     await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(alert: true, badge: true, sound: true);
-    final prefs = await SharedPreferences.getInstance();
-    final asked = prefs.getBool('notification_permission_requested') ?? false;
-    if (asked) return;
+    await notificationSettingsService.migrateCategorySettingsIfNeeded();
+    await notificationSettingsService.ensureStartupSync();
+
+    final shouldShowPrompt =
+        await notificationSettingsService.shouldShowInitialPermissionPrompt();
+    if (!shouldShowPrompt) return;
     WidgetsBinding.instance.addPostFrameCallback((_) => _showNotificationPermissionDialog());
   }
 
@@ -225,8 +314,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       ),
     );
 
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('notification_permission_requested', true);
+    final notificationSettingsService = NotificationSettingsService.instance;
+    await notificationSettingsService.markInitialPermissionPrompted();
 
     if (result == true) {
       final settings = await FirebaseMessaging.instance.requestPermission(
@@ -239,6 +328,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         sound: true,
       );
       final success = settings.authorizationStatus == AuthorizationStatus.authorized;
+      await notificationSettingsService.syncTopicSubscriptions(
+        authorizationStatus: settings.authorizationStatus,
+      );
       Fluttertoast.showToast(
         msg: success ? '알림을 활성화했습니다.' : '알림 권한이 허용되지 않았습니다.',
         backgroundColor: Colors.black87,
@@ -346,7 +438,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                 children: [
                   Text("롱 프레스 선택", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 24)),
                   SizedBox(height: 10),
-                  Text("클립을 '꾹' 누르면 선택 모드가 시작됩니다.\n2개 이상 선택하여 Vlog를 만들어보세요!", style: TextStyle(color: Colors.white, fontSize: 16)),
+                  Text("클립을 '꾹' 누르면 선택 모드가 시작됩니다.\n2개 이상 선택하여 Project를 만들어보세요!", style: TextStyle(color: Colors.white, fontSize: 16)),
                 ],
               ),
             )
@@ -399,6 +491,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   Future<void> _refreshData() async {
     await videoManager.initAlbumSystem();
     await videoManager.loadVlogProjects();
+    await CloudService().initializeQueueStore();
+    // 자동 전체 백업 트리거 축소:
+    // refresh 시점 자동 enqueue 비활성화 (수동 이동/명시적 백업만 허용)
     if (mounted) setState(() {});
     CloudService().checkUsageAndAlert(videoManager);
   }
@@ -413,15 +508,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
-  late VideoManager videoManager;
-
   @override
   Widget build(BuildContext context) {
-    videoManager = Provider.of<VideoManager>(context);
-    
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
@@ -435,11 +527,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
               children: [
                 _buildCaptureTab(),
                 _buildLibraryTab(),
-                _buildVlogTab(),
+                _buildProjectTab(),
                 const ProfileScreen(),
               ],
             ),
-            if (_isConverting)
+            if (_isConverting || _isPreparingProject)
               Container(
                 color: Colors.black.withOpacity(0.5),
                 child: Center(
@@ -448,10 +540,13 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                     decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
-                      children: const [
-                        LinearProgressIndicator(color: Colors.blueAccent),
-                        SizedBox(height: 20),
-                        Text("영상 변환 중...", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                      children: [
+                        const LinearProgressIndicator(color: Colors.blueAccent),
+                        const SizedBox(height: 20),
+                        Text(
+                          _isPreparingProject ? '프로젝트 준비 중...' : '영상 변환 중...',
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                        ),
                       ],
                     ),
                   ),
@@ -459,19 +554,144 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
               ),
           ],
         ),
-        bottomNavigationBar: BottomNavigationBar(
-          key: keyLibraryTab,
-          type: BottomNavigationBarType.fixed,
-          currentIndex: _selectedIndex,
-          selectedItemColor: Colors.blueAccent,
-          unselectedItemColor: Colors.black54,
-          onTap: (i) { setState(() { _selectedIndex = i; if (i == 0 && videoManager.currentAlbum == "휴지통") videoManager.currentAlbum = "일상"; if (i == 1) _refreshData(); }); },
-          items: const [
-            BottomNavigationBarItem(icon: Icon(Icons.camera_alt), label: "촬영"),
-            BottomNavigationBarItem(icon: Icon(Icons.folder), label: "라이브러리"),
-            BottomNavigationBarItem(icon: Icon(Icons.video_library), label: "Vlog"),
-            BottomNavigationBarItem(icon: Icon(Icons.person), label: "프로필"),
-          ],
+        bottomNavigationBar: _buildBenchmarkBottomNav(),
+      ),
+    );
+  }
+
+  Widget _buildBenchmarkBottomNav() {
+    final userStatusManager = UserStatusManager();
+    final canAccessProject = userStatusManager.isStandardOrAbove();
+    debugPrint(
+      '[Main][TierGate][Build] cachedCanAccessProject=$canAccessProject '
+      'tier=${userStatusManager.currentTier} productId=${userStatusManager.productId}',
+    );
+
+    final items = const [
+      (icon: Icons.photo_camera, label: 'Camera'),
+      (icon: Icons.folder, label: 'Library'),
+      (icon: Icons.play_circle, label: 'Project'),
+      (icon: Icons.person, label: 'Profile'),
+    ];
+
+    return Container(
+      key: keyLibraryTab,
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC).withAlpha(246),
+        border: const Border(top: BorderSide(color: Color(0xFFE5EAF1))),
+      ),
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 60,
+          child: Row(
+            children: List.generate(items.length, (index) {
+              final item = items[index];
+              final selected = _selectedIndex == index;
+              final color = selected
+                  ? const Color(0xFF3B82F6)
+                  : const Color(0xFF98A2B3);
+              return Expanded(
+                child: InkWell(
+                  onTap: () {
+                    bool canAccessProjectNow = canAccessProject;
+                    if (index == 2) {
+                      final liveManager = UserStatusManager();
+                      final liveCanAccess = liveManager.isStandardOrAbove();
+                      canAccessProjectNow = liveCanAccess;
+                      debugPrint(
+                        '[Main][TierGate][Tap] cachedCanAccessProject=$canAccessProject '
+                        'liveCanAccessProject=$liveCanAccess '
+                        'tier=${liveManager.currentTier} productId=${liveManager.productId}',
+                      );
+                    }
+
+                    if (index == 2 && !canAccessProjectNow) {
+                      Fluttertoast.showToast(
+                        msg: 'Project는 Standard부터 이용 가능합니다.',
+                      );
+                      return;
+                    }
+
+                    if (index == 3) {
+                      final profileTapManager = UserStatusManager();
+                      debugPrint(
+                        '[Main][ProfileTab][Diag] before_select '
+                        'selectedIndex=$_selectedIndex '
+                        'tier=${profileTapManager.currentTier} '
+                        'productId=${profileTapManager.productId} '
+                        'nextTier=${profileTapManager.nextTier} '
+                        'effectiveAt=${profileTapManager.nextTierEffectiveAt}',
+                      );
+                    }
+
+                    setState(() {
+                      _selectedIndex = index;
+                      if (index == 0 && videoManager.currentAlbum == '휴지통') {
+                        videoManager.currentAlbum = '일상';
+                      }
+                      if (index == 1) {
+                        _refreshData();
+                      }
+                    });
+
+                    if (index == 3) {
+                      final profileTapAfterManager = UserStatusManager();
+                      debugPrint(
+                        '[Main][ProfileTab][Diag] after_select '
+                        'selectedIndex=$_selectedIndex '
+                        'tier=${profileTapAfterManager.currentTier} '
+                        'productId=${profileTapAfterManager.productId}',
+                      );
+                    }
+                  },
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          Icon(
+                            item.icon,
+                            size: 31,
+                            color: color,
+                          ),
+                          if (index == 2 && !canAccessProject)
+                            Positioned(
+                              right: -6,
+                              top: -5,
+                              child: Container(
+                                width: 13,
+                                height: 13,
+                                decoration: const BoxDecoration(
+                                  color: Color(0xFFF4CF00),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(
+                                  Icons.star,
+                                  color: Colors.white,
+                                  size: 8,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 1),
+                      Text(
+                        item.label,
+                        style: TextStyle(
+                          fontSize: 12,
+                          height: 1,
+                          color: color,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }),
+          ),
         ),
       ),
     );
@@ -501,6 +721,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
       if (result == true) {
         await _loadClipsFromCurrentAlbum();
+        // 자동 전체 백업 트리거 축소:
+        // import 직후 자동 enqueue 비활성화
         // Fluttertoast.showToast(msg: "저장 완료"); // 안쪽에서 토스트 띄움
       }
     } else {
@@ -509,6 +731,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         await videoManager.convertPhotoToVideo(media.path, videoManager.currentAlbum);
         Fluttertoast.showToast(msg: "변환 완료");
         await _loadClipsFromCurrentAlbum();
+        // 자동 전체 백업 트리거 축소:
+        // import 직후 자동 enqueue 비활성화
       } catch (e) {
         Fluttertoast.showToast(msg: "변환 실패: $e");
       } finally {
@@ -517,19 +741,73 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     }
   }
 
-  // --- [Vlog 병합: Native Engine 적용] ---
+  // --- [Project 병합: Native Engine 적용] ---
 
   Future<void> _handleMerge(List<String> selectedPaths) async {
+    debugPrint(
+      '[Main][Diag][MergeFlow] start selectedIndex=$_selectedIndex '
+      'currentAlbum=${videoManager.currentAlbum} selectedCount=${selectedPaths.length}',
+    );
+
     if (videoManager.currentAlbum == "휴지통") {
-      Fluttertoast.showToast(msg: "휴지통의 영상으로는 Vlog를 만들 수 없습니다.");
+      Fluttertoast.showToast(msg: "휴지통의 영상으로는 Project를 만들 수 없습니다.");
       return;
     }
     if (selectedPaths.length < 2) return;
 
-    // Create a project
-    final project = await videoManager.createProject(selectedPaths);
+    VlogProject project;
+    if (mounted) {
+      setState(() => _isPreparingProject = true);
+    }
+    try {
+      // Create a project
+      project = await videoManager.createProject(selectedPaths);
+    } catch (e) {
+      if (mounted) {
+        Fluttertoast.showToast(msg: '프로젝트 준비 중 오류가 발생했습니다: $e');
+      }
+      return;
+    } finally {
+      if (mounted) {
+        setState(() => _isPreparingProject = false);
+      }
+    }
+
+    final userStatusManager = UserStatusManager();
+
+    // Free: 편집 미지원 → 720p 빠른 Export
+    if (!userStatusManager.isStandardOrAbove()) {
+      Fluttertoast.showToast(
+        msg: '편집은 Standard부터 지원합니다. 720p로 바로 내보냅니다.',
+      );
+
+      final audioConfig = <String, double>{
+        for (final clip in project.clips) clip.path: 1.0,
+      };
+
+      final resultPath = await videoManager.exportVlog(
+        clips: project.clips,
+        audioConfig: audioConfig,
+        bgmPath: project.bgmPath,
+        bgmVolume: project.bgmVolume,
+        quality: '720p',
+        userTier: 'free',
+      );
+
+      if (resultPath != null) {
+        Fluttertoast.showToast(msg: '720p 내보내기 완료');
+        await _refreshData();
+      } else {
+        Fluttertoast.showToast(msg: '내보내기에 실패했습니다. 다시 시도해주세요.');
+      }
+      return;
+    }
 
     // Navigate to VideoEditScreen for editing & export
+    debugPrint(
+      '[Main][Diag][MergeFlow] before_push_edit selectedIndex=$_selectedIndex '
+      'projectId=${project.id} clipCount=${project.clips.length}',
+    );
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
@@ -539,8 +817,25 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       ),
     );
 
+    debugPrint(
+      '[Main][Diag][MergeFlow] after_pop_edit selectedIndex=$_selectedIndex '
+      'result=$result projectId=${project.id}',
+    );
+
     if (result == true) {
+      if (mounted) {
+        setState(() {
+          // Library 다중선택 -> 프로젝트 생성 -> 편집 종료(X) 흐름에서는
+          // 프로젝트 목록으로 복귀시키는 UX가 자연스럽다.
+          _selectedIndex = 2;
+        });
+      }
+
       await _refreshData();
+      debugPrint(
+        '[Main][Diag][MergeFlow] refreshed_after_result_true selectedIndex=$_selectedIndex '
+        'projectId=${project.id}',
+      );
     }
   }
 
@@ -565,40 +860,32 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   /// 편집 요청 처리 (구매 트리거 포함)
   Future<void> _handleEditRequest(String videoPath) async {
     final userStatusManager = UserStatusManager();
-    
-    // Standard 등급 이상만 편집 가능
+
+    // Free: 편집 미지원 → 720p 빠른 Export
     if (!userStatusManager.isStandardOrAbove()) {
-      // Free 유저 → 구매 유도 팝업
-      final bool? goPaywall = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('편집 기능 잠금'),
-          content: const Text(
-            '편집 기능은 Standard 등급부터 사용 가능합니다.\n\n'
-            '지금 업그레이드하고 더 멋진 Vlog를 만들어보세요!',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('나중에'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(context, true),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.amber,
-                foregroundColor: Colors.black,
-              ),
-              child: const Text('업그레이드'),
-            ),
-          ],
-        ),
+      Fluttertoast.showToast(
+        msg: '편집은 Standard부터 지원합니다. 720p로 바로 내보냅니다.',
       );
 
-      if (goPaywall == true && mounted) {
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (context) => const PaywallScreen()),
-        );
+      final project = await videoManager.createProject([videoPath]);
+      final audioConfig = <String, double>{
+        for (final clip in project.clips) clip.path: 1.0,
+      };
+
+      final resultPath = await videoManager.exportVlog(
+        clips: project.clips,
+        audioConfig: audioConfig,
+        bgmPath: project.bgmPath,
+        bgmVolume: project.bgmVolume,
+        quality: '720p',
+        userTier: 'free',
+      );
+
+      if (resultPath != null) {
+        Fluttertoast.showToast(msg: '720p 내보내기 완료');
+        await _refreshData();
+      } else {
+        Fluttertoast.showToast(msg: '내보내기에 실패했습니다. 다시 시도해주세요.');
       }
       return;
     }
@@ -626,11 +913,10 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     }
   }
 
-  /// ✅ 3. Vlog 탭 - VlogScreen으로 분리 완료
-  Widget _buildVlogTab() {
-    return VlogScreen(
+  /// ✅ 3. Project 탭 - ProjectScreen으로 분리 완료
+  Widget _buildProjectTab() {
+    return ProjectScreen(
       onRefresh: _refreshData,
-      onEditRequest: _handleEditRequest,
     );
   }
 

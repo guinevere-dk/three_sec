@@ -1,86 +1,160 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:provider/provider.dart';
-import 'package:share_plus/share_plus.dart';
 
-import '../widgets/video_widgets.dart';
 import '../widgets/media_widgets.dart';
 import '../widgets/media_dialogs.dart';
 import '../utils/haptics.dart';
 import '../utils/media_selection_helper.dart';
 import '../managers/video_manager.dart';
+import '../managers/user_status_manager.dart';
 import 'package:intl/intl.dart';
 import '../models/vlog_project.dart';
 import '../screens/video_edit_screen.dart';
 import '../screens/paywall_screen.dart';
 
-class VlogScreen extends StatefulWidget {
+class ProjectScreen extends StatefulWidget {
   final Function() onRefresh;
-  final Function(String path) onEditRequest;
-  
-  const VlogScreen({
-    super.key,
-    required this.onRefresh,
-    required this.onEditRequest,
-  });
+
+  const ProjectScreen({super.key, required this.onRefresh});
 
   @override
-  State<VlogScreen> createState() => _VlogScreenState();
+  State<ProjectScreen> createState() => _ProjectScreenState();
 }
 
-class _VlogScreenState extends State<VlogScreen> {
+class _ProjectScreenState extends State<ProjectScreen> {
   bool _isInFolderDetail = false;
-  bool _isVlogSelectionMode = false;
+  bool _isProjectSelectionMode = false;
   bool _isFolderSelectionMode = false;
   bool _isDragAdding = true;
   int? _dragStartIndex;
-  
+
   int _gridColumnCount = 3;
   bool _isZoomingLocked = false;
-  
 
-
-  String? _previewingPath;
-
-  final GlobalKey _vlogGridKey = GlobalKey(debugLabel: 'vlogGrid');
+  final GlobalKey _projectGridKey = GlobalKey(debugLabel: 'projectGrid');
   final GlobalKey _folderGridKey = GlobalKey(debugLabel: 'folderGrid');
 
-  List<String> _selectedVlogPaths = [];
+  final ScrollController _folderScrollController = ScrollController();
+  final ScrollController _projectScrollController = ScrollController();
+
+  List<String> _selectedProjectIds = [];
   Set<String> _selectedFolderNames = {};
 
   late VideoManager videoManager;
 
+  Future<void> _openProjectWithTierRouting(VlogProject project) async {
+    final userStatus = UserStatusManager();
+
+    if (!userStatus.isStandardOrAbove()) {
+      Fluttertoast.showToast(msg: '편집은 Standard부터 지원합니다. 720p로 바로 내보냅니다.');
+
+      final audioConfig = <String, double>{
+        for (final clip in project.clips) clip.path: 1.0,
+      };
+
+      final resultPath = await videoManager.exportVlog(
+        clips: project.clips,
+        audioConfig: audioConfig,
+        bgmPath: project.bgmPath,
+        bgmVolume: project.bgmVolume,
+        quality: '720p',
+        userTier: 'free',
+      );
+
+      if (!mounted) return;
+
+      if (resultPath != null) {
+        Fluttertoast.showToast(msg: '720p 내보내기 완료');
+      } else {
+        Fluttertoast.showToast(msg: '내보내기에 실패했습니다. 다시 시도해주세요.');
+      }
+      widget.onRefresh();
+      return;
+    }
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => VideoEditScreen(project: project)),
+    );
+    if (!mounted) return;
+    widget.onRefresh();
+  }
+
+  @override
+  void dispose() {
+    _folderScrollController.dispose();
+    _projectScrollController.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     videoManager = Provider.of<VideoManager>(context);
-    
+
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
-        if (_previewingPath != null) setState(() => _previewingPath = null);
-        else if (_isVlogSelectionMode) setState(() { _isVlogSelectionMode = false; _selectedVlogPaths.clear(); });
-        else if (_isFolderSelectionMode) setState(() { _isFolderSelectionMode = false; _selectedFolderNames.clear(); });
-        else if (_isInFolderDetail) setState(() => _isInFolderDetail = false);
+        if (_isProjectSelectionMode)
+          setState(() {
+            _isProjectSelectionMode = false;
+            _selectedProjectIds.clear();
+          });
+        else if (_isFolderSelectionMode)
+          setState(() {
+            _isFolderSelectionMode = false;
+            _selectedFolderNames.clear();
+          });
+        else if (_isInFolderDetail)
+          setState(() => _isInFolderDetail = false);
       },
       child: _isInFolderDetail ? _buildDetailView() : _buildFolderListTab(),
     );
   }
 
   Future<void> _loadVlogsFromCurrentFolder() async {
-    setState(() {
-      videoManager.vlogProjectPaths.clear();
-    });
-    await videoManager.loadVlogsFromCurrentFolder();
+    await videoManager.loadProjects();
     if (mounted) setState(() {});
+  }
+
+  Future<void> _openPaywallAndRefresh() async {
+    final upgraded = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => const PaywallScreen()),
+    );
+
+    if (upgraded != true) {
+      return;
+    }
+
+    await UserStatusManager().initialize();
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  int _projectCountInFolder(String folderName) {
+    return videoManager.vlogProjects
+        .where((p) => p.folderName == folderName)
+        .length;
+  }
+
+  String? _projectStatusBadge(VlogProject project) {
+    final cloudId = project.cloudProjectId;
+    if (cloudId != null && cloudId.trim().isNotEmpty) {
+      return '동기화됨';
+    }
+    return null;
   }
 
   Widget _buildFolderListTab() {
     final allFolders = videoManager.vlogAlbums.where((f) => f != "일상").toList();
-    final selectableFolders = allFolders.where((f) => f != "기본" && f != "휴지통").toList();
-    final bool isAll = _selectedFolderNames.length == selectableFolders.length && _selectedFolderNames.isNotEmpty;
-    
+    final selectableFolders = allFolders
+        .where((f) => f != "기본" && f != "휴지통")
+        .toList();
+    final bool isAll =
+        _selectedFolderNames.length == selectableFolders.length &&
+        _selectedFolderNames.isNotEmpty;
+
     return Scaffold(
       backgroundColor: const Color(0xFFF4F6F8),
       body: GestureDetector(
@@ -94,97 +168,100 @@ class _VlogScreenState extends State<VlogScreen> {
         onScaleUpdate: (d) => _handleScaleUpdate(d, false),
         onScaleEnd: (_) => _dragStartIndex = null,
         child: CustomScrollView(
-          controller: _scrollController,
+          controller: _folderScrollController,
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             SliverAppBar(
-              backgroundColor: Colors.white.withOpacity(0.8),
+              backgroundColor: const Color(0xFFF4F6F8),
               surfaceTintColor: Colors.transparent,
               pinned: true,
-              floating: true,
+              floating: false,
               centerTitle: false,
-              title: Row(
-                children: [
-                  const Icon(Icons.video_library, color: Colors.deepPurple, size: 28),
-                  const SizedBox(width: 8),
-                  Text(
-                    _isFolderSelectionMode ? "${_selectedFolderNames.length} Selected" : "Vlog",
-                    style: const TextStyle(
-                      color: Colors.black,
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: -0.5,
-                    ),
-                  ),
-                ],
+              toolbarHeight: 88,
+              title: Text(
+                _isFolderSelectionMode
+                    ? "${_selectedFolderNames.length}개 선택됨"
+                    : "Project",
+                style: const TextStyle(
+                  color: Color(0xFF303236),
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -1.1,
+                ),
               ),
               actions: [
                 if (_isFolderSelectionMode)
                   IconButton(
-                    icon: Icon(isAll ? Icons.check_box : Icons.check_box_outline_blank, color: Colors.black),
+                    icon: Icon(
+                      isAll ? Icons.check_box : Icons.check_box_outline_blank,
+                      color: Colors.black,
+                    ),
                     onPressed: _toggleSelectAllFolders,
                   )
                 else ...[
                   // PRO Badge
-                   GestureDetector(
-                   onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PaywallScreen())),
-                   child: Container(
-                     margin: const EdgeInsets.only(right: 12),
-                     width: 40,
-                     height: 40,
-                     decoration: BoxDecoration(
-                       gradient: const LinearGradient(colors: [Colors.amber, Colors.orangeAccent]),
-                       shape: BoxShape.circle,
-                       boxShadow: [
-                         BoxShadow(color: Colors.orange.withOpacity(0.3), blurRadius: 4, offset: const Offset(0, 2))
-                       ],
-                     ),
-                     child: const Icon(Icons.star, color: Colors.white, size: 20),
-                   ),
-                 ),
+                  GestureDetector(
+                    onTap: _openPaywallAndRefresh,
+                    child: Container(
+                      margin: const EdgeInsets.only(right: 12),
+                      width: 25,
+                      height: 25,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFF4CF00),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.star,
+                        color: Colors.white,
+                        size: 14,
+                      ),
+                    ),
+                  ),
                   IconButton(
-                    icon: const Icon(Icons.add_circle_outline, color: Colors.black),
+                    icon: const Icon(Icons.add, color: Colors.black, size: 21),
                     onPressed: _showCreateFolderDialog,
                   ),
                 ],
               ],
             ),
-            
+
             allFolders.isEmpty
-              ? SliverFillRemaining(
-                  child: Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: const [
-                        Icon(Icons.folder_open, color: Colors.grey, size: 60),
-                        SizedBox(height: 16),
-                        Text(
-                          "No Vlog folders.\nAdd one to start!",
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.grey),
-                        ),
-                      ],
+                ? SliverFillRemaining(
+                    child: Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: const [
+                          Icon(Icons.folder_open, color: Colors.grey, size: 60),
+                          SizedBox(height: 16),
+                          Text(
+                            "No Project folders.\nAdd one to start!",
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                )
-              : SliverPadding(
-                  padding: const EdgeInsets.all(16),
-                  sliver: SliverGrid(
-                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: _gridColumnCount,
-                      crossAxisSpacing: 16,
-                      mainAxisSpacing: 16,
-                      childAspectRatio: 0.85,
-                    ),
-                    delegate: SliverChildBuilderDelegate(
-                      (context, index) {
+                  )
+                : SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(14, 14, 14, 28),
+                    sliver: SliverGrid(
+                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: _gridColumnCount,
+                        crossAxisSpacing: 10,
+                        mainAxisSpacing: 20,
+                        childAspectRatio: 0.75,
+                      ),
+                      delegate: SliverChildBuilderDelegate((context, index) {
                         final folderName = allFolders[index];
-                        final isSelected = _selectedFolderNames.contains(folderName);
-                        final canSelect = folderName != "기본" && folderName != "휴지통";
+                        final isSelected = _selectedFolderNames.contains(
+                          folderName,
+                        );
+                        final canSelect =
+                            folderName != "기본" && folderName != "휴지통";
 
                         return MediaWidgets.buildFolderGridItem(
                           folderName: folderName,
-                          clipCount: 0, // TODO: Count implementation
+                          clipCount: _projectCountInFolder(folderName),
                           isSelected: isSelected,
                           canSelect: canSelect,
                           isSelectionMode: _isFolderSelectionMode,
@@ -203,8 +280,8 @@ class _VlogScreenState extends State<VlogScreen> {
                               setState(() {
                                 videoManager.currentVlogFolder = folderName;
                                 _isInFolderDetail = true;
-                                _selectedVlogPaths.clear();
-                                _isVlogSelectionMode = false;
+                                _selectedProjectIds.clear();
+                                _isProjectSelectionMode = false;
                               });
                               _loadVlogsFromCurrentFolder();
                             }
@@ -225,15 +302,14 @@ class _VlogScreenState extends State<VlogScreen> {
                           getIcon: _getFolderIcon,
                           getColor: _getFolderColor,
                         );
-                      },
-                      childCount: allFolders.length,
+                      }, childCount: allFolders.length),
                     ),
                   ),
-                ),
           ],
         ),
       ),
-      floatingActionButton: _isFolderSelectionMode && _selectedFolderNames.isNotEmpty
+      floatingActionButton:
+          _isFolderSelectionMode && _selectedFolderNames.isNotEmpty
           ? FloatingActionButton.extended(
               onPressed: _handleFolderBatchDelete,
               backgroundColor: Colors.deepPurple,
@@ -243,13 +319,13 @@ class _VlogScreenState extends State<VlogScreen> {
           : null,
     );
   }
-  
+
   IconData _getFolderIcon(String folderName) {
     if (folderName == "기본") return Icons.home;
     if (folderName == "휴지통") return Icons.delete_outline;
     return Icons.video_library;
   }
-  
+
   Color _getFolderColor(String folderName) {
     if (folderName == "기본") return Colors.blue;
     if (folderName == "휴지통") return Colors.deepPurple;
@@ -261,13 +337,13 @@ class _VlogScreenState extends State<VlogScreen> {
     final projects = videoManager.filteredProjects;
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: const Color(0xFFF4F6F8),
       body: GestureDetector(
-        key: _vlogGridKey, // Restore Key
+        key: _projectGridKey, // Restore Key
         onScaleStart: (d) {
           _isZoomingLocked = false;
-          if (_isVlogSelectionMode && d.pointerCount == 1) {
-             _startDragSelection(d.focalPoint, true);
+          if (_isProjectSelectionMode && d.pointerCount == 1) {
+            _startDragSelection(d.focalPoint, true);
           }
         },
         onScaleUpdate: (d) => _handleScaleUpdate(d, true),
@@ -275,20 +351,24 @@ class _VlogScreenState extends State<VlogScreen> {
         child: Stack(
           children: [
             CustomScrollView(
-              controller: _scrollController,
+              controller: _projectScrollController,
               physics: const AlwaysScrollableScrollPhysics(),
               slivers: [
                 SliverAppBar(
-                  backgroundColor: Colors.white.withOpacity(0.9),
+                  backgroundColor: Colors.white.withOpacity(0.92),
                   surfaceTintColor: Colors.transparent,
                   pinned: true,
+                  toolbarHeight: 74,
                   leading: IconButton(
-                    icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black),
+                    icon: const Icon(
+                      Icons.arrow_back_ios_new,
+                      color: Colors.black,
+                    ),
                     onPressed: () {
-                      if (_isVlogSelectionMode) {
+                      if (_isProjectSelectionMode) {
                         setState(() {
-                          _isVlogSelectionMode = false;
-                          _selectedVlogPaths.clear();
+                          _isProjectSelectionMode = false;
+                          _selectedProjectIds.clear();
                         });
                       } else {
                         setState(() => _isInFolderDetail = false);
@@ -300,59 +380,63 @@ class _VlogScreenState extends State<VlogScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        _isVlogSelectionMode ? "${_selectedVlogPaths.length} Selected" : videoManager.currentVlogFolder,
+                        _isProjectSelectionMode
+                            ? "${_selectedProjectIds.length}개 선택됨"
+                            : videoManager.currentVlogFolder,
                         style: const TextStyle(
-                          color: Colors.black,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF111827),
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                          height: 0.98,
+                          letterSpacing: -1.1,
                         ),
                       ),
-                       if (!_isVlogSelectionMode)
+                      if (!_isProjectSelectionMode)
                         Text(
-                          "${projects.length} Vlogs",
+                          "${projects.length} Projects",
                           style: TextStyle(
-                            color: Colors.grey[500],
-                            fontSize: 12,
+                            color: const Color(0xFF94A3B8),
+                            fontSize: 13,
                             fontWeight: FontWeight.w500,
-                            letterSpacing: 0.5,
+                            letterSpacing: 0,
                           ),
                         ),
                     ],
                   ),
                   actions: [
-                    if (_isVlogSelectionMode)
+                    if (_isProjectSelectionMode)
                       IconButton(
                         icon: Icon(
-                          _selectedVlogPaths.length == projects.length
+                          _selectedProjectIds.length == projects.length
                               ? Icons.check_box
                               : Icons.check_box_outline_blank,
                           color: Colors.black,
                         ),
-                        onPressed: _toggleSelectAllVlogs,
-                      )
+                        onPressed: _toggleSelectAllProjects,
+                      ),
                   ],
                 ),
-                
+
                 if (projects.isEmpty)
-                   SliverFillRemaining(
-                      child: Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: const [
-                            Icon(Icons.stars, size: 60, color: Colors.grey),
-                            SizedBox(height: 16),
-                            Text(
-                              "No Vlogs.\nMerge clips to create one!",
-                              textAlign: TextAlign.center,
-                              style: TextStyle(color: Colors.grey),
-                            )
-                          ],
-                        ),
+                  SliverFillRemaining(
+                    child: Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: const [
+                          Icon(Icons.stars, size: 60, color: Colors.grey),
+                          SizedBox(height: 16),
+                          Text(
+                            "No Projects.\nMerge clips to create one!",
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                        ],
                       ),
-                   )
+                    ),
+                  )
                 else
                   SliverPadding(
-                    padding: const EdgeInsets.all(4),
+                    padding: const EdgeInsets.fromLTRB(8, 8, 8, 150),
                     sliver: SliverGrid(
                       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                         crossAxisCount: _gridColumnCount,
@@ -360,76 +444,73 @@ class _VlogScreenState extends State<VlogScreen> {
                         mainAxisSpacing: 4,
                         childAspectRatio: 1.0,
                       ),
-                      delegate: SliverChildBuilderDelegate(
-                        (context, index) {
-                          final project = projects[index];
-                          final isSelected = _selectedVlogPaths.contains(project.id);
-                          final int selectIdx = _selectedVlogPaths.indexOf(project.id);
+                      delegate: SliverChildBuilderDelegate((context, index) {
+                        final project = projects[index];
+                        final isSelected = _selectedProjectIds.contains(
+                          project.id,
+                        );
+                        final int selectIdx = _selectedProjectIds.indexOf(
+                          project.id,
+                        );
 
-                          return MediaWidgets.buildMediaGridItem(
-                            // Thumbnail from first clip
-                            path: project.videoPaths.isNotEmpty ? project.videoPaths.first : '', 
-                            isSelected: isSelected,
-                            selectIndex: selectIdx,
-                            isSelectionMode: _isVlogSelectionMode,
-                            gridColumnCount: _gridColumnCount,
-                            isFavorite: false, // Favorites removed for Vlogs
-                            subtitle: "${DateFormat('MM/dd').format(project.updatedAt)} • ${project.videoPaths.length} clips",
-                            title: project.title,
-                            onTap: () {
-                              if (_isVlogSelectionMode) {
-                                setState(() {
-                                  if (isSelected) {
-                                    _selectedVlogPaths.remove(project.id);
-                                  } else {
-                                    _selectedVlogPaths.add(project.id);
-                                  }
-                                });
-                              } else {
-                                // Navigate to Editor
-                                Navigator.push(
-                                  context, 
-                                  MaterialPageRoute(builder: (_) => VideoEditScreen(project: project))
-                                ).then((_) => widget.onRefresh());
-                              }
-                            },
-                            onLongPress: () {
+                        return MediaWidgets.buildMediaGridItem(
+                          // Thumbnail from first clip
+                          path: project.clips.isNotEmpty
+                              ? project.clips.first.path
+                              : '',
+                          isSelected: isSelected,
+                          selectIndex: selectIdx,
+                          isSelectionMode: _isProjectSelectionMode,
+                          gridColumnCount: _gridColumnCount,
+                          isFavorite: false, // Favorites removed for Vlogs
+                          benchmarkStyle: true,
+                          showDurationBadge: true,
+                          statusBadge: _projectStatusBadge(project),
+                          subtitle:
+                              "${DateFormat('MM/dd').format(project.updatedAt)} • ${project.clips.length} clips",
+                          title: project.title,
+                          onTap: () {
+                            if (_isProjectSelectionMode) {
                               setState(() {
-                                _isVlogSelectionMode = true;
-                                _dragStartIndex = index;
-                                _isDragAdding = !isSelected;
-                                if (_isDragAdding) {
-                                  _selectedVlogPaths.add(project.id);
+                                if (isSelected) {
+                                  _selectedProjectIds.remove(project.id);
                                 } else {
-                                  _selectedVlogPaths.remove(project.id);
+                                  _selectedProjectIds.add(project.id);
                                 }
                               });
-                              hapticFeedback();
-                            },
-                            getThumbnail: videoManager.getThumbnail,
-                          );
-                        },
-                        childCount: projects.length,
-                      ),
+                            } else {
+                              _openProjectWithTierRouting(project);
+                            }
+                          },
+                          onLongPress: () {
+                            setState(() {
+                              _isProjectSelectionMode = true;
+                              _dragStartIndex = index;
+                              _isDragAdding = !isSelected;
+                              if (_isDragAdding) {
+                                _selectedProjectIds.add(project.id);
+                              } else {
+                                _selectedProjectIds.remove(project.id);
+                              }
+                            });
+                            hapticFeedback();
+                          },
+                          getThumbnail: videoManager.getThumbnail,
+                          getDuration: videoManager.getVideoDuration,
+                        );
+                      }, childCount: projects.length),
                     ),
                   ),
               ],
             ),
-            // Preview Overlay Integration
-            if (_previewingPath != null)
-              ResultPreviewWidget(
-                videoPath: _previewingPath!,
-                onShare: () => Share.shareXFiles([XFile(_previewingPath!)], text: 'Made with 3S Vlog'),
-                onEdit: () => widget.onEditRequest(_previewingPath!),
-                onClose: () => setState(() => _previewingPath = null),
-              ),
           ],
         ),
       ),
-      floatingActionButton: (_isVlogSelectionMode && _selectedVlogPaths.isNotEmpty)
+      floatingActionButton:
+          (_isProjectSelectionMode && _selectedProjectIds.isNotEmpty)
           ? MediaWidgets.buildActionPanel(
               isTrashMode: videoManager.currentVlogFolder == "휴지통",
-              onCreateVlog: null, 
+              onCreateProject: null,
               onFavorite: null, // Removed favorite action
               onMove: () => _handleMoveOrCopy(true),
               // Copy not requested for folders phase, but keeping placeholder or removing?
@@ -438,19 +519,20 @@ class _VlogScreenState extends State<VlogScreen> {
               // Assuming Copy is not priority or should behave like Move (duplicate then move?)
               // For now, let's keep Copy as void or implementing duplication later if needed.
               // Logic changes: _handleMoveOrCopy implemented below.
-              onCopy: () => _handleMoveOrCopy(false), 
-              onDelete: _handleVlogBatchDelete,
+              onCopy: () => _handleMoveOrCopy(false),
+              onDelete: _handleProjectBatchDelete,
               onRestore: () async {
-                // Restore from Trash (which is a folder now) = Move to '기본' or original?
-                // Logic for filteredProjects handles '휴지통' folder.
-                // We should use moveProjectToFolder('기본') for restore if simple.
-                for (var id in _selectedVlogPaths) {
-                   final p = projects.firstWhere((element) => element.id == id);
-                   await videoManager.moveProjectToFolder(p, '기본');
+                final projectMap = {for (final p in projects) p.id: p};
+                for (var id in _selectedProjectIds) {
+                  final p = projectMap[id];
+                  if (p != null) {
+                    await videoManager.restoreProjectFromTrash(p);
+                  }
                 }
+                await videoManager.loadProjects();
                 setState(() {
-                  _isVlogSelectionMode = false;
-                  _selectedVlogPaths.clear();
+                  _isProjectSelectionMode = false;
+                  _selectedProjectIds.clear();
                 });
                 hapticFeedback();
               },
@@ -462,30 +544,37 @@ class _VlogScreenState extends State<VlogScreen> {
 
   // --- [제스처 처리] ---
 
-  void _startDragSelection(Offset position, bool isVlog) {
-    final targetList = isVlog 
-        ? videoManager.vlogProjects.map((p) => p.id).toList()
-        : videoManager.vlogAlbums.where((f) => f != "일상").toList(); // ✅ 휴지통 포함
-    
+  void _startDragSelection(Offset position, bool isProject) {
+    final folderItems = videoManager.vlogAlbums
+        .where((f) => f != "일상")
+        .toList();
+    final projectItems = videoManager.filteredProjects
+        .map((p) => p.id)
+        .toList();
+    final targetList = isProject ? projectItems : folderItems;
+
     double topPad = MediaQuery.of(context).padding.top + kToolbarHeight;
-    double currentScroll = _scrollController.hasClients ? _scrollController.offset : 0.0;
-    
+    final controller = isProject
+        ? _projectScrollController
+        : _folderScrollController;
+    double currentScroll = controller.hasClients ? controller.offset : 0.0;
+
     MediaSelectionHelper.startDragSelection(
       focalPoint: position,
-      gridKey: isVlog ? _vlogGridKey : _folderGridKey,
+      gridKey: isProject ? _projectGridKey : _folderGridKey,
       columnCount: _gridColumnCount,
-      childAspectRatio: isVlog ? 1.0 : (_gridColumnCount == 3 ? 0.7 : 0.85),
-      targetList: targetList.map((e) => e.toString()).toList(), // Fix type mapping if needed, assuming Vlogs/Folders are Strings or have IDs
-      currentSelection: isVlog ? _selectedVlogPaths : _selectedFolderNames,
+      childAspectRatio: isProject ? 1.0 : (_gridColumnCount == 5 ? 0.7 : 0.85),
+      targetList: targetList,
+      currentSelection: isProject ? _selectedProjectIds : _selectedFolderNames,
       scrollOffset: currentScroll,
       topPadding: topPad,
       onSelectionChanged: (item, isAdding) {
         setState(() {
-          if (isVlog) {
+          if (isProject) {
             if (isAdding) {
-              _selectedVlogPaths.add(item);
+              _selectedProjectIds.add(item);
             } else {
-              _selectedVlogPaths.remove(item);
+              _selectedProjectIds.remove(item);
             }
           } else {
             if (isAdding) {
@@ -500,13 +589,11 @@ class _VlogScreenState extends State<VlogScreen> {
         _dragStartIndex = index;
         _isDragAdding = isAdding;
       },
-      canSelectItem: isVlog 
-          ? null 
-          : (item) => item != "기본" && item != "휴지통",
+      canSelectItem: isProject ? null : (item) => item != "기본" && item != "휴지통",
     );
   }
 
-  void _handleScaleUpdate(ScaleUpdateDetails details, bool isVlog) {
+  void _handleScaleUpdate(ScaleUpdateDetails details, bool isProject) {
     // 줌 처리
     final newCount = MediaSelectionHelper.handleZoomGesture(
       details: details,
@@ -519,52 +606,50 @@ class _VlogScreenState extends State<VlogScreen> {
         });
       },
     );
-    
+
     if (newCount != null) return;
 
     // 드래그 선택 처리
-    final isActive = isVlog ? _isVlogSelectionMode : _isFolderSelectionMode;
+    final isActive = isProject
+        ? _isProjectSelectionMode
+        : _isFolderSelectionMode;
     if (!isActive) return;
-    
-    final targetList = isVlog 
-        ? videoManager.vlogProjects.map((p) => p.id).toList()
-        : videoManager.vlogAlbums.where((f) => f != "일상").toList(); // ✅ 휴지통 포함
-    
-    double topPad = MediaQuery.of(context).padding.top + kToolbarHeight; 
-    double currentScroll = _scrollController.hasClients ? _scrollController.offset : 0.0;
 
-    MediaSelectionHelper.updateDragSelection(
-      focalPoint: details.focalPoint,
-      gridKey: isVlog ? _vlogGridKey : _folderGridKey,
-      columnCount: _gridColumnCount,
-      childAspectRatio: isVlog ? 1.0 : (_gridColumnCount == 3 ? 0.7 : 0.85),
-      targetList: targetList.map((e) => e.toString()).toList(),
-      currentSelection: isVlog ? _selectedVlogPaths : _selectedFolderNames,
-      dragStartIndex: _dragStartIndex ?? -1,
-      isDragAdding: _isDragAdding,
-      scrollOffset: currentScroll,
-      topPadding: topPad,
-      onSelectionChanged: (item, isAdding) {
-        setState(() {
-          if (isVlog) {
-            if (isAdding) {
-              _selectedVlogPaths.add(item);
-            } else {
-              _selectedVlogPaths.remove(item);
-            }
-          } else {
-            if (isAdding) {
-              _selectedFolderNames.add(item);
-            } else {
-              _selectedFolderNames.remove(item);
-            }
-          }
-        });
-      },
-      canSelectItem: isVlog 
-          ? null 
-          : (item) => item != "기본" && item != "휴지통",
-    );
+    final folderItems = videoManager.vlogAlbums
+        .where((f) => f != "일상")
+        .toList();
+    final projectItems = videoManager.filteredProjects
+        .map((p) => p.id)
+        .toList();
+    final targetList = isProject ? projectItems : folderItems;
+
+    double topPad = MediaQuery.of(context).padding.top + kToolbarHeight;
+    final controller = isProject
+        ? _projectScrollController
+        : _folderScrollController;
+    double currentScroll = controller.hasClients ? controller.offset : 0.0;
+
+    setState(() {
+      MediaSelectionHelper.updateDragSelection(
+        focalPoint: details.focalPoint,
+        gridKey: isProject ? _projectGridKey : _folderGridKey,
+        columnCount: _gridColumnCount,
+        childAspectRatio: isProject
+            ? 1.0
+            : (_gridColumnCount == 5 ? 0.7 : 0.85),
+        targetList: targetList,
+        currentSelection: isProject
+            ? _selectedProjectIds
+            : _selectedFolderNames,
+        dragStartIndex: _dragStartIndex ?? -1,
+        isDragAdding: _isDragAdding,
+        scrollOffset: currentScroll,
+        topPadding: topPad,
+        canSelectItem: isProject
+            ? null
+            : (item) => item != "기본" && item != "휴지통",
+      );
+    });
   }
 
   void _toggleSelectAllFolders() {
@@ -581,10 +666,12 @@ class _VlogScreenState extends State<VlogScreen> {
     hapticFeedback();
   }
 
-   // --- [액션 핸들러] ---
+  // --- [액션 핸들러] ---
 
   void _showCreateFolderDialog() async {
-    String? name = await MediaDialogs.showCreateVlogFolderDialog(context: context);
+    String? name = await MediaDialogs.showCreateProjectFolderDialog(
+      context: context,
+    );
     if (name != null && name.trim().isNotEmpty) {
       if (videoManager.vlogAlbums.contains(name.trim())) return;
       await videoManager.createNewVlogAlbum(name.trim());
@@ -596,7 +683,7 @@ class _VlogScreenState extends State<VlogScreen> {
     bool? ok = await MediaDialogs.showConfirmDialog(
       context: context,
       title: "폴더 삭제",
-      content: "폴더는 삭제되고 Vlog는 휴지통으로 이동합니다.",
+      content: "폴더는 삭제되고 Project는 휴지통으로 이동합니다.",
     );
     if (ok == true) {
       await videoManager.deleteVlogAlbums(_selectedFolderNames);
@@ -605,25 +692,20 @@ class _VlogScreenState extends State<VlogScreen> {
         _selectedFolderNames.clear();
       });
       await videoManager.initAlbumSystem();
-      WidgetsBinding.instance.addPostFrameCallback((_) async {
-         // ... existing code ...
-         if (mounted) setState(() {});
-      });
+      if (mounted) setState(() {});
     }
   }
-  
-  final ScrollController _scrollController = ScrollController();
 
-  Future<void> _handleVlogBatchDelete() async {
+  Future<void> _handleProjectBatchDelete() async {
     bool isTrash = videoManager.currentVlogFolder == "휴지통";
     if (isTrash) {
       bool? ok = await MediaDialogs.showConfirmDialog(
         context: context,
         title: "영구 삭제",
-        content: "선택한 Vlog 프로젝트를 영구 삭제할까요? 복구할 수 없습니다.",
+        content: "선택한 Project를 영구 삭제할까요? 복구할 수 없습니다.",
       );
       if (ok != true) return;
-      for (var id in _selectedVlogPaths) await videoManager.deleteProject(id);
+      for (var id in _selectedProjectIds) await videoManager.deleteProject(id);
     } else {
       bool? ok = await MediaDialogs.showConfirmDialog(
         context: context,
@@ -631,45 +713,48 @@ class _VlogScreenState extends State<VlogScreen> {
         content: "선택한 프로젝트를 휴지통으로 이동할까요?",
       );
       if (ok != true) return;
-      
-      for (var id in _selectedVlogPaths) {
+
+      for (var id in _selectedProjectIds) {
         await videoManager.moveProjectToTrash(id);
       }
       Fluttertoast.showToast(msg: "휴지통으로 이동되었습니다");
     }
     setState(() {
-      _isVlogSelectionMode = false;
-      _selectedVlogPaths.clear();
+      _isProjectSelectionMode = false;
+      _selectedProjectIds.clear();
     });
+    await videoManager.loadProjects();
     hapticFeedback();
   }
 
-  void _toggleSelectAllVlogs() {
+  void _toggleSelectAllProjects() {
     setState(() {
       final projects = videoManager.filteredProjects;
-      if (_selectedVlogPaths.length == projects.length) {
-        _selectedVlogPaths.clear();
+      if (_selectedProjectIds.length == projects.length) {
+        _selectedProjectIds.clear();
       } else {
-        _selectedVlogPaths = projects.map((p) => p.id).toList();
+        _selectedProjectIds = projects.map((p) => p.id).toList();
       }
     });
     hapticFeedback();
   }
 
-  // ... 
+  // ...
 
   Future<void> _handleMoveOrCopy(bool isMove) async {
     if (!isMove) {
       Fluttertoast.showToast(msg: "복사 기능은 준비중입니다.");
-       setState(() {
-        _isVlogSelectionMode = false;
-        _selectedVlogPaths.clear();
+      setState(() {
+        _isProjectSelectionMode = false;
+        _selectedProjectIds.clear();
       });
       return;
     }
 
     // Show Folder Selection Dialog
-    final folders = videoManager.vlogAlbums.where((f) => f != "휴지통" && f != videoManager.currentVlogFolder).toList();
+    final folders = videoManager.vlogAlbums
+        .where((f) => f != "휴지통" && f != videoManager.currentVlogFolder)
+        .toList();
     if (folders.isEmpty) {
       Fluttertoast.showToast(msg: "이동할 다른 폴더가 없습니다.");
       return;
@@ -698,15 +783,19 @@ class _VlogScreenState extends State<VlogScreen> {
 
     if (targetFolder != null) {
       final projects = videoManager.filteredProjects;
-      for (var id in _selectedVlogPaths) {
-        final project = projects.firstWhere((p) => p.id == id);
-        await videoManager.moveProjectToFolder(project, targetFolder);
+      final projectMap = {for (final p in projects) p.id: p};
+      for (var id in _selectedProjectIds) {
+        final project = projectMap[id];
+        if (project != null) {
+          await videoManager.moveProjectToFolder(project, targetFolder);
+        }
       }
-      
-      Fluttertoast.showToast(msg: "${_selectedVlogPaths.length}개 이동됨");
+      await videoManager.loadProjects();
+
+      Fluttertoast.showToast(msg: "${_selectedProjectIds.length}개 이동됨");
       setState(() {
-        _isVlogSelectionMode = false;
-        _selectedVlogPaths.clear();
+        _isProjectSelectionMode = false;
+        _selectedProjectIds.clear();
       });
       hapticFeedback();
     }
