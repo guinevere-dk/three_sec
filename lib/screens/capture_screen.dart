@@ -53,8 +53,8 @@ class _CaptureScreenState extends State<CaptureScreen>
 
   _CaptureFlowState _flowState = _CaptureFlowState.idle;
   int _remainingTime = 3;
-  static const int _targetRecordingMilliseconds = 3000;
-  static const int _recordingStopDelayMs = 180;
+  static const int _targetRecordingMilliseconds = 3500;
+  static const int _recordingStopDelayMs = 120;
   Timer? _recordingTimer;
   Offset? _tapPosition;
   late AnimationController _focusAnimController;
@@ -410,7 +410,8 @@ class _CaptureScreenState extends State<CaptureScreen>
         timer.cancel();
       } else {
         final displayRemainMs = remainMs > 0 ? remainMs : 0;
-        setState(() => _remainingTime = ((displayRemainMs - 1) ~/ 1000) + 1);
+        final countdown = ((((displayRemainMs - 1) ~/ 1000) + 1).clamp(0, 3));
+        setState(() => _remainingTime = countdown);
       }
     });
   }

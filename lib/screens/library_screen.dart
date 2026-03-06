@@ -22,6 +22,7 @@ class LibraryScreen extends StatefulWidget {
   final Function() onRefreshData;
   final Function(List<String> selectedPaths) onMerge;
   final Function(String path) onPickMedia;
+  final bool isActive;
 
   const LibraryScreen({
     super.key,
@@ -30,6 +31,7 @@ class LibraryScreen extends StatefulWidget {
     required this.onRefreshData,
     required this.onMerge,
     required this.onPickMedia,
+    required this.isActive,
   });
 
   @override
@@ -66,6 +68,28 @@ class _LibraryScreenState extends State<LibraryScreen> {
       await videoManager.initAlbumSystem();
       if (mounted) setState(() {});
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant LibraryScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.isActive && !widget.isActive) {
+      setState(_resetTransientState);
+    }
+  }
+
+  void _resetTransientState() {
+    _isInAlbumDetail = false;
+    _isClipSelectionMode = false;
+    _isAlbumSelectionMode = false;
+    _isDragAdding = true;
+    _dragStartIndex = null;
+    _gridColumnCount = 3;
+    _isZoomingLocked = false;
+    _previewingPath = null;
+    _storageFilter = 'all';
+    _selectedClipPaths.clear();
+    _selectedAlbumNames.clear();
   }
 
   final ScrollController _albumScrollController = ScrollController();
@@ -203,7 +227,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   IconButton(
                     key: widget.keyPickMedia,
                     icon: const Icon(Icons.add, color: Colors.black, size: 21),
-                    onPressed: () => _showLibraryAddSheet(),
+                    onPressed: _showCreateAlbumDialog,
                   ),
                 ],
               ],
@@ -393,26 +417,26 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 ],
               ),
               actions: [
-                TextButton(
-                  onPressed: () {
-                    if (!_isClipSelectionMode) {
-                      setState(() {
-                        _isClipSelectionMode = true;
-                        _selectedClipPaths = List.from(visibleClipPaths);
-                      });
-                    } else {
-                      _toggleSelectAllClips();
-                    }
-                  },
-                  child: const Text(
-                    'Select All',
-                    style: TextStyle(
-                      color: Color(0xFF1A73E8),
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
+                if (!_isClipSelectionMode)
+                  IconButton(
+                    icon: const Icon(
+                      Icons.add_photo_alternate_outlined,
+                      color: Colors.black,
+                    ),
+                    onPressed: () => widget.onPickMedia(''),
+                  ),
+                if (_isClipSelectionMode)
+                  TextButton(
+                    onPressed: _toggleSelectAllClips,
+                    child: const Text(
+                      'Select All',
+                      style: TextStyle(
+                        color: Color(0xFF1A73E8),
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
-                ),
               ],
             ),
 
@@ -1090,52 +1114,4 @@ class _LibraryScreenState extends State<LibraryScreen> {
     hapticFeedback();
   }
 
-  Future<void> _showLibraryAddSheet() async {
-    final String? action = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-      ),
-      builder: (context) {
-        return SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 52,
-                  height: 6,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFD4D9E0),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-                const SizedBox(height: 18),
-                ListTile(
-                  leading: const Icon(Icons.add_photo_alternate_outlined),
-                  title: const Text('미디어 가져오기'),
-                  onTap: () => Navigator.pop(context, 'import'),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.create_new_folder_outlined),
-                  title: const Text('새 앨범 만들기'),
-                  onTap: () => Navigator.pop(context, 'album'),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-
-    if (!mounted || action == null) return;
-    if (action == 'import') {
-      widget.onPickMedia('');
-    } else if (action == 'album') {
-      _showCreateAlbumDialog();
-    }
-  }
 }

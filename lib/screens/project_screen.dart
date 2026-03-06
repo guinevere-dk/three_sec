@@ -15,8 +15,13 @@ import '../screens/paywall_screen.dart';
 
 class ProjectScreen extends StatefulWidget {
   final Function() onRefresh;
+  final bool isActive;
 
-  const ProjectScreen({super.key, required this.onRefresh});
+  const ProjectScreen({
+    super.key,
+    required this.onRefresh,
+    required this.isActive,
+  });
 
   @override
   State<ProjectScreen> createState() => _ProjectScreenState();
@@ -79,6 +84,26 @@ class _ProjectScreenState extends State<ProjectScreen> {
     );
     if (!mounted) return;
     widget.onRefresh();
+  }
+
+  @override
+  void didUpdateWidget(covariant ProjectScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.isActive && !widget.isActive) {
+      setState(_resetTransientState);
+    }
+  }
+
+  void _resetTransientState() {
+    _isInFolderDetail = false;
+    _isProjectSelectionMode = false;
+    _isFolderSelectionMode = false;
+    _isDragAdding = true;
+    _dragStartIndex = null;
+    _gridColumnCount = 3;
+    _isZoomingLocked = false;
+    _selectedProjectIds.clear();
+    _selectedFolderNames.clear();
   }
 
   @override

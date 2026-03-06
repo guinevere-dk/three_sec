@@ -852,6 +852,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       onRefreshData: _refreshData,
       onMerge: (paths) => _handleMerge(paths),  // ✅ 직접 경로 전달
       onPickMedia: (album) => _pickMedia(),
+      isActive: _selectedIndex == 1,
     );
   }
 
@@ -917,6 +918,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   Widget _buildProjectTab() {
     return ProjectScreen(
       onRefresh: _refreshData,
+      isActive: _selectedIndex == 2,
     );
   }
 

@@ -340,8 +340,7 @@ class VideoManager extends ChangeNotifier {
 
   static const platform = MethodChannel('com.dk.three_sec/video_engine');
   static const int _targetRecordingDurationMs = 3000;
-  static const int _normalizeToleranceMs = 120;
-  static const int _normalizeOnlyOverMs = 40;
+  static const String _recordingTrimMode = 'center';
 
   Future<Directory> _docDir() async => await getApplicationDocumentsDirectory();
 
@@ -1106,19 +1105,28 @@ class VideoManager extends ChangeNotifier {
     final currentPath = savePath;
 
     final sourceDurationMs = await _getVideoDurationMsNative(video.path);
-    final shouldNormalize =
-        sourceDurationMs != null &&
-        sourceDurationMs > (_targetRecordingDurationMs + _normalizeOnlyOverMs);
+    final expectedClipMs = sourceDurationMs != null
+        ? (sourceDurationMs < _targetRecordingDurationMs
+              ? sourceDurationMs
+              : _targetRecordingDurationMs)
+        : _targetRecordingDurationMs;
     debugPrint(
-      '[VideoManager] saveRecordedVideo durationMs=$sourceDurationMs shouldNormalize=$shouldNormalize',
+      '[VideoManager] saveRecordedVideo '
+      'sourceDurationMs=$sourceDurationMs '
+      'targetDurationMs=$_targetRecordingDurationMs '
+      'expectedClipMs=$expectedClipMs '
+      'trimMode=$_recordingTrimMode '
+      'normalize=always',
     );
 
-    final normalized = shouldNormalize
-        ? await _normalizeRecordedVideo(video.path, currentPath)
-        : false;
+    final normalized = await _normalizeRecordedVideo(video.path, currentPath);
     if (!normalized) {
       try {
         await File(video.path).copy(currentPath);
+        debugPrint(
+          '[VideoManager] normalize fallback(copy) source=${video.path.split('/').last} '
+          'target=${currentPath.split('/').last}',
+        );
       } catch (e) {
         debugPrint('[VideoManager] Copy fallback failed: $e');
         return;
@@ -1165,6 +1173,7 @@ class VideoManager extends ChangeNotifier {
         'inputPath': sourcePath,
         'outputPath': outputPath,
         'targetDurationMs': _targetRecordingDurationMs,
+        'trimMode': _recordingTrimMode,
       });
 
       return result == 'SUCCESS';

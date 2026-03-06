@@ -246,6 +246,7 @@ class MainActivity: FlutterActivity() {
                     val outputPath = call.argument<String>("outputPath")
                     val args = call.arguments as? Map<*, *>
                     val rawTargetDuration = args?.get("targetDurationMs")
+                    val rawTrimMode = args?.get("trimMode")
                     val targetDurationMs = when (rawTargetDuration) {
                         is Long -> rawTargetDuration
                         is Int -> rawTargetDuration.toLong()
@@ -255,10 +256,11 @@ class MainActivity: FlutterActivity() {
                         is String -> rawTargetDuration.toLongOrNull() ?: 3000L
                         else -> 3000L
                     }
+                    val trimMode = (rawTrimMode as? String)?.lowercase() ?: "start"
 
                     Log.d(
                         "3S_NORMALIZE",
-                        "normalizeVideoDuration argType=${rawTargetDuration?.javaClass?.name} value=$rawTargetDuration parsedMs=$targetDurationMs"
+                        "normalizeVideoDuration argType=${rawTargetDuration?.javaClass?.name} value=$rawTargetDuration parsedMs=$targetDurationMs trimMode=$trimMode"
                     )
 
                     if (inputPath != null && outputPath != null) {
@@ -266,6 +268,7 @@ class MainActivity: FlutterActivity() {
                             inputPath = inputPath,
                             outputPath = outputPath,
                             targetDurationMs = targetDurationMs,
+                            trimMode = trimMode,
                             result = result
                         )
                     } else {
@@ -322,6 +325,7 @@ class MainActivity: FlutterActivity() {
         inputPath: String,
         outputPath: String,
         targetDurationMs: Long,
+        trimMode: String,
         result: MethodChannel.Result
     ) {
         try {
@@ -352,9 +356,21 @@ class MainActivity: FlutterActivity() {
             }
 
             val clipMs = kotlin.math.min(sourceDurationMs, targetDurationMs)
+            val effectiveTrimMode = if (trimMode == "center") "center" else "start"
+            val startMs = if (effectiveTrimMode == "center" && sourceDurationMs > clipMs) {
+                (sourceDurationMs - clipMs) / 2L
+            } else {
+                0L
+            }
+            val endMs = startMs + clipMs
+            Log.d(
+                "3S_NORMALIZE",
+                "normalizeVideoDuration sourceMs=$sourceDurationMs targetMs=$targetDurationMs clipMs=$clipMs trimMode=$effectiveTrimMode startMs=$startMs endMs=$endMs"
+            )
+
             val clippingConfig = MediaItem.ClippingConfiguration.Builder()
-                .setStartPositionMs(0L)
-                .setEndPositionMs(clipMs)
+                .setStartPositionMs(startMs)
+                .setEndPositionMs(endMs)
                 .build()
 
             val clippedItem = MediaItem.Builder()
@@ -379,7 +395,10 @@ class MainActivity: FlutterActivity() {
                 .addListener(object : Transformer.Listener {
                     override fun onCompleted(composition: Composition, exportResult: ExportResult) {
                         Handler(Looper.getMainLooper()).post {
-                            Log.d("3S_NORMALIZE", "normalizeVideoDuration complete: $outputPath (${exportResult.durationMs}ms)")
+                            Log.d(
+                                "3S_NORMALIZE",
+                                "normalizeVideoDuration complete: $outputPath (durationMs=${exportResult.durationMs} clipMs=$clipMs startMs=$startMs endMs=$endMs trimMode=$effectiveTrimMode)"
+                            )
                             result.success("SUCCESS")
                         }
                     }
