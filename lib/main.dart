@@ -175,6 +175,7 @@ class AuthGate extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    debugPrint('[AuthGate] build start: firebaseApps=${Firebase.apps.length}');
     final authService = AuthService();
 
     return ValueListenableBuilder<bool>(
@@ -560,13 +561,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   }
 
   Widget _buildBenchmarkBottomNav() {
-    final userStatusManager = UserStatusManager();
-    final canAccessProject = userStatusManager.isStandardOrAbove();
-    debugPrint(
-      '[Main][TierGate][Build] cachedCanAccessProject=$canAccessProject '
-      'tier=${userStatusManager.currentTier} productId=${userStatusManager.productId}',
-    );
-
     final items = const [
       (icon: Icons.photo_camera, label: 'Camera'),
       (icon: Icons.folder, label: 'Library'),
@@ -591,31 +585,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
               final color = selected
                   ? const Color(0xFF3B82F6)
                   : const Color(0xFF98A2B3);
-              return Expanded(
-                child: InkWell(
-                  onTap: () {
-                    bool canAccessProjectNow = canAccessProject;
-                    if (index == 2) {
-                      final liveManager = UserStatusManager();
-                      final liveCanAccess = liveManager.isStandardOrAbove();
-                      canAccessProjectNow = liveCanAccess;
-                      debugPrint(
-                        '[Main][TierGate][Tap] cachedCanAccessProject=$canAccessProject '
-                        'liveCanAccessProject=$liveCanAccess '
-                        'tier=${liveManager.currentTier} productId=${liveManager.productId}',
-                      );
-                    }
-
-                    if (index == 2 && !canAccessProjectNow) {
-                      Fluttertoast.showToast(
-                        msg: 'Project는 Standard부터 이용 가능합니다.',
-                      );
-                      return;
-                    }
-
-                    if (index == 3) {
-                      final profileTapManager = UserStatusManager();
-                      debugPrint(
+            return Expanded(
+              child: InkWell(
+                onTap: () {
+                  if (index == 3) {
+                    final profileTapManager = UserStatusManager();
+                    debugPrint(
                         '[Main][ProfileTab][Diag] before_select '
                         'selectedIndex=$_selectedIndex '
                         'tier=${profileTapManager.currentTier} '
@@ -648,34 +623,16 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          Icon(
-                            item.icon,
-                            size: 31,
-                            color: color,
-                          ),
-                          if (index == 2 && !canAccessProject)
-                            Positioned(
-                              right: -6,
-                              top: -5,
-                              child: Container(
-                                width: 13,
-                                height: 13,
-                                decoration: const BoxDecoration(
-                                  color: Color(0xFFF4CF00),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: const Icon(
-                                  Icons.star,
-                                  color: Colors.white,
-                                  size: 8,
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
+                    Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        Icon(
+                          item.icon,
+                          size: 31,
+                          color: color,
+                        ),
+                      ],
+                    ),
                       const SizedBox(height: 1),
                       Text(
                         item.label,

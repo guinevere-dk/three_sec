@@ -11,7 +11,6 @@ import '../managers/user_status_manager.dart';
 import 'package:intl/intl.dart';
 import '../models/vlog_project.dart';
 import '../screens/video_edit_screen.dart';
-import '../screens/paywall_screen.dart';
 
 class ProjectScreen extends StatefulWidget {
   final Function() onRefresh;
@@ -142,21 +141,6 @@ class _ProjectScreenState extends State<ProjectScreen> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _openPaywallAndRefresh() async {
-    final upgraded = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(builder: (_) => const PaywallScreen()),
-    );
-
-    if (upgraded != true) {
-      return;
-    }
-
-    await UserStatusManager().initialize();
-    if (!mounted) return;
-    setState(() {});
-  }
-
   int _projectCountInFolder(String folderName) {
     return videoManager.vlogProjects
         .where((p) => p.folderName == folderName)
@@ -225,23 +209,6 @@ class _ProjectScreenState extends State<ProjectScreen> {
                   )
                 else ...[
                   // PRO Badge
-                  GestureDetector(
-                    onTap: _openPaywallAndRefresh,
-                    child: Container(
-                      margin: const EdgeInsets.only(right: 12),
-                      width: 25,
-                      height: 25,
-                      decoration: const BoxDecoration(
-                        color: Color(0xFFF4CF00),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.star,
-                        color: Colors.white,
-                        size: 14,
-                      ),
-                    ),
-                  ),
                   IconButton(
                     icon: const Icon(Icons.add, color: Colors.black, size: 21),
                     onPressed: _showCreateFolderDialog,

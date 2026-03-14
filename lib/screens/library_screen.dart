@@ -10,9 +10,7 @@ import '../widgets/media_dialogs.dart';
 import '../utils/haptics.dart';
 import '../utils/media_selection_helper.dart';
 import '../managers/video_manager.dart';
-import '../managers/user_status_manager.dart';
 import '../services/cloud_service.dart';
-import '../screens/paywall_screen.dart';
 
 enum _SelectionActionState { local, cloud, mixed }
 
@@ -136,21 +134,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _openPaywallAndRefresh() async {
-    final upgraded = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(builder: (_) => const PaywallScreen()),
-    );
-
-    if (upgraded != true) {
-      return;
-    }
-
-    await UserStatusManager().initialize();
-    if (!mounted) return;
-    setState(() {});
-  }
-
   Widget _buildLibraryTab() {
     final allAlbums = videoManager.clipAlbums; // Vlog 제외 조건 삭제
     final selectableAlbums = allAlbums
@@ -207,23 +190,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     onPressed: _toggleSelectAllAlbums,
                   )
                 else ...[
-                  GestureDetector(
-                    onTap: _openPaywallAndRefresh,
-                    child: Container(
-                      margin: const EdgeInsets.only(right: 12),
-                      width: 25,
-                      height: 25,
-                      decoration: const BoxDecoration(
-                        color: Color(0xFFF4CF00),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.star,
-                        color: Colors.white,
-                        size: 14,
-                      ),
-                    ),
-                  ),
                   IconButton(
                     key: widget.keyPickMedia,
                     icon: const Icon(Icons.add, color: Colors.black, size: 21),

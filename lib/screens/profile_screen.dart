@@ -12,8 +12,6 @@ import '../services/cloud_service.dart';
 import '../managers/user_status_manager.dart';
 import '../managers/video_manager.dart';
 import 'notifications_screen.dart';
-import 'paywall_screen.dart';
-import 'subscription_management_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -137,44 +135,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return email.split('@').first;
     }
     return 'Guest User';
-  }
-
-  Future<void> _openPaywall() async {
-    final upgraded = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(builder: (_) => const PaywallScreen()),
-    );
-
-    if (upgraded != true) {
-      return;
-    }
-
-    await _refreshProfile();
-    if (!mounted) return;
-    setState(() {});
-  }
-
-  Future<void> _openSubscriptionManagement() async {
-    print(
-      '[ProfileScreen][Diag] openSubscriptionManagement push '
-      'tier(beforePush)=${_userStatusManager.currentTier} '
-      'nextTier(beforePush)=${_userStatusManager.nextTier}',
-    );
-
-    await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const SubscriptionManagementScreen()),
-    );
-
-    // 구독 관리 화면 복귀 직후 최신 등급/용량 정보를 즉시 반영
-    await _refreshProfile();
-    print(
-      '[ProfileScreen][Diag] openSubscriptionManagement pop+refresh done '
-      'tier(afterRefresh)=${_userStatusManager.currentTier} '
-      'nextTier(afterRefresh)=${_userStatusManager.nextTier}',
-    );
-    if (!mounted) return;
-    setState(() {});
   }
 
   Future<void> _openNotifications() async {
@@ -439,11 +399,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final eligibility = await _authService.checkAccountDeletionEligibility();
     if (!mounted) return;
     if (!eligibility.canDelete) {
-      final moveToSubscriptionManagement =
-          await _showAccountDeletionBlockedDialog(message: eligibility.message);
-      if (moveToSubscriptionManagement == true && mounted) {
-        await _openSubscriptionManagement();
-      }
+      await _showAccountDeletionBlockedDialog(message: eligibility.message);
       return;
     }
 
@@ -453,9 +409,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
         title: const Text('계정 삭제'),
         content: Text(
           eligibility.hasActiveSubscription
-              ? '해지 예약 상태가 확인되었습니다.\n'
-                    '계정을 삭제하면 구독/계정 정보가 제거됩니다. 계속하시겠어요?'
-              : '계정을 삭제하면 구독/계정 정보가 제거됩니다. 계속하시겠어요?',
+              ? '계정 삭제가 일시적으로 제한된 상태입니다.\n잠시 후 다시 시도해 주세요.'
+              : '계정을 삭제하면 계정 데이터가 모두 제거됩니다. 계속 진행할까요?',
         ),
         actions: [
           TextButton(
@@ -503,20 +458,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  Future<bool?> _showAccountDeletionBlockedDialog({required String message}) {
-    return showDialog<bool>(
+  Future<void> _showAccountDeletionBlockedDialog({required String message}) {
+    return showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('계정 삭제 불가'),
         content: Text(message),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.pop(context),
             child: const Text('닫기'),
-          ),
-          FilledButton.tonal(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('구독 관리로 이동'),
           ),
         ],
       ),
@@ -527,21 +478,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     final user = _authService.currentUser;
     final tier = _userStatusManager.currentTier;
-    final isPremium = tier == UserTier.premium;
     print(
       '[ProfileScreen][Diag] build '
-      'tier=$tier isPremium=$isPremium '
+      'tier=$tier '
       'productId=${_userStatusManager.productId} '
       'nextTier=${_userStatusManager.nextTier} '
       'effectiveAt=${_userStatusManager.nextTierEffectiveAt} '
       'uid=${_userStatusManager.userId}',
     );
     final displayName = _displayNameForUser(user?.email, user?.displayName);
-    final tierLabel = switch (tier) {
-      UserTier.free => 'Free',
-      UserTier.standard => 'Standard',
-      UserTier.premium => 'Premium',
-    };
 
     return Scaffold(
       backgroundColor: _bgColor,
@@ -581,11 +526,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
               children: [
                 _buildProfileCard(
-                  isPremium: isPremium,
                   displayName: displayName,
                   email: user?.email,
                   photoUrl: user?.photoURL,
-                  tierLabel: tierLabel,
                 ),
                 const SizedBox(height: 18),
                 _buildStatsCard(),
@@ -593,15 +536,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 _buildSectionTitle('SETTINGS'),
                 _buildMenuGroup(
                   children: [
-                    _buildMenuItem(
-                      Icons.workspace_premium,
-                      '구독 관리',
-                      valueText: tierLabel,
-                      valueColor: _primaryBlue,
-                      iconBgColor: const Color(0xFFF3E8FF),
-                      iconColor: const Color(0xFFA855F7),
-                      onTap: _openSubscriptionManagement,
-                    ),
                     _buildMenuItem(
                       Icons.notifications,
                       'Notifications',
@@ -711,11 +645,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Widget _buildProfileCard({
-    required bool isPremium,
     required String displayName,
     required String? email,
     required String? photoUrl,
-    required String tierLabel,
   }) {
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -759,53 +691,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         )
                       : null,
                 ),
-                Positioned(
-                  right: -8,
-                  bottom: -6,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: isPremium
-                          ? const Color(0xFFEAB308)
-                          : const Color(0xFFE2E8F0),
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(color: Colors.white, width: 2),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.1),
-                          blurRadius: 8,
-                          offset: const Offset(0, 3),
-                        ),
-                      ],
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.verified,
-                          size: 12,
-                          color: isPremium
-                              ? Colors.white
-                              : const Color(0xFF64748B),
-                        ),
-                        const SizedBox(width: 3),
-                        Text(
-                          tierLabel.toUpperCase(),
-                          style: TextStyle(
-                            color: isPremium
-                                ? Colors.white
-                                : const Color(0xFF64748B),
-                            fontWeight: FontWeight.w800,
-                            fontSize: 10,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
               ],
             ),
             SizedBox(width: isCompact ? 18 : 24),
@@ -838,29 +723,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         fontWeight: FontWeight.w500,
                       ),
                     ),
-                    if (!isPremium) ...[
-                      const SizedBox(height: 12),
-                      SizedBox(
-                        height: 40,
-                        child: FilledButton.icon(
-                          style: FilledButton.styleFrom(
-                            backgroundColor: _primaryBlue,
-                            padding: EdgeInsets.symmetric(
-                              horizontal: isCompact ? 14 : 18,
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                          ),
-                          onPressed: _openPaywall,
-                          icon: const Icon(Icons.bolt, size: 16),
-                          label: const Text(
-                            'Upgrade',
-                            style: TextStyle(fontWeight: FontWeight.w700),
-                          ),
-                        ),
-                      ),
-                    ],
                   ],
                 ),
               ),

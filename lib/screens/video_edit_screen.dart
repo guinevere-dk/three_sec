@@ -13,7 +13,6 @@ import '../managers/video_manager.dart';
 import '../models/edit_command.dart';
 import '../managers/user_status_manager.dart';
 import '../models/vlog_project.dart';
-import 'paywall_screen.dart';
 
 // 자막 데이터 모델
 
@@ -357,41 +356,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     _didCheckAccessGate = true;
 
     final userStatus = UserStatusManager();
-    final canEdit = userStatus.isStandardOrAbove();
     debugPrint(
-      '[EditScreen][AccessGate] tier=${userStatus.currentTier} canEdit=$canEdit project=${widget.project.id}',
+      '[EditScreen][AccessGate] tier=${userStatus.currentTier} project=${widget.project.id}',
     );
-
-    if (!canEdit) {
-      final goPaywall = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('편집 기능 잠금'),
-          content: const Text('편집 기능은 Standard 이상 등급에서 사용할 수 있어요.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('닫기'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('업그레이드'),
-            ),
-          ],
-        ),
-      );
-
-      if (!mounted) return;
-      if (goPaywall == true && mounted) {
-        await Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const PaywallScreen()),
-        );
-      }
-      if (!mounted) return;
-      Navigator.pop(context);
-      return;
-    }
 
     debugPrint('\n\n🚀🚀🚀 [EditScreen] initState START 🚀🚀🚀\n');
     _initClips()
@@ -4645,7 +4612,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     },
                   ),
                   _buildQualityOption(
-                    label: "1080p (Standard)",
+                    label: "1080p",
                     value: "1080p",
                     selected: selectedQuality == '1080p',
                     enabled: userStatus.isStandardOrAbove(),
@@ -4655,7 +4622,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     },
                   ),
                   _buildQualityOption(
-                    label: "4K (Premium)",
+                    label: "4K",
                     value: "4k",
                     selected: selectedQuality == '4k',
                     enabled: userStatus.isPremium(),
