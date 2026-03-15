@@ -486,7 +486,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
 
   Widget _buildBenefitList() {
     final benefits = _selectedTierIndex == 0
-        ? ["720p Export", "Basic Filters", "Standard Support"]
+        ? ["1080p Export", "Basic Filters", "Standard Support"]
         : ["4K Export", "All AI Filters", "Priority Support", "No Watermark"];
 
     return Column(

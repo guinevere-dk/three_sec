@@ -13,6 +13,7 @@ import '../managers/video_manager.dart';
 import '../models/edit_command.dart';
 import '../managers/user_status_manager.dart';
 import '../models/vlog_project.dart';
+import '../utils/quality_policy.dart';
 
 // 자막 데이터 모델
 
@@ -4580,12 +4581,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   void _showExportDialog() {
     final userStatus = Provider.of<UserStatusManager>(context, listen: false);
-    String selectedQuality = widget.project.quality; // Use project quality
-
-    // 등급에 따른 초기값 조정 (옵션)
-    if (!userStatus.isStandardOrAbove() && selectedQuality != '720p') {
-      selectedQuality = '720p';
-    }
+    final userTier = userStatus.currentTier;
+    String selectedQuality = clampExportQualityForTier(
+      requestedQuality: normalizeExportQuality(widget.project.quality),
+      tier: userTier,
+    );
 
     showDialog(
       context: context,
@@ -4603,8 +4603,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 children: [
                   _buildQualityOption(
                     label: "720p (Basic)",
-                    value: "720p",
-                    selected: selectedQuality == '720p',
+                    value: kQuality720p,
+                    selected: selectedQuality == kQuality720p,
                     enabled: true,
                     onChanged: (val) {
                       setStateDialog(() => selectedQuality = val);
@@ -4613,8 +4613,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   ),
                   _buildQualityOption(
                     label: "1080p",
-                    value: "1080p",
-                    selected: selectedQuality == '1080p',
+                    value: kQuality1080p,
+                    selected: selectedQuality == kQuality1080p,
                     enabled: userStatus.isStandardOrAbove(),
                     onChanged: (val) {
                       setStateDialog(() => selectedQuality = val);
@@ -4623,8 +4623,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   ),
                   _buildQualityOption(
                     label: "4K",
-                    value: "4k",
-                    selected: selectedQuality == '4k',
+                    value: kQuality4k,
+                    selected: selectedQuality == kQuality4k,
                     enabled: userStatus.isPremium(),
                     onChanged: (val) {
                       setStateDialog(() => selectedQuality = val);
@@ -4648,7 +4648,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   ),
                   onPressed: () {
                     Navigator.pop(context);
-                    _performNativeExport(selectedQuality);
+                    _performNativeExport(
+                      clampExportQualityForTier(
+                        requestedQuality: selectedQuality,
+                        tier: userTier,
+                      ),
+                    );
                   },
                   child: const Text("Export"),
                 ),
@@ -4661,8 +4666,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   void _updateProjectQuality(String newQuality) {
-    if (widget.project.quality != newQuality) {
-      widget.project.quality = newQuality;
+    final normalized = normalizeExportQuality(newQuality);
+    if (widget.project.quality != normalized) {
+      widget.project.quality = normalized;
       Provider.of<VideoManager>(
         context,
         listen: false,
@@ -4698,6 +4704,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   Future<void> _performNativeExport(String quality) async {
     final videoManager = Provider.of<VideoManager>(context, listen: false);
     final userStatus = Provider.of<UserStatusManager>(context, listen: false);
+    final userTier = userStatus.currentTier;
+    final finalQuality = clampExportQualityForTier(
+      requestedQuality: quality,
+      tier: userTier,
+    );
+    final userTierKey = userTierKeyFromManager(userStatus);
 
     await _prepareForExportRendering();
     if (!mounted) return;
@@ -4721,10 +4733,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     );
 
     try {
-      final userTier = userStatus.isPremium()
-          ? 'premium'
-          : (userStatus.isStandardOrAbove() ? 'standard' : 'free');
-
       // Sync State to Project before Export
       // widget.project.clips is already updated via reference in _clips (if we modified objects directly)
       // If _clips are copies, we'd need to sync back.
@@ -4733,7 +4741,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
       widget.project.bgmPath = _currentState.bgmPath;
       widget.project.bgmVolume = _currentState.bgmVolume;
-      widget.project.quality = quality;
+      widget.project.quality = finalQuality;
 
       await videoManager.saveProject(widget.project);
 
@@ -4743,7 +4751,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         bgmPath: widget.project.bgmPath,
         bgmVolume: widget.project.bgmVolume,
         quality: widget.project.quality,
-        userTier: userTier,
+        userTier: userTierKey,
       );
 
       if (!mounted) return;

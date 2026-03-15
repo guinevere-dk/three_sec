@@ -1,4 +1,11 @@
 {
+  "functions": {
+    "source": "functions",
+    "codebase": "default",
+    "predeploy": [
+      "cd functions && npm install"
+    ]
+  },
   "firestore": {
     "rules": "firebase/firestore.rules",
     "indexes": "firebase/firestore.indexes.json"

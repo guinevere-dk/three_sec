@@ -16,19 +16,29 @@ enum _SelectionActionState { local, cloud, mixed }
 
 class LibraryScreen extends StatefulWidget {
   final GlobalKey keyPickMedia;
+  final GlobalKey keyAlbumGridItem;
   final GlobalKey keyFirstClip;
+  final GlobalKey keyCreateProject;
   final Function() onRefreshData;
   final Function(List<String> selectedPaths) onMerge;
   final Function(String path) onPickMedia;
+  final ValueChanged<bool>? onAlbumDetailVisibilityChanged;
+  final ValueChanged<bool>? onCreateProjectButtonVisibilityChanged;
+  final ValueChanged<List<String>>? onSelectedClipPathsChanged;
   final bool isActive;
 
   const LibraryScreen({
     super.key,
     required this.keyPickMedia,
+    required this.keyAlbumGridItem,
     required this.keyFirstClip,
+    required this.keyCreateProject,
     required this.onRefreshData,
     required this.onMerge,
     required this.onPickMedia,
+    this.onAlbumDetailVisibilityChanged,
+    this.onCreateProjectButtonVisibilityChanged,
+    this.onSelectedClipPathsChanged,
     required this.isActive,
   });
 
@@ -57,6 +67,28 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   late VideoManager videoManager;
   final CloudService _cloudService = CloudService();
+  bool _lastAlbumDetailVisible = false;
+  bool _lastCreateProjectButtonVisible = false;
+
+  bool _isCreateProjectButtonVisible() {
+    return _isClipSelectionMode &&
+        _selectedClipPaths.length >= 2 &&
+        videoManager.currentAlbum != '휴지통';
+  }
+
+  void _notifyCreateProjectButtonVisibilityIfNeeded() {
+    final visible = _isCreateProjectButtonVisible();
+    if (visible == _lastCreateProjectButtonVisible) return;
+    _lastCreateProjectButtonVisible = visible;
+    widget.onCreateProjectButtonVisibilityChanged?.call(visible);
+  }
+
+  void _notifyAlbumDetailVisibilityIfNeeded() {
+    final visible = _isInAlbumDetail;
+    if (visible == _lastAlbumDetailVisible) return;
+    _lastAlbumDetailVisible = visible;
+    widget.onAlbumDetailVisibilityChanged?.call(visible);
+  }
 
   @override
   void initState() {
@@ -88,6 +120,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _storageFilter = 'all';
     _selectedClipPaths.clear();
     _selectedAlbumNames.clear();
+    _lastAlbumDetailVisible = false;
+    _lastCreateProjectButtonVisible = false;
   }
 
   final ScrollController _albumScrollController = ScrollController();
@@ -103,6 +137,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
   @override
   Widget build(BuildContext context) {
     videoManager = Provider.of<VideoManager>(context);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _notifyAlbumDetailVisibilityIfNeeded();
+      _notifyCreateProjectButtonVisibilityIfNeeded();
+      widget.onSelectedClipPathsChanged?.call(List<String>.from(_selectedClipPaths));
+    });
 
     return PopScope(
       canPop: false,
@@ -237,7 +277,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                             albumName != "일상" &&
                             albumName != "휴지통"; // 'Vlog' 제외 조건 삭제
 
-                        return MediaWidgets.buildFolderGridItem(
+                        final tile = MediaWidgets.buildFolderGridItem(
                           folderName: albumName,
                           clipCount: clipCount,
                           isSelected: isSelected,
@@ -280,6 +320,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
                           getIcon: _getAlbumIcon,
                           getColor: _getAlbumColor,
                         );
+
+                        if (albumName == '일상') {
+                          return KeyedSubtree(
+                            key: widget.keyAlbumGridItem,
+                            child: tile,
+                          );
+                        }
+                        return tile;
                       }, childCount: allAlbums.length),
                     ),
                   ),
@@ -385,6 +433,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
               actions: [
                 if (!_isClipSelectionMode)
                   IconButton(
+                    key: widget.keyPickMedia,
                     icon: const Icon(
                       Icons.add_photo_alternate_outlined,
                       color: Colors.black,
@@ -414,7 +463,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   children: [
                     _buildStorageFilterChip('all', '전체'),
                     _buildStorageFilterChip('device', '기기'),
-                    _buildStorageFilterChip('cloud', '클라우드'),
                   ],
                 ),
               ),
@@ -454,7 +502,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     final path = visibleClipPaths[index];
                     final isSelected = _selectedClipPaths.contains(path);
                     final int selectIdx = _selectedClipPaths.indexOf(path);
-                    return MediaWidgets.buildMediaGridItem(
+                    final item = MediaWidgets.buildMediaGridItem(
                       path: path,
                       isSelected: isSelected,
                       selectIndex: selectIdx,
@@ -493,6 +541,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       },
                       getThumbnail: videoManager.getThumbnail,
                     );
+
+                    if (index == 0) {
+                      return KeyedSubtree(
+                        key: widget.keyFirstClip,
+                        child: item,
+                      );
+                    }
+                    return item;
                   }, childCount: visibleClipPaths.length),
                 ),
               ),
@@ -534,8 +590,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     onTransfer: _transferHandlerForSelectionState(
                       selectionState,
                     ),
-                    onCreateProject:
-                        _selectedClipPaths.length < 2
+                    showTransferButton: false,
+                    onCreateProject: _selectedClipPaths.length < 2
                         ? null
                         : () {
                             if (_selectedClipPaths.length < 2) return;
@@ -548,10 +604,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
                               _selectedClipPaths.clear();
                             });
                           },
+                    createProjectButtonKey: widget.keyCreateProject,
                     onFavorite: () {
-                      videoManager.toggleFavoritesBatch(
-                        _selectedClipPaths,
-                      );
+                      videoManager.toggleFavoritesBatch(_selectedClipPaths);
                       setState(() {
                         _isClipSelectionMode = false;
                         _selectedClipPaths.clear();
@@ -1079,5 +1134,4 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
     hapticFeedback();
   }
-
 }

@@ -13,10 +13,11 @@ import android.text.style.BackgroundColorSpan
 import android.text.style.StyleSpan
 import android.text.style.TypefaceSpan
 import androidx.annotation.NonNull
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import android.text.style.RelativeSizeSpan
+import androidx.activity.enableEdgeToEdge
 
 // Media3 Imports
 import androidx.media3.common.MediaItem
@@ -51,8 +52,14 @@ import java.nio.ByteBuffer
 import android.util.Log
 import android.media.MediaMetadataRetriever
 
-class MainActivity: FlutterActivity() {
+class MainActivity: FlutterFragmentActivity() {
     private val CHANNEL = "com.dk.three_sec/video_engine"
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        // Android 15+ 기본 edge-to-edge 동작과 하위 버전 호환 처리를 통일
+        enableEdgeToEdge()
+        super.onCreate(savedInstanceState)
+    }
 
     private fun toMediaUri(pathOrUri: String): Uri {
         val parsed = Uri.parse(pathOrUri)
@@ -389,7 +396,7 @@ class MainActivity: FlutterActivity() {
                 .setTransmuxVideo(false)
                 .build()
 
-            val transformer = Transformer.Builder(context)
+            val transformer = Transformer.Builder(this)
                 .setVideoMimeType(MimeTypes.VIDEO_H264)
                 .setAudioMimeType(MimeTypes.AUDIO_AAC)
                 .addListener(object : Transformer.Listener {
@@ -733,7 +740,7 @@ class MainActivity: FlutterActivity() {
         val encoderFactory = create4KEncoderFactory(quality, userTier)
 
         // 7. 🎥 Transformer 구성 (4K 렌더링 + GPU 가속)
-        val transformerBuilder = Transformer.Builder(context)
+        val transformerBuilder = Transformer.Builder(this)
             .setVideoMimeType(MimeTypes.VIDEO_H264)
             .setAudioMimeType(MimeTypes.AUDIO_AAC)
             .setEncoderFactory(encoderFactory)
@@ -1137,7 +1144,7 @@ class MainActivity: FlutterActivity() {
      * @return DefaultEncoderFactory
      */
     private fun create4KEncoderFactory(quality: String, userTier: String): DefaultEncoderFactory {
-        val builder = DefaultEncoderFactory.Builder(context.applicationContext)
+        val builder = DefaultEncoderFactory.Builder(applicationContext)
             .setEnableFallback(true)
         
         // 🚀 4K 모드: 하드웨어 코덱 강제 활성화
@@ -1200,7 +1207,7 @@ class MainActivity: FlutterActivity() {
             val extractedFilePaths = mutableListOf<String>()
             
             // 하드웨어 가속 Encoder Factory 설정 (억만장자의 속도)
-            val encoderFactory = DefaultEncoderFactory.Builder(context.applicationContext)
+            val encoderFactory = DefaultEncoderFactory.Builder(applicationContext)
                 .setEnableFallback(true)
                 .build()
             
@@ -1290,7 +1297,7 @@ class MainActivity: FlutterActivity() {
                     val composition = Composition.Builder(listOf(sequence)).build()
                     
                     // 5. Transformer 구성
-                    val transformer = Transformer.Builder(context)
+                    val transformer = Transformer.Builder(this@MainActivity)
                         .setVideoMimeType(MimeTypes.VIDEO_H264)
                         .setAudioMimeType(MimeTypes.AUDIO_AAC)
                         .setEncoderFactory(encoderFactory)
@@ -1495,7 +1502,7 @@ class MainActivity: FlutterActivity() {
             val encoderFactory = create4KEncoderFactory(quality, userTier)
 
             // 9. Transformer 구성
-            val transformer = Transformer.Builder(context)
+            val transformer = Transformer.Builder(this@MainActivity)
                 .setVideoMimeType(MimeTypes.VIDEO_H264)
                 .setAudioMimeType(MimeTypes.AUDIO_AAC)
                 .setEncoderFactory(encoderFactory)

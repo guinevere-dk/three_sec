@@ -22,6 +22,24 @@ set DIAG_LOG=logs\session_%TS%_diagnostics.log
 set PKG_NAME=com.dk.three_sec
 set APP_PID=
 
+if "%KAKAO_NATIVE_APP_KEY%"=="" (
+  echo [DIAG] 환경변수 KAKAO_NATIVE_APP_KEY가 비어 있습니다.
+  echo [DIAG] 기본 테스트 실행을 진행하려면 아래와 같이 실행하세요.
+  echo        set KAKAO_NATIVE_APP_KEY=발급받은_네이티브앱키
+  echo        tools\android_capture_session.cmd
+  echo [DIAG] 경고: --dart-define 미지정 시 카카오 로그인이 실패할 수 있습니다.
+) else (
+  echo [DIAG] KAKAO_NATIVE_APP_KEY 확인됨
+)
+
+if "%SOCIAL_AUTH_EXCHANGE_URL%"=="" (
+  echo [DIAG] 환경변수 SOCIAL_AUTH_EXCHANGE_URL가 비어 있습니다.
+  echo [DIAG] 기본 테스트 실행을 진행하려면 아래와 같이 실행하세요.
+  echo        set SOCIAL_AUTH_EXCHANGE_URL=https://your-domain.example.com/social/exchange
+) else (
+  echo [DIAG] SOCIAL_AUTH_EXCHANGE_URL 확인됨
+)
+
 echo [1/6] adb device check...
 "%ADB_EXE%" devices
 if errorlevel 1 (
@@ -48,8 +66,14 @@ echo [DIAG] ADB_EXE=%ADB_EXE%
 echo [DIAG] RAW_DEVICE_ID=%DEVICE_ID%
 echo      device id: %DEVICE_ID%
 
+set KAKAO_DART_DEFINE=--dart-define=KAKAO_NATIVE_APP_KEY=a23bef03b30be5e4d26369144fa35616
+if not "%SOCIAL_AUTH_EXCHANGE_URL%"=="" (
+  set KAKAO_DART_DEFINE=%KAKAO_DART_DEFINE% --dart-define=SOCIAL_AUTH_EXCHANGE_URL=%SOCIAL_AUTH_EXCHANGE_URL%
+)
+
 echo [3/6] start app in separate terminal...
-start "flutter_run_session" cmd /k "flutter run -d %DEVICE_ID%"
+start "flutter_run_session" cmd /k "flutter run --dart-define=KAKAO_NATIVE_APP_KEY=a23bef03b30be5e4d26369144fa35616 --dart-define=SOCIAL_AUTH_EXCHANGE_URL=https://asia-northeast3-fir-3s-8edb9.cloudfunctions.net/social/exchange"
+
 
 echo [4/6] perform test scenario on device, then return here.
 echo      when finished, press ENTER to dump logcat buffer.
@@ -103,4 +127,6 @@ echo   %DIAG_LOG%
 echo ---------------------------------------------
 
 endlocal
+
+
 

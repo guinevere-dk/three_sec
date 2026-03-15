@@ -19,6 +19,7 @@ import 'user_status_manager.dart';
 import '../models/vlog_project.dart';
 import '../services/cloud_service.dart';
 import '../services/local_index_service.dart';
+import '../utils/quality_policy.dart';
 
 enum ClipTransferUiState {
   pendingUpload,
@@ -42,6 +43,10 @@ class VideoManager extends ChangeNotifier {
   static const _cloudSyncedKey = 'cloud_synced_paths';
   static const _clipDurationMetadataKey = 'clip_duration_metadata_v1';
   static const _clipOwnershipMetadataKey = 'clip_ownership_metadata_v1';
+  static const List<String> _tutorialSampleAssets = [
+    'assets/tutorial/videos/tutorial_clip_capture_day.mp4',
+    'assets/tutorial/videos/tutorial_clip_capture_night.mp4',
+  ];
 
   // ✅ 독립된 폴더 시스템
   String currentAlbum = "일상";
@@ -695,6 +700,12 @@ class VideoManager extends ChangeNotifier {
     String userTier = 'free',
   }) async {
     try {
+      final normalizedTier = normalizeUserTierKey(userTier);
+      final clampedQuality = clampExportQualityForTier(
+        requestedQuality: normalizeExportQuality(quality),
+        tier: userTierFromKey(normalizedTier),
+      );
+
       // 1. 🛡️ 권한 체크 (Android 13 대응)
       bool hasPermission = false;
 
@@ -742,8 +753,8 @@ class VideoManager extends ChangeNotifier {
 
       print("🚀 Start Exporting... (Count: ${clips.length})");
       print("   - Output: $outputPath");
-      print("   - Quality: $quality");
-      print("   - User Tier: $userTier");
+      print("   - Quality: $clampedQuality");
+      print("   - User Tier: $normalizedTier");
 
       // Extract data for native call
       final videoPaths = clips.map((c) => c.path).toList();
@@ -759,8 +770,8 @@ class VideoManager extends ChangeNotifier {
         'audioChanges': audioConfig,
         'bgmPath': bgmPath,
         'bgmVolume': bgmVolume,
-        'quality': quality,
-        'userTier': userTier,
+        'quality': clampedQuality,
+        'userTier': normalizedTier,
       };
 
       final String? result = await platform.invokeMethod('mergeVideos', args);
@@ -958,6 +969,48 @@ class VideoManager extends ChangeNotifier {
     await _cleanupCloudSyncedPaths();
     await _cleanupClipOwnershipMetadata();
     notifyListeners();
+  }
+
+  Future<List<String>> ensureTutorialSampleClips({
+    String targetAlbum = '일상',
+  }) async {
+    final albumDir = await _rawAlbumDir(targetAlbum);
+    final ensuredPaths = <String>[];
+
+    for (final assetPath in _tutorialSampleAssets) {
+      final fileName = 'clip_${p.basename(assetPath)}';
+      final destinationPath = p.join(albumDir.path, fileName);
+      final destinationFile = File(destinationPath);
+
+      try {
+        if (!await destinationFile.exists()) {
+          final data = await rootBundle.load(assetPath);
+          await destinationFile.writeAsBytes(
+            data.buffer.asUint8List(),
+            flush: true,
+          );
+        }
+
+        await _setClipOwnership(
+          destinationPath,
+          ownerAccountId: UserStatusManager().userId,
+        );
+        await _upsertLocalIndexClip(destinationPath);
+        await _removeDurationCacheForPath(destinationPath);
+        ensuredPaths.add(destinationPath);
+      } catch (e) {
+        debugPrint(
+          '[VideoManager][TutorialSample] ensure_failed '
+          'asset=$assetPath target=$destinationPath error=$e',
+        );
+      }
+    }
+
+    await _updateAlbumClipCounts();
+    if (currentAlbum == targetAlbum) {
+      await loadClipsFromCurrentAlbum();
+    }
+    return ensuredPaths;
   }
 
   Future<void> _preloadClipDurationsForPaths(List<String> paths) async {
@@ -1787,9 +1840,7 @@ class VideoManager extends ChangeNotifier {
     final encoded = <String, Map<String, dynamic>>{};
     for (final entry in _clipOwnerAccountByPath.entries) {
       final path = entry.key;
-      encoded[path] = {
-        'ownerAccountId': entry.value,
-      };
+      encoded[path] = {'ownerAccountId': entry.value};
     }
     await prefs.setString(_clipOwnershipMetadataKey, jsonEncode(encoded));
   }
@@ -1900,7 +1951,6 @@ class VideoManager extends ChangeNotifier {
     if (duration == null) return;
     await _setDurationCacheForPath(targetPath, duration);
   }
-
 }
 
 final VideoManager videoManager = VideoManager();

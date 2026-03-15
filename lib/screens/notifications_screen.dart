@@ -15,6 +15,9 @@ class _NotificationsScreenState extends State<NotificationsScreen>
     with WidgetsBindingObserver {
   final NotificationSettingsService _notificationService =
       NotificationSettingsService.instance;
+  static const List<NotificationCategory> _visibleCategories = [
+    NotificationCategory.promotion,
+  ];
 
   bool _enabled = true;
   bool _loading = true;
@@ -208,7 +211,7 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                 Card(
                   child: Column(
                     children: [
-                      for (final category in NotificationCategory.values)
+                      for (final category in _visibleCategories)
                         SwitchListTile(
                           secondary: const Icon(Icons.tune),
                           title: Text(_categoryTitle(category)),

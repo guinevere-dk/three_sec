@@ -7,8 +7,8 @@ import '../services/auth_service.dart';
 /// 지원 플랫폼:
 /// - Google (Android/iOS 모두)
 /// - Apple (iOS만)
-/// - Kakao (추후 구현)
-/// - Naver (추후 구현)
+/// - Kakao (Android/iOS)
+/// - Naver (출시 이후 토큰 발급 전까지 숨김)
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -76,7 +76,12 @@ class _LoginScreenState extends State<LoginScreen> {
                           onPressed: _handleGoogleSignIn,
                           backgroundColor: Colors.white,
                           textColor: Colors.black87,
-                          icon: Icons.g_mobiledata,
+                          leading: _buildProviderBadge(
+                            label: 'G',
+                            backgroundColor: Colors.white,
+                            textColor: const Color(0xFF4285F4),
+                            borderColor: const Color(0xFFE5E7EB),
+                          ),
                           label: 'Continue with Google',
                         ),
                         
@@ -88,33 +93,28 @@ class _LoginScreenState extends State<LoginScreen> {
                             onPressed: _handleAppleSignIn,
                             backgroundColor: Colors.black,
                             textColor: Colors.white,
-                            icon: Icons.apple,
+                            leading: _buildProviderBadge(
+                              label: '',
+                              backgroundColor: Colors.white,
+                              textColor: Colors.black,
+                            ),
                             label: 'Continue with Apple',
                             borderColor: Colors.white,
                           ),
                         
                         if (Platform.isIOS) const SizedBox(height: 16),
                         
-                        // Kakao 로그인 (추후 구현)
+                        // Kakao 로그인
                         _buildSocialButton(
                           onPressed: _handleKakaoSignIn,
                           backgroundColor: const Color(0xFFFEE500),
                           textColor: Colors.black87,
-                          icon: Icons.chat_bubble,
-                          label: 'Continue with Kakao (Coming Soon)',
-                          isDisabled: true,
-                        ),
-                        
-                        const SizedBox(height: 16),
-                        
-                        // Naver 로그인 (추후 구현)
-                        _buildSocialButton(
-                          onPressed: _handleNaverSignIn,
-                          backgroundColor: const Color(0xFF03C75A),
-                          textColor: Colors.white,
-                          icon: Icons.check_circle_outline,
-                          label: 'Continue with Naver (Coming Soon)',
-                          isDisabled: true,
+                          leading: _buildProviderBadge(
+                            label: 'K',
+                            backgroundColor: const Color(0xFF381E1F),
+                            textColor: const Color(0xFFFEE500),
+                          ),
+                          label: 'Continue with Kakao',
                         ),
                       ],
                     ),
@@ -144,7 +144,8 @@ class _LoginScreenState extends State<LoginScreen> {
     required VoidCallback onPressed,
     required Color backgroundColor,
     required Color textColor,
-    required IconData icon,
+    Widget? leading,
+    IconData? icon,
     required String label,
     Color? borderColor,
     bool isDisabled = false,
@@ -168,7 +169,7 @@ class _LoginScreenState extends State<LoginScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, size: 24),
+          leading ?? Icon(icon ?? Icons.login, size: 24),
           const SizedBox(width: 12),
           Text(
             label,
@@ -178,6 +179,35 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildProviderBadge({
+    required String label,
+    required Color backgroundColor,
+    required Color textColor,
+    Color? borderColor,
+  }) {
+    return Container(
+      width: 24,
+      height: 24,
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        shape: BoxShape.circle,
+        border: borderColor != null
+            ? Border.all(color: borderColor, width: 1)
+            : null,
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        label,
+        style: TextStyle(
+          color: textColor,
+          fontSize: 14,
+          fontWeight: FontWeight.w800,
+          height: 1,
+        ),
       ),
     );
   }
@@ -227,15 +257,55 @@ class _LoginScreenState extends State<LoginScreen> {
 
   /// Kakao 로그인 처리 (추후 구현)
   Future<void> _handleKakaoSignIn() async {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Kakao login coming soon!')),
-    );
+    setState(() => _isLoading = true);
+    try {
+      final userCredential = await _authService.signInWithKakao();
+      if (userCredential != null && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Welcome to 3s!')),
+        );
+      }
+    } on AuthServiceException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.userMessage)),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Login failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   /// Naver 로그인 처리 (추후 구현)
   Future<void> _handleNaverSignIn() async {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Naver login coming soon!')),
-    );
+    setState(() => _isLoading = true);
+    try {
+      final userCredential = await _authService.signInWithNaver();
+      if (userCredential != null && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Welcome to 3s!')),
+        );
+      }
+    } on AuthServiceException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.userMessage)),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Login failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 }

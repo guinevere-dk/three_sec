@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -11,6 +12,7 @@ import '../services/auth_service.dart';
 import '../services/cloud_service.dart';
 import '../managers/user_status_manager.dart';
 import '../managers/video_manager.dart';
+import 'announcements_screen.dart';
 import 'notifications_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -25,7 +27,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final UserStatusManager _userStatusManager = UserStatusManager();
   final CloudService _cloudService = CloudService();
   final ImagePicker _imagePicker = ImagePicker();
-  String _cloudUsageText = '계산 중...';
   String _appVersionText = 'v- (Build -)';
   bool _isDeletingAccount = false;
 
@@ -67,27 +68,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
     }
 
-    await Future.wait([_updateCloudUsage(), _loadAppVersion()]);
-  }
-
-  Future<void> _updateCloudUsage() async {
-    final tier = _userStatusManager.currentTier;
-    if (tier == UserTier.free) {
-      if (!mounted) return;
-      setState(() {
-        _cloudUsageText = 'Cloud 미지원';
-      });
-      return;
-    }
-
-    final usageGb = await _cloudService.getStorageUsageGB();
-    final limitGb = _cloudService.getStorageLimitGB();
-    if (mounted) {
-      setState(() {
-        _cloudUsageText =
-            '${usageGb.toStringAsFixed(1)}GB / ${limitGb.toStringAsFixed(0)}GB';
-      });
-    }
+    await _loadAppVersion();
   }
 
   Future<void> _loadAppVersion() async {
@@ -125,22 +106,68 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
     }
 
-    await Future.wait([_updateCloudUsage(), _loadAppVersion()]);
+    await _loadAppVersion();
   }
 
-  String _displayNameForUser(String? email, String? displayName) {
-    final trimmedName = displayName?.trim();
-    if (trimmedName != null && trimmedName.isNotEmpty) return trimmedName;
-    if (email != null && email.contains('@')) {
+  String _profileDisplayName(User? user) {
+    final trimmedDisplayName = user?.displayName?.trim();
+    if (trimmedDisplayName != null && trimmedDisplayName.isNotEmpty) {
+      return trimmedDisplayName;
+    }
+
+    final email = user?.email?.trim();
+    if (email != null && email.isNotEmpty && email.contains('@')) {
       return email.split('@').first;
     }
+
+    final uid = user?.uid;
+    if (uid != null && uid.trim().isNotEmpty) {
+      final suffix = uid.length > 6 ? uid.substring(uid.length - 6) : uid;
+      return '사용자 $suffix';
+    }
+
     return 'Guest User';
+  }
+
+  String _providerLabel(User? user) {
+    if (user == null) return '로그인';
+
+    final providerIds = user.providerData
+        .map((entry) => entry.providerId.toLowerCase())
+        .toList(growable: false);
+
+    if (providerIds.any((value) => value.contains('kakao'))) return 'KAKAO';
+    if (providerIds.any((value) => value.contains('naver'))) return 'NAVER';
+    if (providerIds.any((value) => value.contains('google'))) return 'GOOGLE';
+    if (providerIds.any((value) => value.contains('apple'))) return 'APPLE';
+    if (providerIds.any((value) => value.isNotEmpty)) {
+      return providerIds.first.toUpperCase();
+    }
+
+    return 'SOCIAL';
+  }
+
+  String _profileSubtitle(User? user) {
+    final email = user?.email?.trim();
+    if (email != null && email.isNotEmpty) {
+      return email;
+    }
+
+    final provider = _providerLabel(user);
+    return '$provider로 로그인됨';
   }
 
   Future<void> _openNotifications() async {
     await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const NotificationsScreen()),
+    );
+  }
+
+  Future<void> _openAnnouncements() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const AnnouncementsScreen()),
     );
   }
 
@@ -154,7 +181,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
 
     final nicknameController = TextEditingController(
-      text: _displayNameForUser(user.email, user.displayName),
+      text: _profileDisplayName(user),
     );
 
     File? selectedImageFile;
@@ -220,7 +247,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               decoration: BoxDecoration(
                                 color: _primaryBlue,
                                 shape: BoxShape.circle,
-                                border: Border.all(color: Colors.white, width: 2),
+                                border: Border.all(
+                                  color: Colors.white,
+                                  width: 2,
+                                ),
                               ),
                               child: const Icon(
                                 Icons.photo_library,
@@ -260,10 +290,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 TextButton(
                   onPressed: isSaving
                       ? null
-                      : () => Navigator.pop(
-                          dialogContext,
-                          (saved: false, message: '프로필 편집이 취소되었습니다.'),
-                        ),
+                      : () => Navigator.pop(dialogContext, (
+                          saved: false,
+                          message: '프로필 편집이 취소되었습니다.',
+                        )),
                   child: const Text('취소'),
                 ),
                 FilledButton(
@@ -283,11 +313,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             nicknameErrorText = null;
                           });
 
-                          final saveResult =
-                              await _authService.updateCurrentUserProfile(
-                            displayName: trimmedName,
-                            profileImageFile: selectedImageFile,
-                          );
+                          final saveResult = await _authService
+                              .updateCurrentUserProfile(
+                                displayName: trimmedName,
+                                profileImageFile: selectedImageFile,
+                              );
 
                           if (!saveResult.success) {
                             setDialogState(() {
@@ -301,10 +331,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           }
 
                           if (!dialogContext.mounted) return;
-                          Navigator.pop(
-                            dialogContext,
-                            (saved: true, message: saveResult.message),
-                          );
+                          Navigator.pop(dialogContext, (
+                            saved: true,
+                            message: saveResult.message,
+                          ));
                         },
                   child: isSaving
                       ? const SizedBox(
@@ -327,9 +357,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
     nicknameController.dispose();
 
     if (result == null || !mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(result.message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(result.message)));
 
     if (result.saved) {
       await _refreshProfile();
@@ -344,7 +374,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _openHelp() async {
     final supportEmail = Uri.parse(
-      'mailto:support@three-sec.app?subject=Three%20Sec%20Vlog%20Support',
+      'mailto:dongkwon81@gmail.com?subject=Three%20Sec%20Vlog%20Support',
     );
     final ok = await launchUrl(supportEmail);
     if (!ok && mounted) {
@@ -362,14 +392,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         content: const Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('로그아웃하시겠습니까'),
-            SizedBox(height: 8),
-            Text(
-              '* Cloud에 업로드 되지 않은 로컬 파일은 유지됩니다.',
-              style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-            ),
-          ],
+          children: [Text('로그아웃하시겠습니까')],
         ),
         actions: [
           TextButton(
@@ -433,7 +456,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
       final deleteResult = await _authService.deleteAccount(
         purgeCloud: () async {
-          final purge = await CloudService().purgeCurrentUserCloudData();
+          final purge = await _cloudService.purgeCurrentUserCloudData();
           return (
             success: purge.success,
             message: purge.message,
@@ -444,9 +467,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
       if (!mounted) return;
 
+      final currentUid = _authService.currentUser?.uid;
+
       setState(() {
         _isDeletingAccount = false;
       });
+
+      if (deleteResult.requiresRecentLogin) {
+        await _showDeleteRequiresRecentLoginDialog(uid: currentUid);
+        return;
+      }
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -456,6 +486,40 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ),
       );
     }
+  }
+
+  /// 계정 삭제 시 재인증 필요 안내 다이얼로그
+  Future<void> _showDeleteRequiresRecentLoginDialog({String? uid}) async {
+    return showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('계정 삭제를 진행하려면 재인증이 필요합니다'),
+        content: Text(
+          '보안을 위해 최근 로그인 이력이 필요합니다.\n\n'
+          '로그아웃 후 재로그인하여 삭제를 진행해 주세요. ',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('닫기'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              final dialogContext = context;
+              await _authService.signOut(localDataPolicy: 'retain');
+              if (!mounted || !dialogContext.mounted) return;
+              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                const SnackBar(
+                  content: Text('재인증을 위해 로그아웃 되었습니다. 카카오 로그인을 다시 진행해 주세요.'),
+                ),
+              );
+            },
+            child: const Text('지금 재로그인'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _showAccountDeletionBlockedDialog({required String message}) {
@@ -486,7 +550,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       'effectiveAt=${_userStatusManager.nextTierEffectiveAt} '
       'uid=${_userStatusManager.userId}',
     );
-    final displayName = _displayNameForUser(user?.email, user?.displayName);
+    final displayName = _profileDisplayName(user);
+    final subtitle = _profileSubtitle(user);
 
     return Scaffold(
       backgroundColor: _bgColor,
@@ -527,7 +592,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               children: [
                 _buildProfileCard(
                   displayName: displayName,
-                  email: user?.email,
+                  subtitle: subtitle,
                   photoUrl: user?.photoURL,
                 ),
                 const SizedBox(height: 18),
@@ -538,7 +603,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   children: [
                     _buildMenuItem(
                       Icons.notifications,
-                      'Notifications',
+                      '알림 설정',
                       iconBgColor: const Color(0xFFFFF7ED),
                       iconColor: const Color(0xFFF97316),
                       onTap: _openNotifications,
@@ -549,6 +614,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 _buildSectionTitle('SUPPORT'),
                 _buildMenuGroup(
                   children: [
+                    _buildMenuItem(
+                      Icons.campaign_outlined,
+                      '공지사항',
+                      iconBgColor: const Color(0xFFEEF2FF),
+                      iconColor: const Color(0xFF4F46E5),
+                      onTap: _openAnnouncements,
+                    ),
                     _buildMenuItem(
                       Icons.help,
                       'Help & Feedback',
@@ -646,7 +718,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Widget _buildProfileCard({
     required String displayName,
-    required String? email,
+    required String subtitle,
     required String? photoUrl,
   }) {
     return LayoutBuilder(
@@ -714,7 +786,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      email ?? '로그인 정보 없음',
+                      subtitle,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -739,26 +811,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
         final clipCount = NumberFormat.decimalPattern().format(
           videoManager.totalClipCount,
         );
-        final vlogCount = NumberFormat.decimalPattern().format(
-          videoManager.totalVlogCount,
-        );
 
         return Container(
           padding: const EdgeInsets.symmetric(vertical: 2),
           child: Row(
-            children: [
-              Expanded(child: _buildStatItem(clipCount, 'CLIP')),
-              const SizedBox(width: 10),
-              Expanded(child: _buildStatItem(vlogCount, 'PROJECT')),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _buildStatItem(
-                  _cloudUsageText,
-                  'CLOUD',
-                  isStorage: true,
-                ),
-              ),
-            ],
+            children: [Expanded(child: _buildStatItem(clipCount, 'CLIP'))],
           ),
         );
       },

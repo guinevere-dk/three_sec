@@ -1,3 +1,5 @@
+import '../utils/quality_policy.dart';
+
 class VlogClip {
   final String id; // Unique ID
   final String path;
@@ -208,7 +210,7 @@ class VlogProject {
       audioConfig: Map<String, double>.from(json['audioConfig'] ?? {}),
       bgmPath: json['bgmPath'],
       bgmVolume: (json['bgmVolume'] as num?)?.toDouble() ?? 0.5,
-      quality: json['quality'] ?? '1080p',
+      quality: normalizeExportQuality(json['quality'] as String?),
       isFavorite: json['isFavorite'] as bool? ?? false,
       folderName: json['folderName'] ?? '기본',
       ownerAccountId: json['ownerAccountId'] as String?,

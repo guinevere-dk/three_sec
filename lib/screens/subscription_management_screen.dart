@@ -321,7 +321,7 @@ class _FeatureGuideCard extends StatelessWidget {
           SizedBox(height: 6),
           _FeatureBullet(text: '편집 기능: Standard 이상에서 사용 가능'),
           SizedBox(height: 6),
-          _FeatureBullet(text: '내보내기 해상도: 720p(Basic) · 1080p(Standard) · 4K(Premium)'),
+          _FeatureBullet(text: '내보내기 해상도: Free 720p · Standard 1080p · Premium 4K'),
         ],
       ),
     );

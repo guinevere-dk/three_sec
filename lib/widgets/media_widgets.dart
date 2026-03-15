@@ -473,7 +473,9 @@ class MediaWidgets {
   static Widget buildLibrarySelectionPanel({
     required IconData transferIcon,
     required VoidCallback? onTransfer,
+    bool showTransferButton = true,
     required VoidCallback? onCreateProject,
+    GlobalKey? createProjectButtonKey,
     required VoidCallback? onFavorite,
     required VoidCallback? onCopy,
     required VoidCallback? onMove,
@@ -505,11 +507,14 @@ class MediaWidgets {
             const SizedBox(width: 3),
 
             // 2) 클라우드 업로드 / 로컬 이동 (보조)
-            _buildPanelIconButton(transferIcon, onTransfer),
-            const SizedBox(width: 6),
+            if (showTransferButton) ...[
+              _buildPanelIconButton(transferIcon, onTransfer),
+              const SizedBox(width: 6),
+            ],
 
             // 3) Project 만들기 (메인 CTA)
             SizedBox(
+              key: createProjectButtonKey,
               width: 72,
               height: 60,
               child: ElevatedButton(

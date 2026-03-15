@@ -8,6 +8,7 @@ import '../utils/haptics.dart';
 import '../utils/media_selection_helper.dart';
 import '../managers/video_manager.dart';
 import '../managers/user_status_manager.dart';
+import '../utils/quality_policy.dart';
 import 'package:intl/intl.dart';
 import '../models/vlog_project.dart';
 import '../screens/video_edit_screen.dart';
@@ -58,8 +59,8 @@ class _ProjectScreenState extends State<ProjectScreen> {
         audioConfig: audioConfig,
         bgmPath: project.bgmPath,
         bgmVolume: project.bgmVolume,
-        quality: '720p',
-        userTier: 'free',
+        quality: kQuality720p,
+        userTier: kUserTierFree,
       );
 
       if (!mounted) return;

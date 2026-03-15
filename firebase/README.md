@@ -1,12 +1,132 @@
 # 🔥 Firebase 설정 가이드 (3s Vlog App)
 
 ## 📋 목차
-1. [Firebase Storage 보안 규칙 배포](#firebase-storage-보안-규칙-배포)
-2. [Firestore 보안 규칙 배포](#firestore-보안-규칙-배포)
-3. [Firebase Console 설정](#firebase-console-설정)
-4. [테스트](#테스트)
+1. [Firebase Cloud Functions 배포](#-firebase-cloud-functions-설정-socialexchange)
+2. [Firebase Storage 보안 규칙 배포](#firebase-storage-보안-규칙-배포)
+3. [Firestore 보안 규칙 배포](#firestore-보안-규칙-배포)
+4. [Firebase Console 설정](#firebase-console-설정)
+5. [테스트](#테스트)
 
 ---
+
+## ⚡ Firebase Cloud Functions 설정 (social/exchange)
+
+`SOCIAL_AUTH_EXCHANGE_URL`은 Firebase Functions로 제공되며 현재 라우트는 아래와 같습니다.
+
+- 함수명: `social`
+- 경로: `/exchange`
+- 최종 URL(프로젝트: `fir-3s-8edb9`):
+
+```text
+https://asia-northeast3-fir-3s-8edb9.cloudfunctions.net/social/exchange
+```
+
+### 1) Functions 초기화 (최초 1회)
+
+```bash
+cd c:\Users\Guiny\Documents\Python_Project\three_sec_vlog
+firebase init functions
+```
+
+### 2) 의존성 설치
+
+```bash
+cd functions
+npm install
+```
+
+### 3) 배포
+
+```bash
+# Functions 배포
+firebase deploy --only functions
+
+# 함수 1개만 배포
+firebase deploy --only functions:social
+```
+
+### 4) 앱에서 사용할 URL 지정
+
+```bash
+flutter run --dart-define=SOCIAL_AUTH_EXCHANGE_URL=https://asia-northeast3-fir-3s-8edb9.cloudfunctions.net/social/exchange
+```
+
+### 5) API 응답 포맷(앱 호환)
+
+요청 바디(기본/확장):
+
+```json
+{
+  "provider": "kakao",
+  "accessToken": "<oauth_access_token>",
+  "idToken": "<optional_oidc_id_token>",
+  "nonce": "<optional_nonce>",
+  "providerAudience": "<optional_aud>",
+  "clientId": "<optional_client_id>",
+  "rawProviderUserId": "<optional_provider_user_id>",
+  "appVersion": "1.0.0+12"
+}
+```
+
+성공 응답(HTTP 200):
+
+```json
+{
+  "success": true,
+  "provider": "kakao",
+  "uid": "kakao:123456",
+  "firebaseToken": "eyJhbGciOi...",
+  "timestamp": "2026-03-14T15:40:00.000Z"
+}
+```
+
+실패 응답(HTTP 4xx/5xx):
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "INVALID_SOCIAL_TOKEN",
+    "message": "소셜 토큰 검증 실패",
+    "details": {
+      "provider": "kakao",
+      "reason": "KAKAO_TOKEN_INVALID",
+      "requestAttemptCount": 2,
+      "fallbackAttempts": 1,
+      "fallbackUsed": true,
+      "status": 401,
+      "requestId": "req-..."
+    },
+    "timestamp": "2026-03-14T15:40:00.000Z"
+  }
+}
+```
+
+에러 코드 운영 가이드(요약):
+
+- `INVALID_PROVIDER`: 미지원 provider
+- `MISSING_ACCESS_TOKEN`: accessToken 누락
+- `INVALID_SOCIAL_TOKEN`: 소셜/OIDC 토큰 검증 실패
+- `SOCIAL_USER_NOT_FOUND`: 토큰에서 사용자 식별 실패
+- `EXTERNAL_TOKEN_VERIFY_FAILED`: 외부 토큰 검증 중 예외
+- `FIREBASE_TOKEN_ERROR`: Firebase custom token 생성 실패
+
+앱 파서는 `firebaseToken`을 기본으로 읽으며, 하위 호환으로 `customToken`, `token`도 지원합니다.
+
+### 6) CORS 허용 오리진(운영 보안) 설정
+
+- 기본 동작: `*`(모든 origin 허용)
+- 제한하려면 Firebase Functions 런타임 설정으로 다음 2가지 방식을 사용할 수 있습니다.
+
+```bash
+# 방법 A: 환경변수
+set SOCIAL_EXCHANGE_ALLOWED_ORIGINS=https://your-app.example.com,https://admin.your-app.example.com
+```
+
+```bash
+# 방법 B: Firebase Functions 런타임 설정(권장)
+firebase functions:config:set social_exchange.allowed_origins="https://your-app.example.com,https://admin.your-app.example.com"
+```
 
 ## 🌩️ Firebase Storage 보안 규칙 배포
 
@@ -237,6 +357,9 @@ firebase deploy --only firestore:rules
 
 # 인덱스 배포
 firebase deploy --only firestore:indexes
+
+# Functions 배포
+firebase deploy --only functions
 ```
 
 ---

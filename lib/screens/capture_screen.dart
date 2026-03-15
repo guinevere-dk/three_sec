@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -13,6 +12,8 @@ import '../utils/haptics.dart';
 enum _PreviewAspectPreset { ratio9x16, ratio3x4, ratio1x1 }
 
 enum _CaptureFlowState { idle, preparing, recording, stopping, saving, error }
+
+enum _CaptureQualityMode { auto, p1080, p4k }
 
 extension _PreviewAspectPresetX on _PreviewAspectPreset {
   double get aspectRatio {
@@ -34,6 +35,19 @@ extension _PreviewAspectPresetX on _PreviewAspectPreset {
         return '3:4';
       case _PreviewAspectPreset.ratio1x1:
         return '1:1';
+    }
+  }
+}
+
+extension _CaptureQualityModeX on _CaptureQualityMode {
+  String get label {
+    switch (this) {
+      case _CaptureQualityMode.auto:
+        return 'Auto';
+      case _CaptureQualityMode.p1080:
+        return '1080p';
+      case _CaptureQualityMode.p4k:
+        return '4K';
     }
   }
 }
@@ -83,16 +97,10 @@ class _CaptureScreenState extends State<CaptureScreen>
   String? _cameraError;
   String? _flowError;
   double? _lockedPreviewAspect;
-  ResolutionPreset _selectedResolutionPreset = Platform.isAndroid
-      ? ResolutionPreset.high
-      : ResolutionPreset.veryHigh;
+  _CaptureQualityMode _selectedQualityMode = _CaptureQualityMode.p1080;
+  bool _supports4kCapture = false;
+  bool _didProbe4kSupport = false;
   _PreviewAspectPreset _selectedAspectPreset = _PreviewAspectPreset.ratio9x16;
-
-  static const Map<ResolutionPreset, String> _resolutionPresetShortLabels = {
-    ResolutionPreset.ultraHigh: '4K',
-    ResolutionPreset.veryHigh: '1080',
-    ResolutionPreset.high: '720',
-  };
 
   late VideoManager videoManager;
 
@@ -196,6 +204,50 @@ class _CaptureScreenState extends State<CaptureScreen>
     _initCameraAsync();
   }
 
+  List<ResolutionPreset> _resolutionCandidatesForMode(_CaptureQualityMode mode) {
+    switch (mode) {
+      case _CaptureQualityMode.auto:
+        return const <ResolutionPreset>[
+          ResolutionPreset.veryHigh,
+          ResolutionPreset.high,
+          ResolutionPreset.medium,
+          ResolutionPreset.low,
+        ];
+      case _CaptureQualityMode.p1080:
+        return const <ResolutionPreset>[
+          ResolutionPreset.veryHigh,
+          ResolutionPreset.high,
+          ResolutionPreset.medium,
+        ];
+      case _CaptureQualityMode.p4k:
+        return const <ResolutionPreset>[
+          ResolutionPreset.ultraHigh,
+          ResolutionPreset.veryHigh,
+          ResolutionPreset.high,
+          ResolutionPreset.medium,
+        ];
+    }
+  }
+
+  Future<bool> _probe4kSupport() async {
+    if (cameras.isEmpty) return false;
+    final probe = CameraController(
+      cameras[_cameraIndex],
+      ResolutionPreset.ultraHigh,
+      enableAudio: true,
+    );
+    try {
+      await probe.initialize();
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      try {
+        await probe.dispose();
+      } catch (_) {}
+    }
+  }
+
   Future<void> _initCameraAsync() async {
     if (_isInitializingCamera) return;
     if (!mounted) return;
@@ -222,15 +274,18 @@ class _CaptureScreenState extends State<CaptureScreen>
       }
     }
 
+    if (!_didProbe4kSupport) {
+      _supports4kCapture = await _probe4kSupport();
+      _didProbe4kSupport = true;
+    }
+
+    final effectiveMode =
+        (_selectedQualityMode == _CaptureQualityMode.p4k && !_supports4kCapture)
+        ? _CaptureQualityMode.p1080
+        : _selectedQualityMode;
+
     CameraController? newController;
-    final candidates = <ResolutionPreset>[
-      _selectedResolutionPreset,
-      ResolutionPreset.ultraHigh,
-      ResolutionPreset.veryHigh,
-      ResolutionPreset.high,
-      ResolutionPreset.medium,
-      ResolutionPreset.low,
-    ];
+    final candidates = _resolutionCandidatesForMode(effectiveMode);
     final visited = <ResolutionPreset>{};
 
     for (final preset in candidates) {
@@ -246,7 +301,6 @@ class _CaptureScreenState extends State<CaptureScreen>
       try {
         await candidate.initialize();
         newController = candidate;
-        _selectedResolutionPreset = preset;
         break;
       } catch (e) {
         await candidate.dispose();
@@ -323,6 +377,7 @@ class _CaptureScreenState extends State<CaptureScreen>
       _controller = null;
 
       _cameraIndex = (_cameraIndex + 1) % cameras.length;
+      _didProbe4kSupport = false;
       await _initCameraAsync();
     } catch (e) {
       debugPrint('[Capture] Toggle camera error: $e');
@@ -627,10 +682,10 @@ class _CaptureScreenState extends State<CaptureScreen>
   Future<void> _openCaptureSettings() async {
     if (!_hasInitializedController) return;
 
-    final options = <ResolutionPreset>[
-      ResolutionPreset.ultraHigh,
-      ResolutionPreset.veryHigh,
-      ResolutionPreset.high,
+    final options = <_CaptureQualityMode>[
+      _CaptureQualityMode.auto,
+      _CaptureQualityMode.p1080,
+      _CaptureQualityMode.p4k,
     ];
 
     await showModalBottomSheet<void>(
@@ -638,7 +693,7 @@ class _CaptureScreenState extends State<CaptureScreen>
       backgroundColor: Colors.transparent,
       showDragHandle: true,
       builder: (context) {
-        ResolutionPreset selectedPreset = _selectedResolutionPreset;
+        _CaptureQualityMode selectedMode = _selectedQualityMode;
         _PreviewAspectPreset selectedAspect = _selectedAspectPreset;
         var applyingPreset = false;
 
@@ -755,40 +810,44 @@ class _CaptureScreenState extends State<CaptureScreen>
                           spacing: spacing,
                           runSpacing: spacing,
                           children: options.map((preset) {
-                            final selected = selectedPreset == preset;
+                            final selected = selectedMode == preset;
+                            final enabled =
+                                preset != _CaptureQualityMode.p4k ||
+                                _supports4kCapture;
                             return SizedBox(
                               width: itemWidth,
                               child: ChoiceChip(
-                                label: Text(
-                                  _resolutionPresetShortLabels[preset] ??
-                                      preset.name,
-                                ),
+                                label: Text(preset.label),
                                 selected: selected,
                                 labelStyle: TextStyle(
-                                  color: selected
+                                  color: !enabled
+                                      ? Colors.black45
+                                      : selected
                                       ? Colors.black
                                       : Colors.black87,
                                   fontWeight: FontWeight.w700,
                                 ),
                                 selectedColor: Colors.amber,
                                 backgroundColor: const Color(0xFFF1F1F1),
-                                onSelected: (_) async {
+                                onSelected: enabled
+                                    ? (_) async {
                                   if (applyingPreset ||
-                                      selectedPreset == preset) {
+                                      selectedMode == preset) {
                                     return;
                                   }
                                   setModalState(() {
-                                    selectedPreset = preset;
+                                    selectedMode = preset;
                                     applyingPreset = true;
                                   });
-                                  await _applyResolutionPreset(preset);
+                                  await _applyCaptureQualityMode(preset);
                                   if (!mounted) return;
                                   setModalState(() {
-                                    selectedPreset = _selectedResolutionPreset;
+                                    selectedMode = _selectedQualityMode;
                                     applyingPreset = false;
                                   });
                                   hapticFeedback();
-                                },
+                                }
+                                    : null,
                               ),
                             );
                           }).toList(),
@@ -805,13 +864,22 @@ class _CaptureScreenState extends State<CaptureScreen>
     );
   }
 
-  Future<void> _applyResolutionPreset(ResolutionPreset preset) async {
-    if (preset == _selectedResolutionPreset || _isInitializingCamera) return;
-    final previousPreset = _selectedResolutionPreset;
-    setState(() => _selectedResolutionPreset = preset);
+  Future<void> _applyCaptureQualityMode(_CaptureQualityMode mode) async {
+    if (mode == _selectedQualityMode || _isInitializingCamera) return;
+    if (mode == _CaptureQualityMode.p4k && !_supports4kCapture) {
+      setState(() {
+        _flowError = '이 기기에서는 4K 촬영을 지원하지 않습니다. 1080p로 촬영됩니다.';
+      });
+      return;
+    }
+    final previousMode = _selectedQualityMode;
+    setState(() {
+      _selectedQualityMode = mode;
+      _flowError = null;
+    });
     await _initCameraAsync();
     if (!_hasInitializedController && mounted) {
-      setState(() => _selectedResolutionPreset = previousPreset);
+      setState(() => _selectedQualityMode = previousMode);
       await _initCameraAsync();
     }
   }
