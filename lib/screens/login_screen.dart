@@ -1,9 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'dart:io';
 import '../services/auth_service.dart';
 
 /// 소셜 로그인 화면
-/// 
+///
 /// 지원 플랫폼:
 /// - Google (Android/iOS 모두)
 /// - Apple (iOS만)
@@ -19,6 +20,23 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final AuthService _authService = AuthService();
   bool _isLoading = false;
+  bool _isGuestLoginEnabled = AuthService.guestLoginEnabledDefault;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadGuestLoginEnabled());
+  }
+
+  Future<void> _loadGuestLoginEnabled() async {
+    final enabled = await _authService.isGuestLoginEnabled();
+    if (!mounted) return;
+    if (_isGuestLoginEnabled != enabled) {
+      setState(() {
+        _isGuestLoginEnabled = enabled;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -46,7 +64,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 20),
                   const Text(
-                    '3s',
+                    '2S Vlog',
                     style: TextStyle(
                       fontSize: 48,
                       fontWeight: FontWeight.bold,
@@ -56,15 +74,12 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    '3초의 일상을 기록하세요',
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: Colors.grey[400],
-                    ),
+                    '2초의 순간을 기록하세요.',
+                    style: TextStyle(fontSize: 16, color: Colors.grey[400]),
                   ),
-                  
+
                   const SizedBox(height: 80),
-                  
+
                   // 로딩 인디케이터 또는 로그인 버튼들
                   if (_isLoading)
                     const CircularProgressIndicator(color: Colors.white)
@@ -84,9 +99,9 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                           label: 'Continue with Google',
                         ),
-                        
+
                         const SizedBox(height: 16),
-                        
+
                         // Apple 로그인 버튼 (iOS만)
                         if (Platform.isIOS)
                           _buildSocialButton(
@@ -101,9 +116,9 @@ class _LoginScreenState extends State<LoginScreen> {
                             label: 'Continue with Apple',
                             borderColor: Colors.white,
                           ),
-                        
+
                         if (Platform.isIOS) const SizedBox(height: 16),
-                        
+
                         // Kakao 로그인
                         _buildSocialButton(
                           onPressed: _handleKakaoSignIn,
@@ -116,19 +131,38 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                           label: 'Continue with Kakao',
                         ),
+
+                        if (_isGuestLoginEnabled) ...[
+                          const SizedBox(height: 16),
+                          _buildSocialButton(
+                            onPressed: _handleGuestSignIn,
+                            backgroundColor: const Color(0xFF1F2937),
+                            textColor: Colors.white,
+                            icon: Icons.person_outline,
+                            label: '게스트로 시작',
+                            borderColor: const Color(0xFF4B5563),
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            '게스트 모드에서는 로컬 생성/편집은 가능하나 클라우드 업로드/동기화는 제한됩니다.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Color(0xFF94A3B8),
+                              height: 1.35,
+                            ),
+                          ),
+                        ],
                       ],
                     ),
-                  
+
                   const SizedBox(height: 60),
-                  
+
                   // 약관 동의 문구
                   Text(
                     'By continuing, you agree to our\nTerms of Service and Privacy Policy',
                     textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Colors.grey[600],
-                    ),
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                   ),
                 ],
               ),
@@ -158,9 +192,9 @@ class _LoginScreenState extends State<LoginScreen> {
         minimumSize: const Size(double.infinity, 56),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
-          side: borderColor != null 
-            ? BorderSide(color: borderColor, width: 1)
-            : BorderSide.none,
+          side: borderColor != null
+              ? BorderSide(color: borderColor, width: 1)
+              : BorderSide.none,
         ),
         elevation: isDisabled ? 0 : 2,
         disabledBackgroundColor: Colors.grey[800],
@@ -173,10 +207,7 @@ class _LoginScreenState extends State<LoginScreen> {
           const SizedBox(width: 12),
           Text(
             label,
-            style: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-            ),
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
           ),
         ],
       ),
@@ -219,15 +250,17 @@ class _LoginScreenState extends State<LoginScreen> {
       final userCredential = await _authService.signInWithGoogle();
       if (userCredential != null && mounted) {
         // 로그인 성공 시 AuthGate가 자동으로 메인 화면으로 이동
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Welcome to 3s!')),
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(
+          const SnackBar(content: Text('Welcome to One Second Vlog!')),
         );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Login failed: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Login failed: $e')));
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -240,15 +273,17 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final userCredential = await _authService.signInWithApple();
       if (userCredential != null && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Welcome to 3s!')),
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(
+          const SnackBar(content: Text('Welcome to One Second Vlog!')),
         );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Login failed: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Login failed: $e')));
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -261,21 +296,52 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final userCredential = await _authService.signInWithKakao();
       if (userCredential != null && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Welcome to 3s!')),
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(
+          const SnackBar(content: Text('Welcome to One Second Vlog!')),
         );
       }
     } on AuthServiceException catch (e) {
       if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(e.userMessage)));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Login failed: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  /// 게스트 로그인 처리
+  Future<void> _handleGuestSignIn() async {
+    setState(() => _isLoading = true);
+    try {
+      await _authService.signInAsGuest();
+      if (!mounted) return;
+
+      if (_authService.isGuest) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.userMessage)),
+          const SnackBar(
+            content: Text('게스트 모드로 시작했습니다. 로그인 없이 핵심 기능을 이용할 수 있습니다.'),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('게스트 모드 진입에 실패했습니다. 다시 시도해 주세요.')),
         );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Login failed: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Guest sign in failed: $e')));
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -288,21 +354,23 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final userCredential = await _authService.signInWithNaver();
       if (userCredential != null && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Welcome to 3s!')),
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(
+          const SnackBar(content: Text('Welcome to One Second Vlog!')),
         );
       }
     } on AuthServiceException catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.userMessage)),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(e.userMessage)));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Login failed: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Login failed: $e')));
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);

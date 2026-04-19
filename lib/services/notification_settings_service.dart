@@ -46,6 +46,15 @@ class NotificationSettingsService {
       'notifications_category_vlog_enabled';
   static const String _legacyVlogTopicKey = 'three_sec_vlog';
 
+  static const Map<String, int> _mainTabRouteMap = {
+    'capture': 0,
+    'camera': 0,
+    'library': 1,
+    'album': 1,
+    'profile': 2,
+    'settings': 2,
+  };
+
   static const Map<NotificationCategory, bool> _categoryDefaults = {
     NotificationCategory.clip: true,
     NotificationCategory.project: true,
@@ -197,6 +206,44 @@ class NotificationSettingsService {
     if (kIsWeb) return;
     await migrateCategorySettingsIfNeeded();
     await syncTopicSubscriptions();
+  }
+
+  /// 알림 payload에서 메인 탭 인덱스를 안전하게 해석한다.
+  ///
+  /// 지원 키: tab, targetTab, route, screen
+  /// 지원 값: capture/camera, library/album, profile/settings 또는 0/1/2
+  int? resolveMainTabIndexFromPayload(Map<String, dynamic>? payload) {
+    if (payload == null || payload.isEmpty) {
+      return null;
+    }
+
+    for (final key in const ['tab', 'targetTab', 'route', 'screen']) {
+      final raw = payload[key];
+      if (raw == null) continue;
+
+      if (raw is num) {
+        final index = raw.toInt();
+        if (index >= 0 && index <= 2) {
+          return index;
+        }
+        continue;
+      }
+
+      final normalized = raw.toString().trim().toLowerCase();
+      if (normalized.isEmpty) continue;
+
+      final parsedAsInt = int.tryParse(normalized);
+      if (parsedAsInt != null && parsedAsInt >= 0 && parsedAsInt <= 2) {
+        return parsedAsInt;
+      }
+
+      final mapped = _mainTabRouteMap[normalized];
+      if (mapped != null) {
+        return mapped;
+      }
+    }
+
+    return null;
   }
 }
 

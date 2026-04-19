@@ -1,0 +1,65 @@
+{
+  "generated_at_utc": "20260406T131937Z",
+  "runs_per_dataset": 1,
+  "datasets": [
+    {
+      "id": "photo_silent",
+      "name": "photo_silent",
+      "display_name": "무음 사진 다수",
+      "ab_group": "A",
+      "retry_plan": "default",
+      "notes": "사진 클립이 많고 오디오 트랙이 없는 세트",
+      "dataset_hint": "photo-only silent mix"
+    },
+    {
+      "id": "video_audio_mixed",
+      "name": "video_audio_mixed",
+      "display_name": "영상 + 오디오 혼합",
+      "ab_group": "A",
+      "retry_plan": "default",
+      "notes": "영상 클립과 오디오 클립이 혼합된 세트",
+      "dataset_hint": "video+audio mixed"
+    },
+    {
+      "id": "video_only",
+      "name": "video_only",
+      "display_name": "영상 전용",
+      "ab_group": "A",
+      "retry_plan": "default",
+      "notes": "영상만 포함된 세트",
+      "dataset_hint": "video only"
+    }
+  ],
+  "runs": [
+    {
+      "run_id": "3d92fbe0641c4bfb89ac5cc2819966d5",
+      "trace_id": "02dcf8d146634715",
+      "dataset_id": "photo_silent",
+      "run_index": 1,
+      "ab_group": "A",
+      "retry_plan": "default",
+      "dataset_name": "무음 사진 다수",
+      "dataset_hint": "photo-only silent mix"
+    },
+    {
+      "run_id": "008bf154774c4ca282d2ae7a298b5e3f",
+      "trace_id": "23b308c217844368",
+      "dataset_id": "video_audio_mixed",
+      "run_index": 1,
+      "ab_group": "A",
+      "retry_plan": "default",
+      "dataset_name": "영상 + 오디오 혼합",
+      "dataset_hint": "video+audio mixed"
+    },
+    {
+      "run_id": "95fd7e6c88764407bb045c0b817edc63",
+      "trace_id": "f54df7d855e949fc",
+      "dataset_id": "video_only",
+      "run_index": 1,
+      "ab_group": "A",
+      "retry_plan": "default",
+      "dataset_name": "영상 전용",
+      "dataset_hint": "video only"
+    }
+  ]
+}

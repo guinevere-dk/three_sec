@@ -17,6 +17,8 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../managers/user_status_manager.dart';
 import '../managers/video_manager.dart';
+import 'review_fallback_metrics.dart';
+import 'cloud_service.dart';
 
 typedef CloudPurgeCallback =
     Future<({bool success, String message, String? failedPhase})> Function();
@@ -105,6 +107,8 @@ class AuthServiceException implements Exception {
   }
 }
 
+enum AuthMode { guest, signedIn }
+
 /// Firebase Auth 기반 소셜 로그인 서비스
 ///
 /// 지원 로그인 방식:
@@ -121,12 +125,24 @@ class AuthServiceException implements Exception {
 class AuthService {
   static final AuthService _instance = AuthService._internal();
   factory AuthService() => _instance;
-  AuthService._internal();
+  AuthService._internal() {
+    // 앱 시작 시 Firebase 세션과 로컬 게스트 상태를 정합화.
+    unawaited(_initializeAuthMode());
+  }
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final GoogleSignIn _googleSignIn = GoogleSignIn();
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseStorage _storage = FirebaseStorage.instance;
+  final ReviewFallbackMetrics _reviewFallbackMetrics = ReviewFallbackMetrics();
+  final ValueNotifier<AuthMode> _authMode = ValueNotifier<AuthMode>(
+    AuthMode.signedIn,
+  );
+  static const bool guestLoginEnabledDefault = bool.fromEnvironment(
+    'GUEST_LOGIN_ENABLED',
+    defaultValue: true,
+  );
+  static const String _guestLoginEnabledKey = '3s_guest_login_enabled';
   static const String _socialAuthExchangeUrl = String.fromEnvironment(
     'SOCIAL_AUTH_EXCHANGE_URL',
     defaultValue: '',
@@ -144,10 +160,67 @@ class AuthService {
     defaultValue: '',
   );
   static const String _cloudSyncedKey = 'cloud_synced_paths';
+  static const String _guestAuthModeKey = '3s_auth_mode_guest';
   static const int _socialAuthExchangeTimeoutSec = 12;
   Future<AccountDeletionResult>? _accountDeletionInFlight;
   final ValueNotifier<bool> _sessionBootstrapInProgress = ValueNotifier(false);
   String? _cachedAppVersion;
+
+  Future<void> _initializeAuthMode() async {
+    if (_auth.currentUser != null) {
+      await _setAuthMode(AuthMode.signedIn);
+      return;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    final isGuest = prefs.getBool(_guestAuthModeKey) ?? false;
+    await _setAuthMode(isGuest ? AuthMode.guest : AuthMode.signedIn);
+  }
+
+  Future<void> _setAuthMode(AuthMode mode) async {
+    if (_authMode.value == mode) {
+      return;
+    }
+    _authMode.value = mode;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_guestAuthModeKey, mode == AuthMode.guest);
+    print('[AuthService] authMode 변경: $mode');
+  }
+
+  Future<bool> isGuestLoginEnabled() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final override = prefs.getBool(_guestLoginEnabledKey);
+      return override ?? guestLoginEnabledDefault;
+    } catch (_) {
+      return guestLoginEnabledDefault;
+    }
+  }
+
+  Future<void> setGuestLoginEnabledOverride({required bool enabled}) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_guestLoginEnabledKey, enabled);
+      print('[AuthService] 게스트 모드 플래그 변경: enabled=$enabled');
+    } catch (e) {
+      print('[AuthService] 게스트 모드 플래그 변경 실패: $e');
+    }
+  }
+
+  Future<void> clearGuestLoginEnabledOverride() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_guestLoginEnabledKey);
+      print('[AuthService] 게스트 모드 플래그 오버라이드 초기화');
+    } catch (e) {
+      print('[AuthService] 게스트 모드 플래그 초기화 실패: $e');
+    }
+  }
+
+  String _generateGuestUserId() {
+    final randomId = Random.secure().nextInt(1 << 31);
+    return 'guest_${DateTime.now().millisecondsSinceEpoch}_$randomId';
+  }
 
   void _logRequestHeaders(String label, Map<String, String>? headers) {
     if (headers == null || headers.isEmpty) {
@@ -221,7 +294,8 @@ class AuthService {
   }
 
   String _generateNonce() {
-    final seed = '${DateTime.now().microsecondsSinceEpoch}_${Random.secure().nextInt(1 << 31)}';
+    final seed =
+        '${DateTime.now().microsecondsSinceEpoch}_${Random.secure().nextInt(1 << 31)}';
     return base64UrlEncode(utf8.encode(seed)).replaceAll('=', '');
   }
 
@@ -249,10 +323,10 @@ class AuthService {
       final info = await PackageInfo.fromPlatform();
       final version = _extractStringValue(info.version, trim: true);
       final buildNumber = _extractStringValue(info.buildNumber, trim: true);
-      final resolved = [version, buildNumber]
-          .whereType<String>()
-          .where((v) => v.isNotEmpty)
-          .join('+');
+      final resolved = [
+        version,
+        buildNumber,
+      ].whereType<String>().where((v) => v.isNotEmpty).join('+');
       _cachedAppVersion = resolved.isEmpty ? null : resolved;
       return _cachedAppVersion;
     } catch (_) {
@@ -355,6 +429,12 @@ class AuthService {
   /// 로그인 여부
   bool get isSignedIn => currentUser != null;
 
+  /// 게스트 모드 여부
+  bool get isGuest => _authMode.value == AuthMode.guest;
+
+  /// 인증 모드 변경 스트림
+  ValueListenable<AuthMode> get authMode => _authMode;
+
   /// 로그인 직후 세션/구독 동기화 진행 여부
   ValueListenable<bool> get sessionBootstrapInProgress =>
       _sessionBootstrapInProgress;
@@ -373,6 +453,12 @@ class AuthService {
       final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
       if (googleUser == null) {
         print('[AuthService] Google 로그인 취소됨');
+        unawaited(
+          _reviewFallbackMetrics.recordSocialLoginFailure(
+            provider: 'google',
+            reason: 'user_cancelled',
+          ),
+        );
         _sessionBootstrapInProgress.value = false;
         return null; // 사용자가 취소함
       }
@@ -401,6 +487,14 @@ class AuthService {
     } catch (e, stackTrace) {
       print('[AuthService] ✗ Google 로그인 실패: $e');
       print(stackTrace);
+      unawaited(
+        _reviewFallbackMetrics.recordSocialLoginFailure(
+          provider: 'google',
+          reason: e is AuthServiceException
+              ? e.code
+              : (_isLikelyUserCancelled(e) ? 'user_cancelled' : 'exception'),
+        ),
+      );
       _sessionBootstrapInProgress.value = false;
       return null;
     }
@@ -446,6 +540,14 @@ class AuthService {
     } catch (e, stackTrace) {
       print('[AuthService] ✗ Apple 로그인 실패: $e');
       print(stackTrace);
+      unawaited(
+        _reviewFallbackMetrics.recordSocialLoginFailure(
+          provider: 'apple',
+          reason: e is AuthServiceException
+              ? e.code
+              : (_isLikelyUserCancelled(e) ? 'user_cancelled' : 'exception'),
+        ),
+      );
       _sessionBootstrapInProgress.value = false;
       return null;
     }
@@ -529,11 +631,25 @@ class AuthService {
     } catch (e, stackTrace) {
       if (_isLikelyUserCancelled(e)) {
         print('[AuthService] Kakao 로그인 사용자 취소');
+        unawaited(
+          _reviewFallbackMetrics.recordSocialLoginFailure(
+            provider: 'kakao',
+            reason: 'user_cancelled',
+          ),
+        );
         _sessionBootstrapInProgress.value = false;
         return null;
       }
       print('[AuthService] ✗ Kakao 로그인 실패: $e');
       print(stackTrace);
+      unawaited(
+        _reviewFallbackMetrics.recordSocialLoginFailure(
+          provider: 'kakao',
+          reason: e is AuthServiceException
+              ? e.code
+              : (_isLikelyUserCancelled(e) ? 'user_cancelled' : 'exception'),
+        ),
+      );
       _sessionBootstrapInProgress.value = false;
       if (e is AuthServiceException) {
         rethrow;
@@ -560,6 +676,14 @@ class AuthService {
       final result = await FlutterNaverLogin.logIn();
       if (result.status != NaverLoginStatus.loggedIn) {
         print('[AuthService] Naver 로그인 취소 또는 실패: ${result.status}');
+        unawaited(
+          _reviewFallbackMetrics.recordSocialLoginFailure(
+            provider: 'naver',
+            reason: _isLikelyUserCancelled(result.status)
+                ? 'user_cancelled'
+                : 'status_${result.status.toString().toLowerCase()}',
+          ),
+        );
         _sessionBootstrapInProgress.value = false;
         return null;
       }
@@ -585,6 +709,14 @@ class AuthService {
     } catch (e, stackTrace) {
       print('[AuthService] ✗ Naver 로그인 실패: $e');
       print(stackTrace);
+      unawaited(
+        _reviewFallbackMetrics.recordSocialLoginFailure(
+          provider: 'naver',
+          reason: e is AuthServiceException
+              ? e.code
+              : (_isLikelyUserCancelled(e) ? 'user_cancelled' : 'exception'),
+        ),
+      );
       _sessionBootstrapInProgress.value = false;
       if (e is AuthServiceException) {
         rethrow;
@@ -731,7 +863,8 @@ class AuthService {
 
       Map<String, dynamic>? responsePayload;
       Map<String, dynamic>? responseError;
-      if (bodyTrimmed.startsWith('{') || contentType.contains('application/json')) {
+      if (bodyTrimmed.startsWith('{') ||
+          contentType.contains('application/json')) {
         try {
           final decoded = jsonDecode(bodyTrimmed);
           if (decoded is Map<String, dynamic>) {
@@ -749,7 +882,8 @@ class AuthService {
           _extractStringValue(responseError?['message'], trim: true) ??
           'Firebase 커스텀 토큰 획득 실패 (HTTP ${response.statusCode}). $endpointHint';
 
-      final responseDetails = _toStringMap(responseError?['details']) ??
+      final responseDetails =
+          _toStringMap(responseError?['details']) ??
           _toStringMap(responsePayload?['details']) ??
           <String, dynamic>{};
       final requestId =
@@ -1051,6 +1185,11 @@ class AuthService {
   Future<void> _onSignInSuccess(User user) async {
     try {
       final uid = user.uid;
+      await _setAuthMode(AuthMode.signedIn);
+      final userManager = UserStatusManager();
+      final previousLocalUid = userManager.userId;
+      final canPreserveLocalTierOnSyncFailure =
+          previousLocalUid == uid && userManager.currentTier != UserTier.free;
       print('[AuthService] 로그인 후처리 시작: $uid');
       print(
         '[AuthService][Diag][Session] sign-in bootstrap '
@@ -1058,15 +1197,29 @@ class AuthService {
         'localProduct(beforeReset)=${UserStatusManager().productId} '
         'localNextTier(beforeReset)=${UserStatusManager().nextTier}',
       );
+      print(
+        '[AuthService][Diag][Session] tier_preserve_guard '
+        'uid=$uid previousLocalUid=$previousLocalUid '
+        'canPreserveLocalTierOnSyncFailure=$canPreserveLocalTierOnSyncFailure',
+      );
 
       // 1. 사용자 전환 잔여 상태 방지: 로컬 구독 상태 선초기화
-      final userManager = UserStatusManager();
-      await userManager.resetToFree();
-      print(
-        '[AuthService][Diag][Session] after resetToFree '
-        'uid=$uid localTier=${userManager.currentTier} '
-        'localProduct=${userManager.productId} localNextTier=${userManager.nextTier}',
-      );
+      // 동일 uid 재로그인의 경우 동기화 실패 시 즉시 강등을 피하기 위해
+      // 기존 로컬 티어를 임시 보존(SYNCING_PENDING)한다.
+      if (!canPreserveLocalTierOnSyncFailure) {
+        await userManager.resetToFree();
+        print(
+          '[AuthService][Diag][Session] after resetToFree '
+          'uid=$uid localTier=${userManager.currentTier} '
+          'localProduct=${userManager.productId} localNextTier=${userManager.nextTier}',
+        );
+      } else {
+        print(
+          '[AuthService][Diag][TierSync][SYNCING_PENDING] '
+          'preserve local tier before firestore sync '
+          'uid=$uid tier=${userManager.currentTier} productId=${userManager.productId}',
+        );
+      }
 
       // 2. UserStatusManager에 uid 저장
       await userManager.setUserId(uid);
@@ -1075,7 +1228,17 @@ class AuthService {
       );
 
       // 3. Firestore에서 구독 등급 동기화
-      await _syncSubscriptionFromFirestore(uid);
+      final syncSuccess = await _syncSubscriptionFromFirestoreWithRetry(
+        uid,
+        preserveLocalOnFailure: canPreserveLocalTierOnSyncFailure,
+      );
+      if (!syncSuccess && canPreserveLocalTierOnSyncFailure) {
+        print(
+          '[AuthService][Diag][TierSync][SYNCING_PENDING] '
+          'sync failed after retry but local tier is preserved '
+          'uid=$uid tier=${userManager.currentTier} productId=${userManager.productId}',
+        );
+      }
       print(
         '[AuthService][Session] subscription sync done: uid=$uid, currentTier=${userManager.currentTier}, productId=${userManager.productId}',
       );
@@ -1090,6 +1253,9 @@ class AuthService {
       // 4. 사용자 프로필 Firestore에 저장/업데이트
       await _updateUserProfile(user);
 
+      // 로그인 복귀/앱 재시작 시 저장된 업로드 큐 복구 트리거
+      await CloudService().restoreUploadQueueFromStore();
+
       print('[AuthService] ✓ 로그인 후처리 완료');
     } catch (e, stackTrace) {
       print('[AuthService] ✗ 로그인 후처리 실패: $e');
@@ -1099,12 +1265,41 @@ class AuthService {
     }
   }
 
+  Future<bool> _syncSubscriptionFromFirestoreWithRetry(
+    String uid, {
+    required bool preserveLocalOnFailure,
+  }) async {
+    // [AndroidRelease][Checklist-1]
+    // 로그인 직후 Firestore 일시 장애를 고려해 최소 1회 재시도 후,
+    // preserveLocalOnFailure=true면 로컬 티어를 즉시 free로 강등하지 않는다.
+    final first = await _syncSubscriptionFromFirestore(
+      uid,
+      preserveLocalOnFailure: preserveLocalOnFailure,
+      attempt: 1,
+    );
+    if (first) return true;
+
+    print('[AuthService][Diag][TierSync] retry once after sync failure: uid=$uid');
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+
+    return _syncSubscriptionFromFirestore(
+      uid,
+      preserveLocalOnFailure: preserveLocalOnFailure,
+      attempt: 2,
+    );
+  }
+
   /// Firestore에서 구독 등급 동기화
-  Future<void> _syncSubscriptionFromFirestore(String uid) async {
+  Future<bool> _syncSubscriptionFromFirestore(
+    String uid, {
+    required bool preserveLocalOnFailure,
+    int attempt = 1,
+  }) async {
     try {
       final userManager = UserStatusManager();
       print(
         '[AuthService][Diag][TierSync] start '
+        'attempt=$attempt preserveLocalOnFailure=$preserveLocalOnFailure '
         'uid=$uid localTier(beforeFetch)=${userManager.currentTier} '
         'localProduct(beforeFetch)=${userManager.productId} '
         'localNextTier(beforeFetch)=${userManager.nextTier}',
@@ -1112,9 +1307,17 @@ class AuthService {
       final docSnapshot = await _firestore.collection('users').doc(uid).get();
 
       if (!docSnapshot.exists) {
+        if (preserveLocalOnFailure) {
+          print(
+            '[AuthService][Diag][TierSync][SYNCING_PENDING] '
+            'Firestore user doc missing. keep local tier temporarily '
+            'uid=$uid attempt=$attempt',
+          );
+          return false;
+        }
         await userManager.resetToFree();
         print('[AuthService] Firestore에 사용자 데이터 없음 (신규 사용자)');
-        return;
+        return true;
       }
 
       final data = docSnapshot.data();
@@ -1172,15 +1375,30 @@ class AuthService {
         }
       }
 
-      // 서버 구독 정보가 없거나 비정상이면 로컬 상태 강제 초기화
-      if (tier == null || tier == UserTier.free) {
+      // 서버 응답이 free인 경우는 정상 정합화로 간주.
+      if (tier == UserTier.free) {
         await userManager.resetToFree();
         print('[AuthService] Firestore 구독 정보 없음/비정상 → 로컬 free로 정합화');
         print(
           '[AuthService][Diag][TierSync] normalized to free '
           'uid=$uid tierFromFirestore=$tier nextTierFromFirestore=$nextTier',
         );
-        return;
+        return true;
+      }
+
+      // 비정상 값(null)은 preserve 옵션에서 재시도 대상으로 유지.
+      if (tier == null) {
+        if (preserveLocalOnFailure) {
+          print(
+            '[AuthService][Diag][TierSync][SYNCING_PENDING] '
+            'invalid tier payload -> keep local tier '
+            'uid=$uid attempt=$attempt',
+          );
+          return false;
+        }
+        await userManager.resetToFree();
+        print('[AuthService] Firestore 구독 정보 비정상(null) → 로컬 free로 정합화');
+        return true;
       }
 
       await userManager.setTier(
@@ -1256,11 +1474,21 @@ class AuthService {
         'localNextTier=${userManager.nextTier} '
         'localNextTierEffectiveAt=${userManager.nextTierEffectiveAt}',
       );
+      return true;
     } catch (e, stackTrace) {
       print('[AuthService] ✗ Firestore 동기화 실패: $e');
       print(stackTrace);
+      if (preserveLocalOnFailure) {
+        print(
+          '[AuthService][Diag][TierSync][SYNCING_PENDING] '
+          'sync exception but keep local tier '
+          'uid=$uid attempt=$attempt',
+        );
+        return false;
+      }
       await UserStatusManager().resetToFree();
       print('[AuthService] Firestore 동기화 예외 → 로컬 free로 정합화');
+      return false;
     }
   }
 
@@ -1575,6 +1803,8 @@ class AuthService {
         localDataPolicy: localDataPolicy,
       );
 
+      await _setAuthMode(AuthMode.signedIn);
+
       print('[AuthService] ✓ 로그아웃 완료');
     } catch (e, stackTrace) {
       print('[AuthService] ✗ 로그아웃 실패: $e');
@@ -1609,6 +1839,50 @@ class AuthService {
 
     // 사용자 종속 캐시 정리
     await _clearUserScopedLocalState();
+  }
+
+  /// 게스트 모드 시작
+  Future<void> signInAsGuest() async {
+    try {
+      print('[AuthService] 게스트 모드 시작');
+      final userManager = UserStatusManager();
+
+      await userManager.resetToFree();
+      await userManager.setUserId(_generateGuestUserId());
+      await _clearUserScopedLocalState();
+      await _setAuthMode(AuthMode.guest);
+      print('[AuthService] ✓ 게스트 모드 시작 완료');
+      unawaited(_reviewFallbackMetrics.recordGuestEntry(success: true));
+    } catch (e, stackTrace) {
+      print('[AuthService] ✗ 게스트 모드 시작 실패: $e');
+      print(stackTrace);
+      unawaited(
+        _reviewFallbackMetrics.recordGuestEntry(
+          success: false,
+          reason: e is AuthServiceException ? e.code : 'exception',
+        ),
+      );
+    }
+  }
+
+  /// 게스트 모드 종료(로컬 세션만 해제)
+  Future<void> signOutGuest() async {
+    if (!isGuest) {
+      return;
+    }
+
+    try {
+      print('[AuthService] 게스트 모드 종료');
+      final userManager = UserStatusManager();
+      await userManager.resetToFree();
+      await userManager.clearUserId();
+      await _clearUserScopedLocalState();
+      await _setAuthMode(AuthMode.signedIn);
+      print('[AuthService] ✓ 게스트 모드 종료 완료');
+    } catch (e, stackTrace) {
+      print('[AuthService] ✗ 게스트 모드 종료 실패: $e');
+      print(stackTrace);
+    }
   }
 
   // ============================================================

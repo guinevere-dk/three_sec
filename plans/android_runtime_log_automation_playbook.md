@@ -50,7 +50,7 @@ flutter run -d android
 ---
 
 ## 4) 필수 재현 시나리오(최소 세트)
-- 정상 플로우: 캡처(3초) → 라이브러리 선택 → 브이로그 생성 → 편집 진입 → 내보내기 시도 → 앱 종료
+- 정상 플로우: 캡처(1초) → 라이브러리 선택 → 브이로그 생성 → 편집 진입 → 내보내기 시도 → 앱 종료
 - 실패 플로우 4종:
   1. 권한 거부(카메라/마이크 또는 저장소)
   2. 저장공간 부족(촬영 또는 내보내기)
@@ -73,6 +73,12 @@ Flutter/Dart 레이어 신호 추출:
 
 ```cmd
 findstr /I /C:"[Capture]" /C:"[VideoManager]" /C:"[CloudService]" /C:"[IAPService]" /C:"[AuthService]" /C:"[EditScreen]" logs\session_%TS%_full.log > logs\session_%TS%_appsignals.log
+```
+
+길이 정책 계측 키 추출(Phase 4 권장):
+
+```cmd
+findstr /I /C:"sourceDurationMs=" /C:"targetDurationMs=" /C:"normalizedDurationMs=" logs\session_%TS%_full.log > logs\session_%TS%_duration_metrics.log
 ```
 
 ---
@@ -119,6 +125,30 @@ findstr /I /C:"[Capture]" /C:"[VideoManager]" /C:"[CloudService]" /C:"[IAPServic
 - `logs/session_YYYYMMDD_HHMMSS_full.log`
 - `logs/session_YYYYMMDD_HHMMSS_errors.log`
 - `logs/session_YYYYMMDD_HHMMSS_appsignals.log`
+- `logs/session_YYYYMMDD_HHMMSS_duration_metrics.log`
 - 재현 메모(사용자 동작 타임라인 5~10줄)
 
 이 4가지를 기반으로 다음 단계에서 원인 확정 및 수정 우선순위를 결정합니다.
+
+---
+
+## 9) 1초 길이 정책 모니터링 운영 (릴리즈 후 1주)
+- 관찰 기간: 릴리즈 직후 7일
+- 표본 기준: 캡처/정규화 성공 케이스 일별 100건 이상
+- 실패 정의(권장):
+  - `normalizedDurationMs`가 **1.0초 ± 0.15초** 범위를 벗어나는 케이스
+  - 혹은 정규화 성공 로그 누락 + 저장 실패 로그 동반 케이스
+- 일일 점검 항목:
+  1. 길이 실패율(%)
+  2. 기기군/OS 버전별 편차
+  3. Android/iOS 간 편차 비교
+  4. 회귀 징후(전일 대비 급증 여부)
+
+운영 기록 포맷(권장):
+- 날짜
+- 플랫폼(Android/iOS)
+- 샘플 수
+- 실패 건수
+- 실패율
+- 상위 원인 3개
+- 조치 상태(관찰/수정중/핫픽스)

@@ -1,6 +1,13 @@
-# three_sec_vlog
+# 원세컨 브이로그 (One Second Vlog)
 
-A new Flutter project.
+1초 순간으로 만드는 영상 앨범 앱, **원세컨 브이로그** 프로젝트입니다.
+
+## 브랜드 표기 가이드 (Phase 1)
+
+- 국문: `원세컨 브이로그`
+- 영문: `One Second Vlog`
+- 약칭: `1s Vlog`
+- 금지 표기(사용자 노출 문구): `3s`, `Three Sec Vlog`, `3-Second Vlog`, `three_sec_vlog`
 
 ## Terminology Update (UI)
 

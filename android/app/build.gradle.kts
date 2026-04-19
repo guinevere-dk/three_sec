@@ -15,6 +15,11 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+val googleServicesFile = file("google-services.json")
+if (!googleServicesFile.exists()) {
+    println("[FirebaseConfig] android/app/google-services.json is missing. Firebase 앱 초기화가 기본 옵션으로 실패할 수 있습니다.")
+}
+
 android {
     namespace = "com.dk.three_sec"
     compileSdk = flutter.compileSdkVersion
@@ -56,9 +61,16 @@ android {
             // 3. 디버그 키 대신 생성한 릴리즈 키를 연결합니다.
             signingConfig = signingConfigs.getByName("release")
             
-            // 코드 최적화 설정 (필요 시 true로 변경 가능)
-            isMinifyEnabled = false
-            isShrinkResources = false
+            // 코드 난독화/최적화 + 리소스 축소 활성화
+            // mapping.txt는 build/app/outputs/mapping/release/mapping.txt 에 생성됩니다.
+            isMinifyEnabled = true
+            isShrinkResources = true
+
+            // R8/Proguard 규칙
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 }

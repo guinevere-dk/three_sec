@@ -3,8 +3,10 @@ import 'dart:async';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
+import '../constants/clip_policy.dart';
 import '../main.dart';
 import '../managers/video_manager.dart';
 import '../utils/haptics.dart';
@@ -63,12 +65,17 @@ class CaptureScreen extends StatefulWidget {
 
 class _CaptureScreenState extends State<CaptureScreen>
     with TickerProviderStateMixin {
+  static final Map<String, ResolutionPreset> _lastSuccessfulPresetByLens =
+      <String, ResolutionPreset>{};
+  static final Map<String, bool> _probe4kSupportByLens = <String, bool>{};
+  static final Map<String, Future<bool>> _probe4kSupportFutureByLens =
+      <String, Future<bool>>{};
+
   CameraController? _controller;
 
   _CaptureFlowState _flowState = _CaptureFlowState.idle;
-  int _remainingTime = 3;
-  static const int _targetRecordingMilliseconds = 3500;
-  static const int _recordingStopDelayMs = 120;
+  int _remainingTime = kTargetClipSecForDisplay;
+  static const int _targetRecordingMilliseconds = kTargetCaptureMs;
   Timer? _recordingTimer;
   Offset? _tapPosition;
   late AnimationController _focusAnimController;
@@ -80,6 +87,7 @@ class _CaptureScreenState extends State<CaptureScreen>
   Timer? _exposureTimer;
   Stopwatch? _recordingStopwatch;
   bool _hasRecordingActuallyStarted = false;
+  bool _isCheckingCameraPermission = false;
 
   int _cameraIndex = 0;
   FlashMode _flashMode = FlashMode.off;
@@ -99,8 +107,9 @@ class _CaptureScreenState extends State<CaptureScreen>
   double? _lockedPreviewAspect;
   _CaptureQualityMode _selectedQualityMode = _CaptureQualityMode.p1080;
   bool _supports4kCapture = false;
-  bool _didProbe4kSupport = false;
   _PreviewAspectPreset _selectedAspectPreset = _PreviewAspectPreset.ratio9x16;
+  int _cameraInitSequence = 0;
+  PermissionStatus _cameraPermissionStatus = PermissionStatus.denied;
 
   late VideoManager videoManager;
 
@@ -116,6 +125,13 @@ class _CaptureScreenState extends State<CaptureScreen>
   bool get _canStartRecording =>
       _flowState == _CaptureFlowState.idle ||
       _flowState == _CaptureFlowState.error;
+
+  bool get _hasGrantedCameraPermission =>
+      _cameraPermissionStatus == PermissionStatus.granted;
+
+  bool get _isPermissionBlockedPermanently =>
+      _cameraPermissionStatus == PermissionStatus.permanentlyDenied ||
+      _cameraPermissionStatus == PermissionStatus.restricted;
 
   bool get _canStopRecording => _flowState == _CaptureFlowState.recording;
 
@@ -170,7 +186,11 @@ class _CaptureScreenState extends State<CaptureScreen>
   }
 
   Future<void> _toggleFlash() async {
-    if (!_hasInitializedController) return;
+    if (!_hasInitializedController ||
+        _isCameraLocked ||
+        !_hasGrantedCameraPermission) {
+      return;
+    }
 
     final newMode = _flashMode == FlashMode.off
         ? FlashMode.torch
@@ -201,7 +221,112 @@ class _CaptureScreenState extends State<CaptureScreen>
   }
 
   void _initCamera() {
-    _initCameraAsync();
+    unawaited(_initializeCameraFlow());
+  }
+
+  Future<void> _initializeCameraFlow() async {
+    final hasPermission = await _ensureCameraPermission(requestIfDenied: false);
+    if (!mounted || !hasPermission) {
+      return;
+    }
+    if (_isInitializingCamera) return;
+
+    await _initCameraAsync();
+  }
+
+  String _cameraPermissionGuideText(PermissionStatus status) {
+    if (status.isPermanentlyDenied || status.isRestricted) {
+      return '카메라 권한이 차단되었습니다. 앱 설정에서 카메라 접근을 허용해 주세요.';
+    }
+    if (status.isGranted) {
+      return '';
+    }
+    return '카메라 권한이 필요합니다. 권한 요청 버튼을 눌러 허용해 주세요.';
+  }
+
+  Future<bool> _ensureCameraPermission({required bool requestIfDenied}) async {
+    if (_isCheckingCameraPermission) {
+      return _hasGrantedCameraPermission;
+    }
+
+    _isCheckingCameraPermission = true;
+    try {
+      final status = await Permission.camera.status;
+      if (!mounted) return false;
+
+      _cameraPermissionStatus = status;
+      if (status.isGranted) {
+        _cameraError = null;
+        return true;
+      }
+
+      if (!requestIfDenied || status.isPermanentlyDenied || status.isRestricted) {
+        setState(() {
+          _cameraError = _cameraPermissionGuideText(status);
+        });
+        return false;
+      }
+
+      final requested = await Permission.camera.request();
+      if (!mounted) return false;
+      _cameraPermissionStatus = requested;
+
+      if (requested.isGranted) {
+        setState(() {
+          _cameraError = null;
+          _flowError = null;
+        });
+        return true;
+      }
+
+      setState(() {
+        _cameraError = _cameraPermissionGuideText(requested);
+      });
+      return false;
+    } finally {
+      _isCheckingCameraPermission = false;
+      if (mounted) {
+        setState(() {});
+      }
+    }
+  }
+
+  Future<void> _openCameraSystemSettings() async {
+    await openAppSettings();
+    if (!mounted) return;
+
+    final hasPermission = await _ensureCameraPermission(requestIfDenied: false);
+    if (hasPermission) {
+      await _initCameraAsync();
+    }
+  }
+
+  Future<void> _requestCameraPermissionFromUi() async {
+    final granted = await _ensureCameraPermission(requestIfDenied: true);
+    if (!mounted) return;
+    if (granted) {
+      await _initCameraAsync();
+      return;
+    }
+    setState(() {
+      _flowError = '권한 허용 전에는 촬영을 시작할 수 없습니다.';
+    });
+  }
+
+  String _lensCacheKey(CameraDescription description) {
+    return '${description.lensDirection.name}:${description.name}';
+  }
+
+  List<ResolutionPreset> _orderedResolutionCandidatesForMode(
+    _CaptureQualityMode mode,
+    String lensKey,
+  ) {
+    final base = List<ResolutionPreset>.from(_resolutionCandidatesForMode(mode));
+    final cached = _lastSuccessfulPresetByLens[lensKey];
+    if (cached == null) return base;
+    final reordered = <ResolutionPreset>[cached];
+    reordered.addAll(base.where((preset) => preset != cached));
+    return reordered;
   }
 
   List<ResolutionPreset> _resolutionCandidatesForMode(_CaptureQualityMode mode) {
@@ -229,26 +354,116 @@ class _CaptureScreenState extends State<CaptureScreen>
     }
   }
 
-  Future<bool> _probe4kSupport() async {
-    if (cameras.isEmpty) return false;
-    final probe = CameraController(
-      cameras[_cameraIndex],
-      ResolutionPreset.ultraHigh,
-      enableAudio: true,
-    );
-    try {
-      await probe.initialize();
-      return true;
-    } catch (_) {
-      return false;
-    } finally {
+  Future<bool> _probe4kSupport(CameraDescription description) async {
+    final lensKey = _lensCacheKey(description);
+    final cached = _probe4kSupportByLens[lensKey];
+    if (cached != null) {
+      logFirstCameraPreviewStage(
+        'probe_4k_done',
+        detail: 'lens=$lensKey cached=true supported=$cached',
+      );
+      return cached;
+    }
+
+    final inFlight = _probe4kSupportFutureByLens[lensKey];
+    if (inFlight != null) {
+      final result = await inFlight;
+      logFirstCameraPreviewStage(
+        'probe_4k_done',
+        detail: 'lens=$lensKey cached=false shared_future=true supported=$result',
+      );
+      return result;
+    }
+
+    final future = () async {
+      bool supported = false;
+      final probe = CameraController(
+        description,
+        ResolutionPreset.ultraHigh,
+        enableAudio: true,
+      );
       try {
-        await probe.dispose();
-      } catch (_) {}
+        await probe.initialize();
+        supported = true;
+      } catch (_) {
+        supported = false;
+      } finally {
+        try {
+          await probe.dispose();
+        } catch (_) {}
+      }
+      _probe4kSupportByLens[lensKey] = supported;
+      return supported;
+    }();
+
+    _probe4kSupportFutureByLens[lensKey] = future;
+    try {
+      final result = await future;
+      logFirstCameraPreviewStage(
+        'probe_4k_done',
+        detail: 'lens=$lensKey cached=false supported=$result',
+      );
+      return result;
+    } finally {
+      _probe4kSupportFutureByLens.remove(lensKey);
+    }
+  }
+
+  Future<void> _runPostPreviewCameraSetup(
+    CameraController controller,
+    int initToken,
+  ) async {
+    try {
+      await controller.lockCaptureOrientation(DeviceOrientation.portraitUp);
+    } catch (e) {
+      debugPrint('[Capture] lockCaptureOrientation(portraitUp) failed: $e');
+    }
+
+    try {
+      await controller.setFocusMode(FocusMode.auto);
+    } catch (e) {
+      debugPrint('[Capture] setFocusMode(auto) failed: $e');
+    }
+    try {
+      await controller.setExposureMode(ExposureMode.auto);
+    } catch (e) {
+      debugPrint('[Capture] setExposureMode(auto) failed: $e');
+    }
+
+    try {
+      final minExposure = await controller.getMinExposureOffset();
+      final maxExposure = await controller.getMaxExposureOffset();
+      final minZoom = await controller.getMinZoomLevel();
+      final maxZoom = await controller.getMaxZoomLevel();
+      final clampedZoom = _currentZoom.clamp(minZoom, maxZoom);
+      await controller.setZoomLevel(clampedZoom);
+      logFirstCameraPreviewStage('exposure_zoom_query_done');
+
+      if (!mounted || _cameraInitSequence != initToken || _controller != controller) {
+        return;
+      }
+      setState(() {
+        _minExposure = minExposure;
+        _maxExposure = maxExposure;
+        _minZoom = minZoom;
+        _maxZoom = maxZoom;
+        _currentZoom = clampedZoom;
+      });
+    } catch (e) {
+      debugPrint('[Capture] Post-preview exposure/zoom setup failed: $e');
     }
   }
 
   Future<void> _initCameraAsync() async {
+    if (!_hasGrantedCameraPermission) {
+      if (mounted) {
+        setState(() {
+          _cameraError = '카메라 권한이 없습니다.';
+        });
+      }
+      return;
+    }
+
     if (_isInitializingCamera) return;
     if (!mounted) return;
 
@@ -261,6 +476,7 @@ class _CaptureScreenState extends State<CaptureScreen>
     }
 
     _isInitializingCamera = true;
+    final initToken = ++_cameraInitSequence;
     _cameraError = null;
     final previousController = _controller;
     _controller = null;
@@ -274,9 +490,15 @@ class _CaptureScreenState extends State<CaptureScreen>
       }
     }
 
-    if (!_didProbe4kSupport) {
-      _supports4kCapture = await _probe4kSupport();
-      _didProbe4kSupport = true;
+    final description = cameras[_cameraIndex];
+    final lensKey = _lensCacheKey(description);
+    final cached4k = _probe4kSupportByLens[lensKey];
+    if (cached4k != null) {
+      _supports4kCapture = cached4k;
+    }
+
+    if (_selectedQualityMode == _CaptureQualityMode.p4k && cached4k == null) {
+      _supports4kCapture = await _probe4kSupport(description);
     }
 
     final effectiveMode =
@@ -285,7 +507,16 @@ class _CaptureScreenState extends State<CaptureScreen>
         : _selectedQualityMode;
 
     CameraController? newController;
-    final candidates = _resolutionCandidatesForMode(effectiveMode);
+    logFirstCameraPreviewStage(
+      'candidate_selection_start',
+      detail: 'lens=$lensKey mode=${effectiveMode.name}',
+    );
+    final candidates = _orderedResolutionCandidatesForMode(effectiveMode, lensKey);
+    logFirstCameraPreviewStage(
+      'candidate_selection_end',
+      detail:
+          'lens=$lensKey candidates=${candidates.map((e) => e.name).join(',')}',
+    );
     final visited = <ResolutionPreset>{};
 
     for (final preset in candidates) {
@@ -293,17 +524,30 @@ class _CaptureScreenState extends State<CaptureScreen>
       visited.add(preset);
 
       final candidate = CameraController(
-        cameras[_cameraIndex],
+        description,
         preset,
         enableAudio: true,
       );
 
       try {
+        logFirstCameraPreviewStage(
+          'controller_initialize_start',
+          detail: 'lens=$lensKey preset=${preset.name}',
+        );
         await candidate.initialize();
+        logFirstCameraPreviewStage(
+          'controller_initialize_end',
+          detail: 'lens=$lensKey preset=${preset.name} success=true',
+        );
         newController = candidate;
+        _lastSuccessfulPresetByLens[lensKey] = preset;
         break;
       } catch (e) {
         await candidate.dispose();
+        logFirstCameraPreviewStage(
+          'controller_initialize_end',
+          detail: 'lens=$lensKey preset=${preset.name} success=false',
+        );
         debugPrint('[Capture] Initialize with $preset failed: $e');
       }
     }
@@ -320,24 +564,6 @@ class _CaptureScreenState extends State<CaptureScreen>
     }
 
     try {
-      await newController.lockCaptureOrientation(DeviceOrientation.portraitUp);
-      // These calls are optional depending on platform/back-end support.
-      try {
-        await newController.setFocusMode(FocusMode.auto);
-      } catch (e) {
-        debugPrint('[Capture] setFocusMode(auto) failed: $e');
-      }
-      try {
-        await newController.setExposureMode(ExposureMode.auto);
-      } catch (e) {
-        debugPrint('[Capture] setExposureMode(auto) failed: $e');
-      }
-      _minExposure = await newController.getMinExposureOffset();
-      _maxExposure = await newController.getMaxExposureOffset();
-      _minZoom = await newController.getMinZoomLevel();
-      _maxZoom = await newController.getMaxZoomLevel();
-      _currentZoom = _currentZoom.clamp(_minZoom, _maxZoom);
-      await newController.setZoomLevel(_currentZoom);
       _lockedPreviewAspect = _toPortraitAspect(newController.value.aspectRatio);
 
       _controller = newController;
@@ -350,6 +576,8 @@ class _CaptureScreenState extends State<CaptureScreen>
       _recordingTimer = null;
       _didPrepareForRecording = false;
       _didReportPreviewReady = false;
+
+      unawaited(_runPostPreviewCameraSetup(newController, initToken));
     } catch (e) {
       await newController.dispose();
       if (mounted) {
@@ -366,7 +594,12 @@ class _CaptureScreenState extends State<CaptureScreen>
   }
 
   Future<void> _toggleCamera() async {
-    if (_isCameraLocked || cameras.length <= 1 || _isBusyRecordingFlow) return;
+    if (_isCameraLocked ||
+        cameras.length <= 1 ||
+        _isBusyRecordingFlow ||
+        !_hasGrantedCameraPermission) {
+      return;
+    }
     _isCameraLocked = true;
 
     try {
@@ -377,7 +610,6 @@ class _CaptureScreenState extends State<CaptureScreen>
       _controller = null;
 
       _cameraIndex = (_cameraIndex + 1) % cameras.length;
-      _didProbe4kSupport = false;
       await _initCameraAsync();
     } catch (e) {
       debugPrint('[Capture] Toggle camera error: $e');
@@ -387,7 +619,10 @@ class _CaptureScreenState extends State<CaptureScreen>
   }
 
   Future<void> _startRecording() async {
-    if (!_hasInitializedController || _isCameraLocked || !_canStartRecording) {
+    if (!_hasInitializedController ||
+        _isCameraLocked ||
+        !_canStartRecording ||
+        !_hasGrantedCameraPermission) {
       return;
     }
     _recordingStopwatch = null;
@@ -399,7 +634,7 @@ class _CaptureScreenState extends State<CaptureScreen>
       setState(() {
         _flowState = _CaptureFlowState.preparing;
         _flowError = null;
-        _remainingTime = 3;
+        _remainingTime = kTargetClipSecForDisplay;
         _hasRecordingActuallyStarted = false;
       });
 
@@ -431,7 +666,7 @@ class _CaptureScreenState extends State<CaptureScreen>
       setState(() {
         _flowState = _CaptureFlowState.error;
         _flowError = '녹화를 시작하지 못했습니다.';
-        _remainingTime = 3;
+        _remainingTime = kTargetClipSecForDisplay;
         _hasRecordingActuallyStarted = false;
       });
       debugPrint('[Capture] Start recording error: $e');
@@ -446,8 +681,6 @@ class _CaptureScreenState extends State<CaptureScreen>
     ) {
       final elapsedMs = _recordingStopwatch?.elapsedMilliseconds ?? 0;
       final remainMs = _targetRecordingMilliseconds - elapsedMs;
-      final stopTriggerMs =
-          _targetRecordingMilliseconds + _recordingStopDelayMs;
 
       if (!mounted) {
         timer.cancel();
@@ -459,13 +692,16 @@ class _CaptureScreenState extends State<CaptureScreen>
         return;
       }
 
-      if (elapsedMs >= stopTriggerMs) {
+      if (elapsedMs >= _targetRecordingMilliseconds) {
         setState(() => _remainingTime = 0);
         _stopRecording();
         timer.cancel();
       } else {
         final displayRemainMs = remainMs > 0 ? remainMs : 0;
-        final countdown = ((((displayRemainMs - 1) ~/ 1000) + 1).clamp(0, 3));
+        final countdown = ((((displayRemainMs - 1) ~/ 1000) + 1).clamp(
+          0,
+          kTargetClipSecForDisplay,
+        ));
         setState(() => _remainingTime = countdown);
       }
     });
@@ -480,6 +716,7 @@ class _CaptureScreenState extends State<CaptureScreen>
   }
 
   Future<void> _stopRecording() async {
+    if (!_hasGrantedCameraPermission) return;
     if (!_canStopRecording) return;
     setState(() {
       _flowState = _CaptureFlowState.stopping;
@@ -488,6 +725,10 @@ class _CaptureScreenState extends State<CaptureScreen>
 
     _cancelRecordingTimer();
     try {
+      debugPrint(
+        '[Capture] stop_recording targetCaptureMs=$_targetRecordingMilliseconds '
+        'targetSaveMs=$kTargetClipSaveMs targetUiSec=$kTargetClipSecForDisplay',
+      );
       _logCaptureRotationDiag('stop_before');
       final video = await _controller!.stopVideoRecording();
       _logCaptureRotationDiag('stop_after');
@@ -502,7 +743,7 @@ class _CaptureScreenState extends State<CaptureScreen>
       if (mounted) {
         setState(() {
           _flowState = _CaptureFlowState.idle;
-          _remainingTime = 3;
+          _remainingTime = kTargetClipSecForDisplay;
           _flowError = null;
         });
       }
@@ -511,7 +752,7 @@ class _CaptureScreenState extends State<CaptureScreen>
         setState(() {
           _flowState = _CaptureFlowState.error;
           _flowError = '녹화 저장에 실패했습니다.';
-          _remainingTime = 3;
+          _remainingTime = kTargetClipSecForDisplay;
           _hasRecordingActuallyStarted = false;
         });
       }
@@ -522,7 +763,7 @@ class _CaptureScreenState extends State<CaptureScreen>
           if (_flowState != _CaptureFlowState.error) {
             _flowState = _CaptureFlowState.idle;
           }
-          _remainingTime = 3;
+          _remainingTime = kTargetClipSecForDisplay;
           _hasRecordingActuallyStarted = false;
         });
       }
@@ -530,7 +771,11 @@ class _CaptureScreenState extends State<CaptureScreen>
   }
 
   Future<void> _handleFocus(TapDownDetails d, BoxConstraints c) async {
-    if (!_hasInitializedController || _isCameraLocked) return;
+    if (!_hasInitializedController ||
+        _isCameraLocked ||
+        !_hasGrantedCameraPermission) {
+      return;
+    }
 
     final Offset localPosition = d.localPosition;
     final double x = localPosition.dx / c.maxWidth;
@@ -555,7 +800,11 @@ class _CaptureScreenState extends State<CaptureScreen>
   }
 
   Future<void> _setZoom(double value, {bool withHaptic = true}) async {
-    if (!_hasInitializedController || _isCameraLocked) return;
+    if (!_hasInitializedController ||
+        _isCameraLocked ||
+        !_hasGrantedCameraPermission) {
+      return;
+    }
 
     final prevZoom = _currentZoom;
     final target = value.clamp(_minZoom, _maxZoom);
@@ -602,13 +851,23 @@ class _CaptureScreenState extends State<CaptureScreen>
   }
 
   void _onPreviewScaleStart(ScaleStartDetails details) {
-    if (!_hasInitializedController || _isCameraLocked) return;
+    if (!_hasInitializedController ||
+        _isCameraLocked ||
+        !_hasGrantedCameraPermission) {
+      return;
+    }
     _pinchStartZoom = _currentZoom;
   }
 
   void _onPreviewScaleUpdate(ScaleUpdateDetails details) {
-    if (!_hasInitializedController || _isCameraLocked) return;
-    if (details.pointerCount < 2) return;
+    if (!_hasInitializedController ||
+        _isCameraLocked ||
+        !_hasGrantedCameraPermission) {
+      return;
+    }
+    if (details.pointerCount < 2) {
+      return;
+    }
 
     final targetZoom = (_pinchStartZoom * details.scale).clamp(
       _minZoom,
@@ -630,12 +889,16 @@ class _CaptureScreenState extends State<CaptureScreen>
   }
 
   void _onPreviewScaleEnd(ScaleEndDetails details) {
-    if (!_hasInitializedController || _isCameraLocked) return;
+    if (!_hasInitializedController ||
+        _isCameraLocked ||
+        !_hasGrantedCameraPermission) {
+      return;
+    }
     _pinchStartZoom = _currentZoom;
   }
 
   Future<void> _onZoomPresetTap(double zoom) async {
-    if (!_hasInitializedController) return;
+    if (!_hasInitializedController || !_hasGrantedCameraPermission) return;
 
     setState(() {
       _showExtendedZoomSlider = (zoom - 3.0).abs() < 0.05;
@@ -865,6 +1128,13 @@ class _CaptureScreenState extends State<CaptureScreen>
   }
 
   Future<void> _applyCaptureQualityMode(_CaptureQualityMode mode) async {
+    if (!_hasGrantedCameraPermission) {
+      setState(() {
+        _flowError = '권한 허용 전에는 카메라 설정을 변경할 수 없습니다.';
+      });
+      return;
+    }
+
     if (mode == _selectedQualityMode || _isInitializingCamera) return;
     if (mode == _CaptureQualityMode.p4k && !_supports4kCapture) {
       setState(() {
@@ -895,8 +1165,18 @@ class _CaptureScreenState extends State<CaptureScreen>
 
   @override
   Widget build(BuildContext context) {
+    final canRequestPermission =
+        !_hasGrantedCameraPermission && !_isPermissionBlockedPermanently;
+    final canTriggerCapture =
+        _hasGrantedCameraPermission &&
+        _hasInitializedController &&
+        !_isCheckingCameraPermission &&
+        !_isInitializingCamera &&
+        !_isCameraLocked &&
+        (_canStopRecording || _canStartRecording);
+
     if (!_hasInitializedController) {
-      return Scaffold(
+    return Scaffold(
         backgroundColor: Colors.black,
         body: Center(
           child: _cameraError != null
@@ -913,8 +1193,30 @@ class _CaptureScreenState extends State<CaptureScreen>
                     ),
                     const SizedBox(height: 12),
                     ElevatedButton(
-                      onPressed: _initCamera,
+                      onPressed:
+                          _hasGrantedCameraPermission && !_isInitializingCamera
+                          ? _initCamera
+                          : null,
                       child: const Text('Retry'),
+                    ),
+                    const SizedBox(height: 6),
+                    ElevatedButton(
+                      onPressed:
+                          canRequestPermission &&
+                              !_isCheckingCameraPermission &&
+                              !_isInitializingCamera
+                          ? _requestCameraPermissionFromUi
+                          : null,
+                      child: const Text('권한 다시 요청'),
+                    ),
+                    const SizedBox(height: 6),
+                    ElevatedButton(
+                      onPressed:
+                          !_hasGrantedCameraPermission &&
+                              !_isCheckingCameraPermission
+                          ? _openCameraSystemSettings
+                          : null,
+                      child: const Text('앱 설정 열기'),
                     ),
                     if (_isInitializingCamera) ...[
                       const SizedBox(height: 12),
@@ -930,6 +1232,7 @@ class _CaptureScreenState extends State<CaptureScreen>
     if (!_didReportPreviewReady) {
       _didReportPreviewReady = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        logFirstCameraPreviewStage('before_preview_widget_show');
         logFirstCameraPreviewReady();
       });
     }
@@ -1194,17 +1497,22 @@ class _CaptureScreenState extends State<CaptureScreen>
                           alignment: Alignment.center,
                           children: [
                             GestureDetector(
-                              onTap: () {
-                                hapticFeedback();
-                                if (_canStopRecording) {
-                                  _stopRecording();
-                                } else {
-                                  _startRecording();
-                                }
-                              },
-                              child: ShutterRing(
-                                isRecording: _isBusyRecordingFlow,
-                                key: widget.recordButtonKey,
+                              onTap: canTriggerCapture
+                                  ? () {
+                                      hapticFeedback();
+                                      if (_canStopRecording) {
+                                        _stopRecording();
+                                      } else {
+                                        _startRecording();
+                                      }
+                                    }
+                                  : null,
+                              child: Opacity(
+                                opacity: canTriggerCapture ? 1 : 0.45,
+                                child: ShutterRing(
+                                  isRecording: _isBusyRecordingFlow,
+                                  key: widget.recordButtonKey,
+                                ),
                               ),
                             ),
                             Positioned(

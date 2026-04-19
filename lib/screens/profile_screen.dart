@@ -110,6 +110,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   String _profileDisplayName(User? user) {
+    if (_authService.isGuest) {
+      return '게스트 모드';
+    }
+
     final trimmedDisplayName = user?.displayName?.trim();
     if (trimmedDisplayName != null && trimmedDisplayName.isNotEmpty) {
       return trimmedDisplayName;
@@ -126,10 +130,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return '사용자 $suffix';
     }
 
-    return 'Guest User';
+    return '게스트 모드';
   }
 
   String _providerLabel(User? user) {
+    if (_authService.isGuest) return 'GUEST';
+
     if (user == null) return '로그인';
 
     final providerIds = user.providerData
@@ -148,6 +154,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   String _profileSubtitle(User? user) {
+    if (_authService.isGuest) {
+      return '게스트 모드로 이용 중';
+    }
+
     final email = user?.email?.trim();
     if (email != null && email.isNotEmpty) {
       return email;
@@ -172,6 +182,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _openEditProfileDialog() async {
+    if (_authService.isGuest) {
+      print('[ProfileScreen] guest_edit_blocked: edit_profile blocked');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('게스트 모드에서는 프로필 편집 및 클라우드 관련 기능이 비활성입니다. 로그인 후 이용해주세요.'),
+        ),
+      );
+      return;
+    }
+
     final user = _authService.currentUser;
     if (user == null) {
       ScaffoldMessenger.of(
@@ -369,12 +389,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _shareApp() async {
-    await Share.share('3-Second Vlog와 함께 짧고 빠르게 브이로그를 기록해보세요!');
+    await Share.share('원세컨 브이로그와 함께 짧고 빠르게 브이로그를 기록해보세요!');
   }
 
   Future<void> _openHelp() async {
     final supportEmail = Uri.parse(
-      'mailto:dongkwon81@gmail.com?subject=Three%20Sec%20Vlog%20Support',
+      'mailto:dongkwon81@gmail.com?subject=One%20Second%20Vlog%20Support',
     );
     final ok = await launchUrl(supportEmail);
     if (!ok && mounted) {
@@ -385,6 +405,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _confirmSignOut() async {
+    if (_authService.isGuest) {
+      print('[ProfileScreen] guest_action_blocked: sign_out blocked by guest_mode');
+      await _showGuestActionUnavailableDialog(
+        title: '게스트 모드 전용 안내',
+        message:
+            '게스트 모드에서는 클라우드 동기화/이동이 비활성입니다.\n정식 로그인으로 전환하려면 "게스트에서 로그인하기"를 이용해 주세요.',
+      );
+      return;
+    }
+
     final result = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -417,6 +447,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _confirmDeleteAccount() async {
+    if (_authService.isGuest) {
+      print('[ProfileScreen] guest_action_blocked: delete_account blocked by guest_mode');
+      await _showGuestActionUnavailableDialog(
+        title: '게스트 모드 전용 안내',
+        message: '계정 삭제는 정식 로그인 계정에서만 가능합니다.',
+      );
+      return;
+    }
+
     if (_isDeletingAccount) return;
 
     final eligibility = await _authService.checkAccountDeletionEligibility();
@@ -538,6 +577,57 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  Future<void> _showGuestActionUnavailableDialog({
+    required String title,
+    required String message,
+  }) {
+    return showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('닫기'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmSwitchFromGuestToSignIn() async {
+    if (!_authService.isGuest) return;
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('정식 회원 전환'),
+        content: const Text(
+          '게스트 세션을 종료하고 로그인 화면으로 이동합니다.\n\n기존 로컬 프로젝트/클립은 유지됩니다.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('로그인 화면으로 이동'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != true) return;
+
+    await _authService.signOutGuest();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('게스트 모드가 종료되었습니다. 소셜 로그인으로 계정을 전환하세요.')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = _authService.currentUser;
@@ -552,6 +642,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
     final displayName = _profileDisplayName(user);
     final subtitle = _profileSubtitle(user);
+    final isGuestMode = _authService.isGuest;
 
     return Scaffold(
       backgroundColor: _bgColor,
@@ -571,11 +662,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
         centerTitle: true,
         actions: [
           TextButton(
-            onPressed: _openEditProfileDialog,
-            child: const Text(
+            onPressed: isGuestMode ? null : _openEditProfileDialog,
+            child: Text(
               'Edit',
               style: TextStyle(
-                color: _primaryBlue,
+                color: isGuestMode ? const Color(0xFF94A3AF) : _primaryBlue,
                 fontWeight: FontWeight.w700,
                 fontSize: 18,
               ),
@@ -594,6 +685,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   displayName: displayName,
                   subtitle: subtitle,
                   photoUrl: user?.photoURL,
+                  isGuestMode: isGuestMode,
                 ),
                 const SizedBox(height: 18),
                 _buildStatsCard(),
@@ -641,13 +733,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 _buildSectionTitle('ACCOUNT'),
                 _buildMenuGroup(
                   children: [
-                    _buildMenuItem(
-                      Icons.logout,
-                      '로그아웃',
-                      iconBgColor: const Color(0xFFF8FAFC),
-                      iconColor: const Color(0xFF475569),
-                      onTap: _isDeletingAccount ? null : _confirmSignOut,
-                    ),
+                    if (isGuestMode)
+                      _buildMenuItem(
+                        Icons.person_add_alt_1,
+                        '게스트에서 로그인하기',
+                        valueText: '전환',
+                        valueColor: _primaryBlue,
+                        iconBgColor: const Color(0xFFEFF6FF),
+                        iconColor: _primaryBlue,
+                        onTap: _isDeletingAccount
+                            ? null
+                            : _confirmSwitchFromGuestToSignIn,
+                      )
+                    else
+                      _buildMenuItem(
+                        Icons.logout,
+                        '로그아웃',
+                        iconBgColor: const Color(0xFFF8FAFC),
+                        iconColor: const Color(0xFF475569),
+                        onTap: _isDeletingAccount ? null : _confirmSignOut,
+                      ),
                     _buildMenuItem(
                       Icons.delete_forever_outlined,
                       '계정 삭제',
@@ -655,8 +760,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       valueColor: const Color(0xFFEF4444),
                       iconBgColor: const Color(0xFFFEF2F2),
                       iconColor: const Color(0xFFEF4444),
-                      onTap: _isDeletingAccount ? null : _confirmDeleteAccount,
+                      onTap: isGuestMode
+                          ? null
+                          : (_isDeletingAccount ? null : _confirmDeleteAccount),
                     ),
+                    if (isGuestMode)
+                      _buildMenuItem(
+                        Icons.logout,
+                        '로그아웃(게스트 모드)',
+                        valueText: '비대상',
+                        valueColor: const Color(0xFF94A3B8),
+                        iconBgColor: const Color(0xFFF8FAFC),
+                        iconColor: const Color(0xFF94A3B8),
+                        onTap: null,
+                      ),
                   ],
                 ),
                 const SizedBox(height: 28),
@@ -720,6 +837,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     required String displayName,
     required String subtitle,
     required String? photoUrl,
+    required bool isGuestMode,
   }) {
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -795,6 +913,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         fontWeight: FontWeight.w500,
                       ),
                     ),
+                    if (isGuestMode) ...[
+                      const SizedBox(height: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 5,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFDBEAFE),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: const Text(
+                          '게스트 모드',
+                          style: TextStyle(
+                            color: Color(0xFF1E3A8A),
+                            fontWeight: FontWeight.w700,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),

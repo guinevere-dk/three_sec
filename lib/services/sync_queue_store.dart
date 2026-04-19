@@ -7,10 +7,15 @@ enum SyncJobEntityType { clip, project }
 enum SyncJobAction { upload, download, delete }
 
 class SyncJob {
+  final String? ownerUid;
   final String id;
   final SyncJobEntityType entityType;
   final String entityId;
   final SyncJobAction action;
+  final SyncJobStatus status;
+  final String? storagePath;
+  final String? projectId;
+  final String? localPath;
   final int attemptCount;
   final DateTime? nextRetryAt;
   final String? lastErrorCode;
@@ -18,10 +23,15 @@ class SyncJob {
   final DateTime createdAt;
 
   const SyncJob({
+    this.ownerUid,
     required this.id,
     required this.entityType,
     required this.entityId,
     required this.action,
+    this.status = SyncJobStatus.queued,
+    this.storagePath,
+    this.projectId,
+    this.localPath,
     required this.attemptCount,
     required this.createdAt,
     this.nextRetryAt,
@@ -30,10 +40,15 @@ class SyncJob {
   });
 
   Map<String, dynamic> toJson() => {
+        'ownerUid': ownerUid,
         'id': id,
         'entityType': entityType.name,
         'entityId': entityId,
         'action': action.name,
+        'status': status.name,
+        'storagePath': storagePath,
+        'projectId': projectId,
+        'localPath': localPath,
         'attemptCount': attemptCount,
         'nextRetryAt': nextRetryAt?.toIso8601String(),
         'lastErrorCode': lastErrorCode,
@@ -43,6 +58,7 @@ class SyncJob {
 
   factory SyncJob.fromJson(Map<String, dynamic> json) {
     return SyncJob(
+      ownerUid: json['ownerUid'] as String?,
       id: json['id'] as String,
       entityType: SyncJobEntityType.values.firstWhere(
         (e) => e.name == (json['entityType'] as String? ?? ''),
@@ -53,6 +69,10 @@ class SyncJob {
         (e) => e.name == (json['action'] as String? ?? ''),
         orElse: () => SyncJobAction.upload,
       ),
+      status: _parseSyncJobStatus(json['status'] as String?),
+      storagePath: json['storagePath'] as String?,
+      projectId: json['projectId'] as String?,
+      localPath: json['localPath'] as String?,
       attemptCount: json['attemptCount'] as int? ?? 0,
       nextRetryAt: (json['nextRetryAt'] as String?) != null
           ? DateTime.tryParse(json['nextRetryAt'] as String)
@@ -63,6 +83,23 @@ class SyncJob {
           DateTime.tryParse(json['createdAt'] as String? ?? '') ?? DateTime.now(),
     );
   }
+}
+
+enum SyncJobStatus {
+  queued,
+  inProgress,
+  failed,
+  completed,
+  skipped,
+  canceled,
+}
+
+SyncJobStatus _parseSyncJobStatus(dynamic rawStatus) {
+  final status = (rawStatus as String? ?? '').trim().toLowerCase();
+  for (final value in SyncJobStatus.values) {
+    if (value.name == status) return value;
+  }
+  return SyncJobStatus.queued;
 }
 
 class SyncQueueStore {

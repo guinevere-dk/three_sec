@@ -48,11 +48,14 @@ class _ProjectScreenState extends State<ProjectScreen> {
     final userStatus = UserStatusManager();
 
     if (!userStatus.isStandardOrAbove()) {
-      Fluttertoast.showToast(msg: '편집은 Standard부터 지원합니다. 720p로 바로 내보냅니다.');
+      Fluttertoast.showToast(msg: '720p로 내보냅니다.');
 
       final audioConfig = <String, double>{
         for (final clip in project.clips) clip.path: 1.0,
       };
+
+      final String mergeSessionId =
+          'edit_${DateTime.now().millisecondsSinceEpoch}';
 
       final resultPath = await videoManager.exportVlog(
         clips: project.clips,
@@ -61,12 +64,14 @@ class _ProjectScreenState extends State<ProjectScreen> {
         bgmVolume: project.bgmVolume,
         quality: kQuality720p,
         userTier: kUserTierFree,
+        mergeSessionId: mergeSessionId,
+        debugTag: 'VlogScreen_free_export',
       );
 
       if (!mounted) return;
 
       if (resultPath != null) {
-        Fluttertoast.showToast(msg: '720p 내보내기 완료');
+        Fluttertoast.showToast(msg: '720p vlog 영상이 갤러리에 저장되었습니다.');
       } else {
         Fluttertoast.showToast(msg: '내보내기에 실패했습니다. 다시 시도해주세요.');
       }
@@ -74,9 +79,16 @@ class _ProjectScreenState extends State<ProjectScreen> {
       return;
     }
 
+    final String mergeSessionId =
+        'edit_${DateTime.now().millisecondsSinceEpoch}';
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => VideoEditScreen(project: project)),
+      MaterialPageRoute(
+        builder: (_) => VideoEditScreen(
+          project: project,
+          mergeSessionId: mergeSessionId,
+        ),
+      ),
     );
     if (!mounted) return;
     widget.onRefresh();

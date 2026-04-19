@@ -1,11 +1,11 @@
 {
-    "name": "three_sec_vlog",
-    "short_name": "three_sec_vlog",
+    "name": "One Second Vlog",
+    "short_name": "1s Vlog",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "원세컨 브이로그 - 1초 순간으로 만드는 나만의 영상 앨범",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

@@ -13,6 +13,7 @@ import '../managers/video_manager.dart';
 import '../models/edit_command.dart';
 import '../managers/user_status_manager.dart';
 import '../models/vlog_project.dart';
+import '../constants/clip_policy.dart';
 import '../utils/quality_policy.dart';
 
 // 자막 데이터 모델
@@ -177,8 +178,13 @@ enum _TrimTimelineInteraction { none, playhead, startHandle, endHandle }
 
 class VideoEditScreen extends StatefulWidget {
   final VlogProject project;
+  final String? mergeSessionId;
 
-  const VideoEditScreen({super.key, required this.project});
+  const VideoEditScreen({
+    super.key,
+    required this.project,
+    this.mergeSessionId,
+  });
 
   @override
   State<VideoEditScreen> createState() => _VideoEditScreenState();
@@ -332,11 +338,31 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   bool _isDisposed = false;
   late VideoManager
   _videoManager; // Cached reference to avoid context access after dispose
+  late final String _editExportSessionId;
   final ScrollController _timelineScrollController = ScrollController();
   bool _didCheckAccessGate = false;
   Timer? _autosaveDebounceTimer;
   Future<void> _autosaveChain = Future.value();
   bool _isClosingWithSave = false;
+  bool _isExportInProgress = false;
+  bool _isExportCancelRequested = false;
+  bool get _isExportUiBlocking =>
+      _isExportInProgress || _isExportProgressDialogOpen || _isExportCancelRequested;
+  String _exportProgressPhase = 'ready';
+  String? _exportCancelReason;
+  double _exportDialogProgress = 0.0;
+  String _exportDialogLabel = '';
+  bool _isExportProgressDialogOpen = false;
+  BuildContext? _exportProgressDialogContext;
+  StateSetter? _exportProgressDialogStateSetter;
+
+  int get _safeCurrentClipDisplayIndex {
+    if (_clips.isEmpty) return 0;
+    return (_currentClipIndex + 1).clamp(1, _clips.length);
+  }
+
+  String get _currentClipBadgeText =>
+      '현재 $_safeCurrentClipDisplayIndex / ${_clips.length}';
 
   @override
   void didChangeDependencies() {
@@ -347,6 +373,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   @override
   void initState() {
     super.initState();
+    _editExportSessionId =
+        widget.mergeSessionId?.trim().isNotEmpty == true
+            ? widget.mergeSessionId!.trim()
+            : 'edit_${widget.project.id}_${DateTime.now().millisecondsSinceEpoch}';
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _runAccessGateThenInit();
     });
@@ -446,7 +476,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           );
         } catch (e) {
           debugPrint('Error fetching duration for ${clip.path}: $e');
-          clip.originalDuration = const Duration(seconds: 3); // Fallback
+          clip.originalDuration = Duration(milliseconds: kTargetClipMs); // Fallback
         }
       }
 
@@ -785,12 +815,18 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             oldController?.removeListener(_videoListener);
 
             // 3. Set up new controller
-            _currentClipIndex++;
+            _currentClipIndex = (_currentClipIndex + 1).clamp(
+              0,
+              _clips.length - 1,
+            );
             _controller!.addListener(_videoListener);
             _controller!.play();
 
             // 4. Trigger rebuild LAST (old is already gone)
             if (mounted && !_isDisposed) setState(() {});
+            if (_isTrimMode) {
+              _ensureTrimUiStateForCurrentClip(force: true);
+            }
             debugPrint(
               '✅✅✅ [SWAP] setState called, rebuilding with new controller ✅✅✅\n',
             );
@@ -949,6 +985,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         _isMissingFile = false;
         _activeMissingClipIndex = null;
       });
+      if (_isTrimMode) {
+        _ensureTrimUiStateForCurrentClip(force: true);
+      }
     }
 
     if (_controller == null || _isDisposed || loadEpoch != _controllerEpoch) {
@@ -1174,6 +1213,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   @override
   void dispose() {
     debugPrint('[EditScreen] dispose START');
+    unawaited(_closeExportProgressDialog());
     _autosaveDebounceTimer?.cancel();
     _autosaveDebounceTimer = null;
     unawaited(_enqueueAutosave(reason: 'dispose'));
@@ -1844,7 +1884,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     double startMs = clip.startTime.inMilliseconds.toDouble();
     double endMs = clip.endTime.inMilliseconds.toDouble();
     double maxMs = totalDuration.inMilliseconds.toDouble();
-    if (maxMs <= 0) maxMs = 1000.0;
+    if (maxMs <= 0) maxMs = kTargetClipMs.toDouble();
     if (endMs > maxMs) endMs = maxMs;
     if (startMs >= endMs) startMs = (endMs - 100).clamp(0.0, maxMs);
 
@@ -1936,6 +1976,153 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         _isTrimMode = false;
       });
     }
+  }
+
+  void _openExportProgressDialog() {
+    if (_isExportProgressDialogOpen || !mounted || _isDisposed) return;
+
+    _isExportProgressDialogOpen = true;
+    _exportProgressPhase = 'ready';
+    _exportDialogProgress = 0.25;
+    _exportDialogLabel = '내보내기 준비 중';
+    _exportCancelReason = null;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        _exportProgressDialogContext = dialogContext;
+        return WillPopScope(
+          onWillPop: () async => false,
+          child: StatefulBuilder(
+            builder: (innerContext, setDialogState) {
+              _exportProgressDialogStateSetter = setDialogState;
+              return AlertDialog(
+                backgroundColor: Colors.black87,
+                title: const Text(
+                  '내보내기 진행 중',
+                  style: TextStyle(color: Colors.white),
+                ),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    AnimatedBuilder(
+                      animation: kAlwaysDismissedAnimation,
+                      builder: (context, _) {
+                        return LinearProgressIndicator(
+                          value: _exportDialogProgress,
+                          minHeight: 8,
+                          backgroundColor: Colors.white24,
+                          color: Colors.lightBlueAccent,
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      _exportDialogLabel,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                    const SizedBox(height: 20),
+                    TextButton(
+                      onPressed: _requestExportCancel,
+                      child: const Text(
+                        '취소',
+                        style: TextStyle(color: Colors.redAccent),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  void _setExportProgress({
+    required String phase,
+    required String label,
+    required double progress,
+  }) {
+    _exportProgressPhase = phase;
+    _exportDialogLabel = label;
+    _exportDialogProgress = progress.clamp(0.0, 1.0);
+    if (!mounted || !_isExportProgressDialogOpen) return;
+    final setter = _exportProgressDialogStateSetter;
+    if (setter != null) {
+      setter(() {});
+    }
+  }
+
+  void _updateExportProgress(String label, double progress) {
+    _setExportProgress(
+      phase: _exportProgressPhase,
+      label: label,
+      progress: progress,
+    );
+  }
+
+  void _setExportCancelledProgress({
+    required String reason,
+    required String phase,
+    required double progress,
+  }) {
+    _exportCancelReason = reason;
+    _setExportProgress(
+      phase: phase,
+      label: '내보내기 취소 요청됨',
+      progress: progress,
+    );
+  }
+
+  double _defaultExportProgressForPhase(String phase) {
+    switch (phase) {
+      case 'ready':
+      case 'prepare':
+        return 0.25;
+      case 'rendering':
+        return 0.5;
+      case 'saving':
+        return 0.75;
+      case 'done':
+        return 1.0;
+      default:
+        return _exportDialogProgress;
+    }
+  }
+
+  Future<void> _closeExportProgressDialog() async {
+    final dialogContext = _exportProgressDialogContext;
+    _isExportProgressDialogOpen = false;
+    _exportProgressDialogContext = null;
+    _exportProgressDialogStateSetter = null;
+    _exportProgressPhase = 'ready';
+    _exportCancelReason = null;
+
+    if (dialogContext != null && Navigator.canPop(dialogContext)) {
+      Navigator.pop(dialogContext);
+    }
+
+    if (!mounted) return;
+    if (_isExportInProgress) {
+      setState(() {
+        _isExportInProgress = false;
+      });
+    }
+  }
+
+  void _requestExportCancel() {
+    if (_isExportCancelRequested || !_isExportInProgress) return;
+    _isExportCancelRequested = true;
+    _setExportCancelledProgress(
+      reason: 'user_requested',
+      phase: 'cancelled',
+      progress: _defaultExportProgressForPhase(_exportProgressPhase),
+    );
+    _closeExportProgressDialog();
+    Fluttertoast.showToast(msg: '내보내기 취소를 요청했습니다.');
   }
 
   void _undo() {
@@ -2068,28 +2255,35 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: !_isTrimMode,
+      canPop: !_isTrimMode && !_isExportUiBlocking,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
+        if (_isExportUiBlocking) {
+          Fluttertoast.showToast(msg: '내보내기 진행 중에는 뒤로가기를 할 수 없습니다.');
+          return;
+        }
         _handleTrimBackAction();
       },
       child: Scaffold(
         backgroundColor: _bgColor,
-        body: SafeArea(
-          child: Column(
-            children: [
-              _buildHeader(),
-              Expanded(
-                child: Stack(
-                  children: [
-                    _buildPreviewSection(),
-                    ..._stickers.map((s) => _buildStickerWidget(s)),
-                    ..._subtitles.map((s) => _buildSubtitleWidget(s)),
-                  ],
+        body: AbsorbPointer(
+          absorbing: _isExportUiBlocking,
+          child: SafeArea(
+            child: Column(
+              children: [
+                _buildHeader(),
+                Expanded(
+                  child: Stack(
+                    children: [
+                      _buildPreviewSection(),
+                      ..._stickers.map((s) => _buildStickerWidget(s)),
+                      ..._subtitles.map((s) => _buildSubtitleWidget(s)),
+                    ],
+                  ),
                 ),
-              ),
-              _buildBottomControls(),
-            ],
+                _buildBottomControls(),
+              ],
+            ),
           ),
         ),
       ),
@@ -2310,6 +2504,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
                     return GestureDetector(
                       onTap: _isTransformModeActive ? null : _togglePlayPause,
+                      onHorizontalDragEnd: _handlePreviewSwipe,
                       onScaleStart: _transformDirectManipulationEnabled
                           ? _onPreviewTransformGestureStart
                           : null,
@@ -2823,11 +3018,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         children: [
           Row(
             children: [
-              IconButton(
-                icon: const Icon(Icons.close, color: _textPrimary, size: 28),
-                onPressed: _isClosingWithSave ? null : _handleClosePressed,
-                tooltip: '닫기',
-              ),
+                IconButton(
+                  icon: const Icon(Icons.close, color: _textPrimary, size: 28),
+                onPressed:
+                    _isClosingWithSave || _isExportInProgress ? null : _handleClosePressed,
+                  tooltip: '닫기',
+                ),
               Expanded(
                 child: Text(
                   widget.project.title,
@@ -2852,7 +3048,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     borderRadius: BorderRadius.circular(999),
                   ),
                 ),
-                onPressed: _handleExport,
+                onPressed: _isExportInProgress ? null : _handleExport,
                 child: const Text(
                   "만들기",
                   style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
@@ -2890,6 +3086,42 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   onPressed: _showCanvasPanel,
                   tooltip:
                       'Canvas ${_canvasAspectLabel(widget.project.canvasAspectRatioPreset)}',
+                ),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEAF3FF),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: const Color(0xFFB9D9FF)),
+                  ),
+                  child: Text(
+                    _currentClipBadgeText,
+                    style: const TextStyle(
+                      color: _primaryColor,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                IconButton(
+                  icon: const Icon(Icons.chevron_left, color: _textPrimary),
+                  tooltip: '이전 클립',
+                  onPressed: _clips.isEmpty || _currentClipIndex <= 0
+                      ? null
+                      : () => unawaited(_moveToAdjacentClip(-1)),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.chevron_right, color: _textPrimary),
+                  tooltip: '다음 클립',
+                  onPressed:
+                      _clips.isEmpty || _currentClipIndex >= _clips.length - 1
+                      ? null
+                      : () => unawaited(_moveToAdjacentClip(1)),
                 ),
               ],
             ),
@@ -4205,7 +4437,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                       double newStartMs =
                           state.startMs +
                           (details.delta.dx / itemWidth * state.maxMs);
-                      newStartMs = newStartMs.clamp(0.0, state.endMs - 500);
+                      newStartMs = newStartMs.clamp(
+                        0.0,
+                        state.endMs - 100,
+                      );
                       if ((newStartMs - clip.startTime.inMilliseconds).abs() <
                           4) {
                         return;
@@ -4301,7 +4536,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           state.endMs +
                           (details.delta.dx / itemWidth * state.maxMs);
                       newEndMs = newEndMs.clamp(
-                        state.startMs + 500,
+                        state.startMs + 100,
                         state.maxMs,
                       );
                       if ((newEndMs - clip.endTime.inMilliseconds).abs() < 4) {
@@ -4548,8 +4783,32 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     }
   }
 
+  Future<void> _moveToAdjacentClip(int direction) async {
+    if (_clips.isEmpty || _isDisposed || _isPlaybackLockedForEditing) return;
+    final target = (_currentClipIndex + direction).clamp(0, _clips.length - 1);
+    if (target == _currentClipIndex) return;
+    await _loadClip(target, autoPlay: _isPlaying);
+  }
+
+  void _handlePreviewSwipe(DragEndDetails details) {
+    if (_isTransformModeActive || _isTrimMode || _isPlaybackLockedForEditing) {
+      return;
+    }
+
+    final velocityX = details.primaryVelocity ?? 0.0;
+    if (velocityX <= -220) {
+      unawaited(_moveToAdjacentClip(1));
+      return;
+    }
+    if (velocityX >= 220) {
+      unawaited(_moveToAdjacentClip(-1));
+    }
+  }
+
   // 'Done' / 'Export' 버튼 클릭 시 호출
   void _handleExport() {
+    if (_isExportInProgress) return;
+
     // Safety Net: Check all files before export dialog
     for (final clip in _clips) {
       if (!File(clip.path).existsSync()) {
@@ -4580,6 +4839,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   void _showExportDialog() {
+    if (_isExportInProgress) return;
+
     final userStatus = Provider.of<UserStatusManager>(context, listen: false);
     final userTier = userStatus.currentTier;
     String selectedQuality = clampExportQualityForTier(
@@ -4702,6 +4963,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   Future<void> _performNativeExport(String quality) async {
+    if (_isExportInProgress) return;
+
     final videoManager = Provider.of<VideoManager>(context, listen: false);
     final userStatus = Provider.of<UserStatusManager>(context, listen: false);
     final userTier = userStatus.currentTier;
@@ -4711,26 +4974,36 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     );
     final userTierKey = userTierKeyFromManager(userStatus);
 
+    if (!mounted || _isDisposed) return;
+    setState(() {
+      _isExportInProgress = true;
+      _isExportCancelRequested = false;
+    });
+
+    _openExportProgressDialog();
+    _setExportProgress(
+      phase: 'prepare',
+      label: '내보내기 준비 중',
+      progress: _defaultExportProgressForPhase('prepare'),
+    );
+
     await _prepareForExportRendering();
-    if (!mounted) return;
+    if (!mounted || _isDisposed) {
+      await _closeExportProgressDialog();
+      return;
+    }
+    if (_isExportCancelRequested) {
+      await _closeExportProgressDialog();
+      return;
+    }
+
+    _setExportProgress(
+      phase: 'rendering',
+      label: '내보내기 렌더링 중',
+      progress: _defaultExportProgressForPhase('rendering'),
+    );
 
     debugPrint('[EditScreen][Export] open loading dialog mounted=$mounted');
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const AlertDialog(
-        backgroundColor: Colors.black87,
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(color: Colors.blueAccent),
-            SizedBox(height: 20),
-            Text("Rendering Vlog... 🎬", style: TextStyle(color: Colors.white)),
-          ],
-        ),
-      ),
-    );
 
     try {
       // Sync State to Project before Export
@@ -4752,21 +5025,57 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         bgmVolume: widget.project.bgmVolume,
         quality: widget.project.quality,
         userTier: userTierKey,
+        mergeSessionId: _editExportSessionId,
+        debugTag: 'VideoEditScreen_export',
+        isCancelRequested: () => _isExportCancelRequested,
+        getExportPhase: () => _exportProgressPhase,
+        getExportProgress: () => _exportDialogProgress,
+        getExportCancelReason: () => _exportCancelReason ?? '',
       );
+
+      if (_isExportCancelRequested) {
+        if (mounted && resultPath != null) {
+          Fluttertoast.showToast(msg: '내보내기가 취소되었습니다.');
+        }
+        await _closeExportProgressDialog();
+        if (mounted) {
+          setState(() {
+            _isExportInProgress = false;
+          });
+        }
+        return;
+      }
 
       if (!mounted) return;
       debugPrint('[EditScreen][Export] close loading dialog mounted=$mounted');
-      Navigator.pop(context); // Close Loader
+      _updateExportProgress('갤러리 저장 중', 0.75);
 
       if (resultPath != null) {
-        Fluttertoast.showToast(msg: "Vlog Saved Successfully! 🎉");
-        Navigator.pop(context, true); // Return success
+        _setExportProgress(
+          phase: 'done',
+          label: '내보내기 완료',
+          progress: _defaultExportProgressForPhase('done'),
+        );
+        await _closeExportProgressDialog();
+        Fluttertoast.showToast(msg: "Vlog가 생성되어 갤러리에 저장되었습니다. 🎉");
+        Navigator.pop(context, resultPath); // Return export result path for in-app preview
       } else {
-        Fluttertoast.showToast(msg: "Export Failed. Please try again.");
+        await _closeExportProgressDialog();
+        Fluttertoast.showToast(msg: "Vlog 생성에 실패했습니다.");
+        Navigator.pop(context, false);
       }
     } catch (e) {
-      if (mounted) Navigator.pop(context);
+      if (mounted) {
+        await _closeExportProgressDialog();
+      }
       Fluttertoast.showToast(msg: "Error: $e");
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isExportInProgress = false;
+        });
+      }
+      _isExportCancelRequested = false;
     }
   }
 

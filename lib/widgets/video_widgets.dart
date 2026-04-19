@@ -142,6 +142,8 @@ class ResultPreviewWidget extends StatefulWidget {
   final VoidCallback onClose; // 필수: 닫기 버튼 콜백
   final VoidCallback? onShare; // 선택: 공유 버튼 콜백
   final VoidCallback? onEdit;  // 선택: 편집 버튼 콜백
+  final VoidCallback? onOpenGallery; // 선택: 갤러리 이동 버튼 콜백
+  final VoidCallback? onRetry; // 선택: 종료 버튼 콜백
 
   const ResultPreviewWidget({
     super.key,
@@ -149,6 +151,8 @@ class ResultPreviewWidget extends StatefulWidget {
     required this.onClose,
     this.onShare,
     this.onEdit,
+    this.onOpenGallery,
+    this.onRetry,
   });
 
   @override
@@ -240,9 +244,32 @@ class _ResultPreviewWidgetState extends State<ResultPreviewWidget> {
                         children: [
                           if (widget.onShare != null)
                             _buildPremiumActionButton(Icons.share_rounded, "공유", widget.onShare!),
+                          if (widget.onRetry != null)
+                            _buildPremiumActionButton(Icons.close, "X 종료", widget.onRetry!),
                           if (widget.onEdit != null)
                             _buildPremiumActionButton(Icons.auto_awesome, "편집", widget.onEdit!),
                         ],
+                      ),
+                      const SizedBox(height: 14),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withAlpha(24),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: Text(
+                          '갤러리 앱에 저장되었습니다.\n저장 경로: 갤러리/2S_Vlog',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            height: 1.35,
+                          ),
+                        ),
                       ),
                     ],
                   ),

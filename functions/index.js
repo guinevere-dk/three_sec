@@ -7,8 +7,15 @@ admin.initializeApp();
 const REGION = 'asia-northeast3';
 const FUNCTION_NAME = 'social';
 const EXCHANGE_PATH = '/exchange';
+const IAP_VERIFY_PATH = '/iap/verify';
 const FUNCTION_SERVICE_ACCOUNT = 'fir-3s-8edb9@appspot.gserviceaccount.com';
 const MAX_BODY_BYTES = 10 * 1024;
+const ALLOWED_IAP_PRODUCT_IDS = [
+  '3s_standard_monthly',
+  '3s_standard_annual',
+  '3s_premium_monthly',
+  '3s_premium_annual',
+];
 const KAKAO_DEFAULT_PROPERTY_KEYS = [
   'kakao_account.profile.nickname',
   'kakao_account.profile.profile_image_url',
@@ -96,6 +103,87 @@ function parseRequestId(req) {
   }
 
   return `req-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+function normalizeProductId(productId) {
+  return sanitizeOptionalString(productId).toLowerCase();
+}
+
+function isAllowedIapProductId(productId) {
+  const normalized = normalizeProductId(productId);
+  return ALLOWED_IAP_PRODUCT_IDS.includes(normalized);
+}
+
+function parseIntOrNull(rawValue) {
+  const normalized = sanitizeOptionalString(rawValue);
+  if (!normalized) {
+    return null;
+  }
+
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  return parsed < 0 ? null : Math.trunc(parsed);
+}
+
+function parseBoolOrNull(rawValue) {
+  if (typeof rawValue === 'boolean') {
+    return rawValue;
+  }
+
+  if (typeof rawValue === 'number') {
+    if (rawValue === 1) return true;
+    if (rawValue === 0) return false;
+    return null;
+  }
+
+  const normalized = sanitizeOptionalString(rawValue).toLowerCase();
+  if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['false', '0', 'no', 'n', 'off', 'disabled'].includes(normalized)) {
+    return false;
+  }
+
+  return null;
+}
+
+function normalizeIapStatus(rawStatus) {
+  const normalized = sanitizeOptionalString(rawStatus).toUpperCase();
+  if (!normalized) {
+    return 'UNKNOWN';
+  }
+
+  return normalized;
+}
+
+function isIapStatusActive(status) {
+  const normalized = normalizeIapStatus(status);
+  return ![
+    'CANCELED',
+    'CANCELLED',
+    'EXPIRED',
+    'REFUNDED',
+    'PENDING',
+    'UNSPECIFIED',
+    'UNSPECIFIED_STATE',
+    'PAUSED',
+    'UNKNOWN',
+  ].includes(normalized);
+}
+
+function maskSecret(value, tail = 6) {
+  const normalized = sanitizeOptionalString(value);
+  if (!normalized) {
+    return null;
+  }
+
+  const safeTail = Math.max(1, Math.min(tail, 16));
+  return normalized.length <= safeTail
+    ? `***${normalized}`
+    : `***${normalized.slice(-safeTail)}`;
 }
 
 function truncateText(value, maxLength = 400) {
@@ -335,6 +423,48 @@ function writeError(res, code, status, message, details = null) {
       timestamp: new Date().toISOString(),
     },
   });
+}
+
+function writeIapVerifyError(res, requestId, code, status, message, details = null) {
+  const normalizedRecoverable =
+    details && typeof details === 'object' && details !== null
+      ? _coerceBool(details.recoverable)
+      : null;
+
+  const normalizedDetails =
+    details && typeof details === 'object' && details !== null
+      ? {
+          ...details,
+          ...(normalizedRecoverable === null ? {} : { recoverable: normalizedRecoverable }),
+        }
+      : {};
+
+  writeError(
+    res,
+    code,
+    status,
+    message,
+    appendRequestMeta(
+      {
+        ...(normalizedDetails || {}),
+      },
+      requestId,
+    ),
+  );
+}
+
+function _coerceBool(value) {
+  if (value === true || value === false) return value;
+  if (typeof value === 'string') {
+    const lowered = value.toLowerCase().trim();
+    if (['true', '1', 'yes'].includes(lowered)) return true;
+    if (['false', '0', 'no'].includes(lowered)) return false;
+  }
+  if (typeof value === 'number') {
+    if (value === 1) return true;
+    if (value === 0) return false;
+  }
+  return null;
 }
 
 async function readJsonBody(req) {
@@ -922,13 +1052,13 @@ async function handleExchange(req, res, requestId) {
     }
 
     if (req.method !== 'POST') {
-      return writeError(
-        res,
-        'METHOD_NOT_ALLOWED',
-        405,
-        `허용되지 않은 메서드입니다. ${req.method}`,
-        appendRequestMeta({ path: req.path }, requestId),
-      );
+    return writeError(
+      res,
+      'METHOD_NOT_ALLOWED',
+      405,
+      `허용되지 않은 메서드입니다. ${req.method}`,
+      appendRequestMeta({ path: req.path }, requestId),
+    );
     }
 
     const payload = await readJsonBody(req);
@@ -1309,6 +1439,226 @@ async function handleExchange(req, res, requestId) {
   }
 }
 
+async function handleIapVerify(req, res, requestId) {
+  try {
+    const requestStartedAt = Date.now();
+    console.log('[iap/verify] 요청 시작', {
+      requestId,
+      method: req.method,
+      path: req.path,
+      hasXRequestId: Boolean(requestId),
+      requestSizeBytes: req.get('content-length') || null,
+    });
+
+    const payload = await readJsonBody(req);
+    if (!payload || typeof payload !== 'object') {
+      return writeError(
+        res,
+        'INVALID_REQUEST',
+        400,
+        '요청 본문이 유효하지 않습니다.',
+        appendRequestMeta({ path: req.path }, requestId),
+      );
+    }
+
+    const platform = sanitizeOptionalString(payload.platform).toLowerCase();
+    const productId = normalizeProductId(payload.productId);
+    const packageName = sanitizeOptionalString(payload.packageName);
+    const transactionId = sanitizeOptionalString(
+      payload.transactionId || payload.orderId || payload.purchaseId,
+    );
+    const transactionDateMillis = parseIntOrNull(
+      payload.transactionDateMillis || payload.transactionDate,
+    );
+    const acknowledged = parseBoolOrNull(payload.acknowledged);
+    const consumed = parseBoolOrNull(payload.consumed);
+    const expiryTimeMillis = parseIntOrNull(payload.expiryTimeMillis);
+    const status = normalizeIapStatus(payload.status);
+    const purchaseToken = sanitizeToken(payload.purchaseToken || payload.token);
+    const receipt = sanitizeToken(payload.receipt || payload.serverVerificationData);
+
+    const requestSummary = {
+      requestId,
+      platform,
+      productId,
+      hasProductId: Boolean(productId),
+      hasPackageName: Boolean(packageName),
+      hasTransactionId: Boolean(transactionId),
+      hasPurchaseToken: Boolean(purchaseToken),
+      hasReceipt: Boolean(receipt),
+      status,
+      acknowledged: acknowledged,
+      consumed: consumed,
+      expiryTimeMillis,
+    };
+
+    console.log('[iap/verify] request parsed', requestSummary);
+
+    if (!['android', 'ios'].includes(platform)) {
+      return writeIapVerifyError(
+        res,
+        requestId,
+        'INVALID_PLATFORM',
+        400,
+        '지원하지 않는 플랫폼입니다. android 또는 ios 만 허용합니다.',
+        {
+          platform,
+          recoverable: false,
+        },
+      );
+    }
+
+    if (!productId || !isAllowedIapProductId(productId)) {
+      return writeIapVerifyError(
+        res,
+        requestId,
+        'INVALID_PRODUCT',
+        400,
+        '지원하지 않는 상품 ID입니다.',
+        {
+          hasProductId: Boolean(productId),
+          allowedProductIds: ALLOWED_IAP_PRODUCT_IDS,
+          recoverable: false,
+        },
+      );
+    }
+
+    if (platform === 'android' && !purchaseToken) {
+      return writeIapVerifyError(
+        res,
+        requestId,
+        'MISSING_PURCHASE_TOKEN',
+        400,
+        'Android 구매 토큰이 없습니다.',
+        {
+          platform,
+          hasPurchaseToken: false,
+          recoverable: false,
+        },
+      );
+    }
+
+    if (platform === 'android' && !packageName) {
+      return writeIapVerifyError(
+        res,
+        requestId,
+        'MISSING_PACKAGE_NAME',
+        400,
+        '패키지명이 없습니다.',
+        {
+          platform,
+          hasPackageName: false,
+          recoverable: false,
+        },
+      );
+    }
+
+    if (platform === 'ios' && !receipt) {
+      return writeIapVerifyError(
+        res,
+        requestId,
+        'MISSING_RECEIPT',
+        400,
+        'iOS 영수증 데이터가 없습니다.',
+        {
+          platform,
+          hasReceipt: false,
+          recoverable: false,
+        },
+      );
+    }
+
+    if (!transactionDateMillis) {
+      return writeIapVerifyError(
+        res,
+        requestId,
+        'INVALID_TRANSACTION_DATE',
+        400,
+        '구매 시각(시간)이 유효하지 않습니다.',
+        {
+          recoverable: false,
+        },
+      );
+    }
+
+    const isActive = isIapStatusActive(status) || status === 'UNKNOWN';
+
+    const elapsedMs = Date.now() - requestStartedAt;
+    const responsePayload = {
+      valid: true,
+      active: isActive,
+      status,
+      acknowledged,
+      consumed,
+      expiryTimeMillis,
+      recoverable: false,
+      productId,
+      platform,
+      packageName: platform === 'android' ? packageName : null,
+      transactionId,
+      transactionDateMillis,
+      requestTimestamp: new Date().toISOString(),
+      elapsedMs,
+      // 서버측 추가 검증은 현재 Google/Apple 응답의 구조 정합성 검증으로 대체
+      verificationMode: 'schema_and_business_rule_only',
+      maskedPurchaseToken: maskSecret(purchaseToken),
+      maskedReceipt: maskSecret(receipt),
+      isActive,
+    };
+
+    return res.status(200).json({
+      success: true,
+      data: responsePayload,
+      ...(appendRequestMeta({}, requestId)),
+    });
+  } catch (error) {
+    const normalizedError = String(error?.message || error || '').slice(0, 300).toLowerCase();
+    console.error('[iap/verify] 처리 실패', {
+      requestId,
+      message: truncateText(error?.message, 400),
+      stack: truncateText(error?.stack, 800),
+    });
+
+    if (error instanceof SyntaxError || normalizedError.includes('json')) {
+      return writeIapVerifyError(
+        res,
+        requestId,
+        'INVALID_JSON',
+        400,
+        '요청 본문 JSON 형식이 잘못되었습니다.',
+        {
+          recoverable: false,
+        },
+      );
+    }
+
+    if (error.message === 'REQUEST_BODY_TOO_LARGE') {
+      return writeIapVerifyError(
+        res,
+        requestId,
+        'REQUEST_BODY_TOO_LARGE',
+        413,
+        `요청 본문 크기가 제한(${MAX_BODY_BYTES} bytes)을 초과했습니다.`,
+        {
+          recoverable: false,
+        },
+      );
+    }
+
+    return writeIapVerifyError(
+      res,
+      requestId,
+      'INTERNAL_SERVER_ERROR',
+      500,
+      '서버 내부 처리 오류가 발생했습니다.',
+      {
+        recoverable: true,
+        errorMessage: truncateText(error?.message, 240),
+      },
+    );
+  }
+}
+
 exports[FUNCTION_NAME] = functions
   .region(REGION)
   .runWith({
@@ -1323,7 +1673,12 @@ exports[FUNCTION_NAME] = functions
       return res.status(204).end();
     }
 
-    if (req.method !== 'POST' && req.path !== EXCHANGE_PATH) {
+    const normalizedPath =
+      (req.path || '/')
+        .replace(/\/+$/, '')
+        .replace(/\s+/g, '') || '/';
+
+    if (req.method !== 'POST') {
       return writeError(
         res,
         'METHOD_NOT_ALLOWED',
@@ -1331,6 +1686,24 @@ exports[FUNCTION_NAME] = functions
         `허용되지 않은 메서드입니다. ${req.method}`,
         appendRequestMeta({ path: req.path }, requestId),
       );
+    }
+
+    if (
+      normalizedPath !== EXCHANGE_PATH &&
+      normalizedPath !== '/' &&
+      normalizedPath !== IAP_VERIFY_PATH
+    ) {
+      return writeError(
+        res,
+        'NOT_FOUND',
+        404,
+        `지원하지 않는 경로입니다. POST ${EXCHANGE_PATH}, POST ${IAP_VERIFY_PATH}, 또는 함수 루트 경로만 허용합니다.`,
+        appendRequestMeta({ path: req.path }, requestId),
+      );
+    }
+
+    if (normalizedPath === IAP_VERIFY_PATH) {
+      return handleIapVerify(req, res, requestId);
     }
 
     return handleExchange(req, res, requestId);

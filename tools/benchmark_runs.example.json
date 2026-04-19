@@ -1,0 +1,34 @@
+{
+  "version": "1.0",
+  "description": "Phase 3 1차 병합 벤치마크 기본 시나리오",
+  "default_command_template": "",
+  "datasets": [
+    {
+      "id": "photo_silent",
+      "name": "photo_silent",
+      "display_name": "무음 사진 다수",
+      "ab_group": "A",
+      "retry_plan": "default",
+      "notes": "사진 클립이 많고 오디오 트랙이 없는 세트",
+      "dataset_hint": "photo-only silent mix"
+    },
+    {
+      "id": "video_audio_mixed",
+      "name": "video_audio_mixed",
+      "display_name": "영상 + 오디오 혼합",
+      "ab_group": "A",
+      "retry_plan": "default",
+      "notes": "영상 클립과 오디오 클립이 혼합된 세트",
+      "dataset_hint": "video+audio mixed"
+    },
+    {
+      "id": "video_only",
+      "name": "video_only",
+      "display_name": "영상 전용",
+      "ab_group": "A",
+      "retry_plan": "default",
+      "notes": "영상만 포함된 세트",
+      "dataset_hint": "video only"
+    }
+  ]
+}

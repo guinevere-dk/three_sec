@@ -51,14 +51,67 @@ import java.io.File
 import java.nio.ByteBuffer
 import android.util.Log
 import android.media.MediaMetadataRetriever
+import android.media.MediaExtractor
+import android.media.MediaFormat
 
 class MainActivity: FlutterFragmentActivity() {
     private val CHANNEL = "com.dk.three_sec/video_engine"
+    @Volatile
+    private var activeMergeSessionId: String? = null
+    @Volatile
+    private var activeMergeTraceId: String? = null
+    @Volatile
+    private var activeMergeAttempt: Int? = null
+    @Volatile
+    private var activeMergeRetryPlan: String? = null
+
+    private fun logLifecycle(event: String, extra: String = "") {
+        val suffix = if (extra.isBlank()) "" else " $extra"
+        Log.w(
+            "3S_LIFECYCLE",
+            "[Activity] $event pid=${android.os.Process.myPid()} " +
+                "sessionId=${activeMergeSessionId ?: "none"} " +
+                "traceId=${activeMergeTraceId ?: "none"} " +
+                "attempt=${activeMergeAttempt ?: -1} " +
+                "retryPlan=${activeMergeRetryPlan ?: "none"}$suffix"
+        )
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Android 15+ 기본 edge-to-edge 동작과 하위 버전 호환 처리를 통일
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        logLifecycle("onCreate")
+    }
+
+    override fun onStart() {
+        super.onStart()
+        logLifecycle("onStart")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        logLifecycle("onResume")
+    }
+
+    override fun onPause() {
+        logLifecycle("onPause")
+        super.onPause()
+    }
+
+    override fun onStop() {
+        logLifecycle("onStop")
+        super.onStop()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        logLifecycle("onTrimMemory", "level=$level")
+    }
+
+    override fun onDestroy() {
+        logLifecycle("onDestroy")
+        super.onDestroy()
     }
 
     private fun toMediaUri(pathOrUri: String): Uri {
@@ -91,8 +144,222 @@ class MainActivity: FlutterFragmentActivity() {
         }
     }
 
+    private data class AudioPreflightInfo(
+        val path: String,
+        val uri: Uri,
+        val hasAudio: Boolean,
+        val audioTrackCount: Int,
+        val hasVideo: Boolean,
+        val reason: String,
+    )
+
+    private fun inspectMediaAudioTrack(path: String, uri: Uri): AudioPreflightInfo {
+        var hasAudio = false
+        var audioTrackCount = 0
+        var hasVideo = false
+        val reasonParts = StringBuilder()
+
+        try {
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(this, uri)
+                val hasAudioMeta = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO)
+                val hasVideoMeta = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO)
+                if (!hasAudioMeta.isNullOrBlank()) {
+                    hasAudio = hasAudioMeta == "1" || hasAudioMeta.equals("true", ignoreCase = true)
+                    reasonParts.append("metadataAudio=$hasAudioMeta, ")
+                }
+                if (!hasVideoMeta.isNullOrBlank()) {
+                    hasVideo = hasVideoMeta == "1" || hasVideoMeta.equals("true", ignoreCase = true)
+                    reasonParts.append("metadataVideo=$hasVideoMeta, ")
+                }
+            } finally {
+                retriever.release()
+            }
+        } catch (e: Exception) {
+            reasonParts.append("metadataError=${e.javaClass.simpleName}:${e.message}")
+        }
+
+        try {
+            val extractor = MediaExtractor()
+            try {
+                extractor.setDataSource(this, uri, null)
+                val trackCount = extractor.trackCount
+                for (i in 0 until trackCount) {
+                    val format = extractor.getTrackFormat(i)
+                    val mimeType = format.getString(MediaFormat.KEY_MIME)
+                    if (!mimeType.isNullOrBlank() && mimeType.startsWith("audio/")) {
+                        audioTrackCount += 1
+                    }
+                    if (!mimeType.isNullOrBlank() && mimeType.startsWith("video/")) {
+                        hasVideo = true
+                    }
+                }
+                if (audioTrackCount > 0) {
+                    hasAudio = true
+                }
+                reasonParts.append("tracks=${trackCount}, audioTracks=${audioTrackCount}")
+            } finally {
+                extractor.release()
+            }
+        } catch (e: Exception) {
+            reasonParts.append(", extractorError=${e.javaClass.simpleName}:${e.message}")
+        }
+
+        return AudioPreflightInfo(
+            path = path,
+            uri = uri,
+            hasAudio = hasAudio,
+            audioTrackCount = audioTrackCount,
+            hasVideo = hasVideo,
+            reason = reasonParts.toString().ifBlank { "no-info" },
+        )
+    }
+
+    private fun applyForceAudioTrackIfPossible(
+        builder: EditedMediaItem.Builder,
+        forceAudioTrack: Boolean,
+    ): Boolean {
+        if (!forceAudioTrack) return false
+
+        val candidateMethodNames = listOf("experimentalSetForceAudioTrack", "setForceAudioTrack")
+        for (name in candidateMethodNames) {
+            try {
+                val method = EditedMediaItem.Builder::class.java.getMethod(name, Boolean::class.javaPrimitiveType)
+                method.invoke(builder, true)
+                Log.d("3S_AUDIO", "✓ $name 적용 완료")
+                return true
+            } catch (_: NoSuchMethodException) {
+                // 현재 의존성 버전에 해당 메서드가 없을 수 있습니다.
+            } catch (_: Exception) {
+                // 예외가 발생하면 다음 후보를 시도합니다.
+            }
+        }
+
+        Log.w("3S_AUDIO", "⚠️ forceAudioTrack API 미지원: fallback 정책으로 이동")
+        return false
+    }
+
+    private fun buildVideoSequenceWithOptionalForceAudioTrack(
+        videoItems: List<EditedMediaItem>,
+        forceAudioTrack: Boolean,
+    ): Pair<EditedMediaItemSequence, String> {
+        if (!forceAudioTrack) {
+            return EditedMediaItemSequence(videoItems) to "skipped_not_needed"
+        }
+
+        try {
+            val builderClass = Class.forName("androidx.media3.transformer.EditedMediaItemSequence\$Builder")
+            val ctor = builderClass.constructors.firstOrNull { constructor ->
+                val params = constructor.parameterTypes
+                params.size == 1 && java.util.List::class.java.isAssignableFrom(params[0])
+            } ?: run {
+                Log.w("3S_AUDIO", "⚠️ Sequence Builder 생성자 미발견: constructor(List) 없음")
+                return EditedMediaItemSequence(videoItems) to "builder_ctor_missing"
+            }
+
+            val builder = ctor.newInstance(videoItems)
+            var appliedMethodName: String? = null
+            val candidateMethods = listOf("experimentalSetForceAudioTrack", "setForceAudioTrack")
+
+            for (name in candidateMethods) {
+                try {
+                    val method = try {
+                        builderClass.getMethod(name, Boolean::class.javaPrimitiveType)
+                    } catch (_: NoSuchMethodException) {
+                        builderClass.getMethod(name, java.lang.Boolean::class.java)
+                    }
+                    method.invoke(builder, true)
+                    appliedMethodName = name
+                    break
+                } catch (_: NoSuchMethodException) {
+                    // 다음 후보 메서드 시도
+                }
+            }
+
+            val buildMethod = builderClass.getMethod("build")
+            val sequence = buildMethod.invoke(builder) as? EditedMediaItemSequence
+            if (sequence != null) {
+                if (appliedMethodName != null) {
+                    Log.d("3S_AUDIO", "✓ Sequence forceAudioTrack 적용 완료: $appliedMethodName")
+                    return sequence to "applied_$appliedMethodName"
+                }
+                Log.w("3S_AUDIO", "⚠️ Sequence Builder는 존재하지만 forceAudioTrack 메서드가 없음")
+                return sequence to "builder_no_force_method"
+            }
+        } catch (e: Exception) {
+            Log.w("3S_AUDIO", "⚠️ Sequence forceAudioTrack 적용 실패: ${e.message}")
+        }
+
+        return EditedMediaItemSequence(videoItems) to "fallback_constructor"
+    }
+
+    private fun createErrorDetails(
+        exportException: ExportException,
+        attempt: Int,
+        attemptQuality: String,
+        previousMessages: List<String>
+    ): Map<String, Any> {
+        val cause = exportException.cause
+        val causeMessage = (cause?.message ?: "Unknown Cause").take(1536)
+        val causeClass = cause?.javaClass?.name ?: "N/A"
+        val stackText = exportException.stackTraceToString()
+            .take(1600)
+            .trim()
+
+        val details = LinkedHashMap<String, Any>()
+        details["attempt"] = attempt
+        details["quality"] = attemptQuality
+        details["errorCode"] = exportException.errorCode
+        details["message"] = exportException.message ?: "Media3 export failed"
+        details["cause"] = causeMessage
+        details["causeClass"] = causeClass
+        details["stack"] = stackText
+        if (previousMessages.isNotEmpty()) {
+            details["history"] = previousMessages
+        }
+
+        val serialized = StringBuilder()
+        details.forEach { (key, value) ->
+            serialized.append("$key=$value\n")
+        }
+        val text = serialized.toString().trim().take(2048)
+        details["summary"] = text
+
+        return details
+    }
+
+    private fun trySetRequestedEncoderParams(
+        builder: DefaultEncoderFactory.Builder,
+        width: Int,
+        height: Int,
+        bitrate: Int
+    ) {
+        val methodName = "setRequestedEncoderPerformanceParameters"
+        val methods = builder.javaClass.methods.filter { it.name == methodName }
+        for (method in methods) {
+            val params = method.parameterTypes
+            try {
+                if (params.size == 3
+                    && params[0] == Int::class.javaPrimitiveType
+                    && params[1] == Int::class.javaPrimitiveType
+                    && params[2] == Int::class.javaPrimitiveType
+                ) {
+                    method.invoke(builder, width, height, bitrate)
+                    Log.d("3S_4K", "✓ Requested encoder params: ${width}x$height, ${bitrate / 1_000_000}Mbps")
+                    return
+                }
+            } catch (_: Exception) {
+                // API 시그니처가 다르거나 미지원일 수 있어 무시
+            }
+        }
+        Log.w("3S_4K", "⚠️ setRequestedEncoderPerformanceParameters 미지원/호출 실패 (dependency fallback)")
+    }
+
     // 🎛️ [디자인 컨트롤 타워] 여기서 수치만 바꾸면 즉시 반영됩니다.
     companion object {
+        private const val DEFAULT_EDIT_TARGET_DURATION_MS = 2000L
+        private const val DEFAULT_SAVE_TARGET_DURATION_MS = 2034L
         // 워터마크 설정
         private const val WATERMARK_ALPHA = 160
         private const val WATERMARK_SCALE_X = 0.35f
@@ -110,6 +377,17 @@ class MainActivity: FlutterFragmentActivity() {
         private const val GRAYSCALE_SATURATION = 0.0f
         private const val DEFAULT_CONTRAST = 1.0f
         private const val DEFAULT_SATURATION = 1.0f
+    }
+
+    private fun reportChannelError(
+        step: String,
+        platformError: String,
+        message: String,
+        result: MethodChannel.Result,
+        details: Any? = null
+    ) {
+        Log.e("3S_CHANNEL", "step=$step platformError=$platformError message=$message")
+        result.error(platformError, message, details)
     }
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
@@ -140,6 +418,13 @@ class MainActivity: FlutterFragmentActivity() {
                     
                     val startTimes = call.argument<List<Long>>("startTimes") ?: emptyList()
                     val endTimes = call.argument<List<Long>>("endTimes") ?: emptyList()
+                    val mergeSessionId = call.argument<String>("mergeSessionId")
+                    val mergeTraceId = call.argument<String>("mergeTraceId")
+                    val mergeAttempt = call.argument<Int>("attempt") ?: 1
+                    val mergeRetryPlan = call.argument<String>("retryPlan")
+                    val mergeAudioSimplify = call.argument<Boolean>("audioSimplify") ?: false
+                    val mergeQualityPreset = call.argument<String>("qualityPreset")
+                    val mergeCaller = call.argument<String>("caller")
                     
                     Log.d("3S_4K", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                     Log.d("3S_4K", "mergeVideos 호출 (Flutter -> Native)")
@@ -148,6 +433,13 @@ class MainActivity: FlutterFragmentActivity() {
                     Log.d("3S_4K", "  - outputPath: $outputPath")
                     Log.d("3S_4K", "  - audioConfig: $audioChanges (To be implemented)")
                     Log.d("3S_4K", "  - bgmPath: $bgmPath, vol: $bgmVolume")
+                    Log.w(
+                        "3S_LIFECYCLE",
+                        "[MergeArgs] sessionId=${mergeSessionId ?: "none"} traceId=${mergeTraceId ?: "none"} " +
+                            "attempt=$mergeAttempt retryPlan=${mergeRetryPlan ?: "none"} " +
+                            "audioSimplify=$mergeAudioSimplify qualityPreset=${mergeQualityPreset ?: "none"} " +
+                            "caller=${mergeCaller ?: "unknown"}"
+                    )
                     
                     if (paths != null && outputPath != null && paths.isNotEmpty()) {
                         mergeVideos(
@@ -164,6 +456,13 @@ class MainActivity: FlutterFragmentActivity() {
                             bgmVolume,
                             startTimes,
                             endTimes,
+                            mergeSessionId,
+                            mergeTraceId,
+                            mergeAttempt,
+                            mergeRetryPlan,
+                            mergeAudioSimplify,
+                            mergeQualityPreset,
+                            mergeCaller,
                             result
                         )
                     } else {
@@ -238,14 +537,31 @@ class MainActivity: FlutterFragmentActivity() {
                 "convertImageToVideo" -> {
                     val imagePath = call.argument<String>("imagePath")
                     val outputPath = call.argument<String>("outputPath")
-                    val duration = call.argument<Int>("duration") ?: 3
+                    val rawDuration = call.argument<Any?>("duration")
+                    val parsedDurationMs = when (rawDuration) {
+                        is Long -> rawDuration
+                        is Int -> rawDuration.toLong()
+                        is Double -> rawDuration.toLong()
+                        is String -> rawDuration.toLongOrNull() ?: DEFAULT_SAVE_TARGET_DURATION_MS
+                        else -> DEFAULT_SAVE_TARGET_DURATION_MS
+                    }
+                    val durationMs = when {
+                        parsedDurationMs <= 0L -> DEFAULT_SAVE_TARGET_DURATION_MS
+                        parsedDurationMs <= 1000L -> parsedDurationMs * 1_000L
+                        else -> parsedDurationMs
+                    }
 
                     Log.d("3S_CONVERT", "convertImageToVideo 호출: $imagePath")
 
                     if (imagePath != null && outputPath != null) {
-                        convertImageToVideo(imagePath, outputPath, duration, result)
+                        convertImageToVideo(imagePath, outputPath, durationMs, result)
                     } else {
-                        result.error("INVALID_ARGS", "필수 인자가 누락되었습니다.", null)
+                        reportChannelError(
+                            step = "photo_to_video",
+                            platformError = "INVALID_ARGS",
+                            message = "필수 인자가 누락되었습니다.",
+                            result = result
+                        )
                     }
                 }
                 "normalizeVideoDuration" -> {
@@ -260,8 +576,8 @@ class MainActivity: FlutterFragmentActivity() {
                         is Double -> rawTargetDuration.toLong()
                         is Float -> rawTargetDuration.toLong()
                         is Number -> rawTargetDuration.toLong()
-                        is String -> rawTargetDuration.toLongOrNull() ?: 3000L
-                        else -> 3000L
+                        is String -> rawTargetDuration.toLongOrNull() ?: DEFAULT_SAVE_TARGET_DURATION_MS
+                        else -> DEFAULT_SAVE_TARGET_DURATION_MS
                     }
                     val trimMode = (rawTrimMode as? String)?.lowercase() ?: "start"
 
@@ -279,7 +595,12 @@ class MainActivity: FlutterFragmentActivity() {
                             result = result
                         )
                     } else {
-                        result.error("INVALID_ARGS", "inputPath or outputPath is missing", null)
+                        reportChannelError(
+                            step = "normalize",
+                            platformError = "INVALID_ARGS",
+                            message = "inputPath or outputPath is missing",
+                            result = result
+                        )
                     }
                 }
                 "getVideoDurationMs" -> {
@@ -287,7 +608,12 @@ class MainActivity: FlutterFragmentActivity() {
                     if (inputPath != null) {
                         getVideoDurationMs(inputPath, result)
                     } else {
-                        result.error("INVALID_ARGS", "inputPath is missing", null)
+                        reportChannelError(
+                            step = "duration_query",
+                            platformError = "INVALID_ARGS",
+                            message = "inputPath is missing",
+                            result = result
+                        )
                     }
                 }
                 else -> result.notImplemented()
@@ -303,7 +629,12 @@ class MainActivity: FlutterFragmentActivity() {
         try {
             val (sourceUri, inputError) = validateReadableInput(inputPath)
             if (inputError != null) {
-                result.error("INPUT_NOT_FOUND", inputError, null)
+                reportChannelError(
+                    step = "duration_query",
+                    platformError = "INPUT_NOT_FOUND",
+                    message = inputError,
+                    result = result
+                )
                 return
             }
 
@@ -315,14 +646,24 @@ class MainActivity: FlutterFragmentActivity() {
                     ?: 0L
 
             if (durationMs <= 0L) {
-                result.error("INVALID_SOURCE_DURATION", "Could not determine source duration", null)
+                reportChannelError(
+                    step = "duration_query",
+                    platformError = "INVALID_SOURCE_DURATION",
+                    message = "Could not determine source duration",
+                    result = result
+                )
                 return
             }
 
             result.success(durationMs)
         } catch (e: Exception) {
             Log.e("3S_NORMALIZE", "getVideoDurationMs failed: ${e.message}", e)
-            result.error("DURATION_FAILED", "getVideoDurationMs failed: ${e.message}", null)
+            reportChannelError(
+                step = "duration_query",
+                platformError = "DURATION_FAILED",
+                message = "getVideoDurationMs failed: ${e.message}",
+                result = result
+            )
         } finally {
             retriever?.release()
         }
@@ -337,13 +678,23 @@ class MainActivity: FlutterFragmentActivity() {
     ) {
         try {
             if (targetDurationMs <= 0L) {
-                result.error("INVALID_DURATION", "targetDurationMs must be greater than 0", null)
+                reportChannelError(
+                    step = "normalize",
+                    platformError = "INVALID_DURATION",
+                    message = "targetDurationMs must be greater than 0",
+                    result = result
+                )
                 return
             }
 
             val (sourceUri, inputError) = validateReadableInput(inputPath)
             if (inputError != null) {
-                result.error("INPUT_NOT_FOUND", inputError, null)
+                reportChannelError(
+                    step = "normalize",
+                    platformError = "INPUT_NOT_FOUND",
+                    message = inputError,
+                    result = result
+                )
                 return
             }
 
@@ -353,7 +704,12 @@ class MainActivity: FlutterFragmentActivity() {
             retriever.release()
 
             if (sourceDurationMs <= 0L) {
-                result.error("INVALID_SOURCE_DURATION", "Could not determine source duration", null)
+                reportChannelError(
+                    step = "normalize",
+                    platformError = "INVALID_SOURCE_DURATION",
+                    message = "Could not determine source duration",
+                    result = result
+                )
                 return
             }
 
@@ -372,7 +728,7 @@ class MainActivity: FlutterFragmentActivity() {
             val endMs = startMs + clipMs
             Log.d(
                 "3S_NORMALIZE",
-                "normalizeVideoDuration sourceMs=$sourceDurationMs targetMs=$targetDurationMs clipMs=$clipMs trimMode=$effectiveTrimMode startMs=$startMs endMs=$endMs"
+                "normalizeVideoDuration sourceDurationMs=$sourceDurationMs targetDurationMs=$targetDurationMs clipMs=$clipMs trimMode=$effectiveTrimMode startMs=$startMs endMs=$endMs"
             )
 
             val clippingConfig = MediaItem.ClippingConfiguration.Builder()
@@ -404,7 +760,11 @@ class MainActivity: FlutterFragmentActivity() {
                         Handler(Looper.getMainLooper()).post {
                             Log.d(
                                 "3S_NORMALIZE",
-                                "normalizeVideoDuration complete: $outputPath (durationMs=${exportResult.durationMs} clipMs=$clipMs startMs=$startMs endMs=$endMs trimMode=$effectiveTrimMode)"
+                                "normalizeVideoDuration complete: $outputPath " +
+                                    "sourceDurationMs=$sourceDurationMs " +
+                                    "targetDurationMs=$targetDurationMs " +
+                                    "normalizedDurationMs=${exportResult.durationMs} " +
+                                    "clipMs=$clipMs startMs=$startMs endMs=$endMs trimMode=$effectiveTrimMode"
                             )
                             result.success("SUCCESS")
                         }
@@ -417,10 +777,11 @@ class MainActivity: FlutterFragmentActivity() {
                     ) {
                         Handler(Looper.getMainLooper()).post {
                             Log.e("3S_NORMALIZE", "normalizeVideoDuration failed: ${exportException.message}", exportException)
-                            result.error(
-                                "NORMALIZE_FAILED",
-                                "normalizeVideoDuration failed: ${exportException.message}",
-                                null
+                            reportChannelError(
+                                step = "normalize",
+                                platformError = "NORMALIZE_FAILED",
+                                message = "normalizeVideoDuration failed: ${exportException.message}",
+                                result = result
                             )
                         }
                     }
@@ -430,14 +791,19 @@ class MainActivity: FlutterFragmentActivity() {
             transformer.start(composition, outputPath)
         } catch (e: Exception) {
             Log.e("3S_NORMALIZE", "normalizeVideoDuration setup failed: ${e.message}", e)
-            result.error("NORMALIZE_SETUP_FAILED", "normalizeVideoDuration setup failed: ${e.message}", null)
+            reportChannelError(
+                step = "normalize",
+                platformError = "NORMALIZE_SETUP_FAILED",
+                message = "normalizeVideoDuration setup failed: ${e.message}",
+                result = result
+            )
         }
     }
 
     private fun convertImageToVideo(
         imagePath: String,
         outputPath: String,
-        durationSec: Int,
+        durationMs: Long,
         result: MethodChannel.Result
     ) {
         // 1. 파일 검사
@@ -538,7 +904,7 @@ class MainActivity: FlutterFragmentActivity() {
         val mediaItem = MediaItem.Builder()
             .setUri(uri)
             .setMimeType(MimeTypes.IMAGE_JPEG)
-            .setImageDurationMs(durationSec * 1_000L) // ✅ 이미지 지속 시간 설정 (필수)
+            .setImageDurationMs(durationMs) // ✅ 이미지 지속 시간 설정 (필수)
             .build()
         
         // 이미 리사이징했으므로 Presentation 효과는 제거 가능하지만, 안전하게 비율 유지위해 남겨둘 수도 있음.
@@ -591,8 +957,28 @@ class MainActivity: FlutterFragmentActivity() {
         bgmVolume: Float,
         startTimes: List<Long>, // ✅ Add startTimes
         endTimes: List<Long>,   // ✅ Add endTimes
+        mergeSessionId: String?,
+        mergeTraceId: String?,
+        mergeAttempt: Int,
+        mergeRetryPlan: String?,
+        mergeAudioSimplify: Boolean,
+        mergeQualityPreset: String?,
+        mergeCaller: String?,
         result: MethodChannel.Result
     ) {
+        activeMergeSessionId = mergeSessionId
+        activeMergeTraceId = mergeTraceId
+        activeMergeAttempt = mergeAttempt
+        activeMergeRetryPlan = mergeRetryPlan
+
+        Log.w(
+            "3S_LIFECYCLE",
+            "[MergeBegin] sessionId=${mergeSessionId ?: "none"} traceId=${mergeTraceId ?: "none"} " +
+                "attempt=$mergeAttempt retryPlan=${mergeRetryPlan ?: "none"} " +
+                "audioSimplify=$mergeAudioSimplify qualityPreset=${mergeQualityPreset ?: "none"} " +
+                "caller=${mergeCaller ?: "unknown"}"
+        )
+
         Log.d("3S_4K", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         Log.d("3S_4K", "병합 시작: ${paths.size}개 클립")
         Log.d("3S_4K", "  - 품질: $quality")
@@ -603,7 +989,46 @@ class MainActivity: FlutterFragmentActivity() {
         Log.d("3S_AUDIO", "  - BGM: ${bgmPath ?: "없음"}")
         Log.d("3S_AUDIO", "  - 노이즈 억제: $enableNoiseSuppression")
         Log.d("3S_4K", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        
+
+        val preflightInfos = paths.mapIndexed { index, path ->
+            val (uri, inputError) = validateReadableInput(path)
+            if (inputError != null) {
+                val failed = AudioPreflightInfo(
+                    path = path,
+                    uri = uri,
+                    hasAudio = false,
+                    audioTrackCount = -1,
+                    hasVideo = false,
+                    reason = inputError,
+                )
+                Log.e("3S_AUDIO", "[preflight] index=$index path=$path FAILED: ${failed.reason}")
+                failed
+            } else {
+                inspectMediaAudioTrack(path, uri).also { info ->
+                    Log.d(
+                        "3S_AUDIO",
+                        "[preflight] index=$index path=${info.path} hasAudio=${info.hasAudio} " +
+                            "audioTracks=${info.audioTrackCount} hasVideo=${info.hasVideo} reason=${info.reason}"
+                    )
+                    if (!info.hasAudio) {
+                        Log.w(
+                            "3S_AUDIO",
+                            "[preflight] 경고: 오디오 트랙이 없습니다. index=$index path=${info.path}"
+                        )
+                    }
+                }
+            }
+        }
+
+        val missingAudioCount = preflightInfos.count { !it.hasAudio }
+        if (missingAudioCount > 0) {
+            Log.w(
+                "3S_AUDIO",
+                "[preflight] 오디오 없는 클립: $missingAudioCount/${paths.size}. " +
+                    "forceAudioTrack 시도 후 fallback 정책으로 진행합니다."
+            )
+        }
+
         // 1. 📝 자막/워터마크 오버레이 생성 (멀티 오버레이)
         val overlayEffect: OverlayEffect? = createSubtitleOverlays(
             subtitles = subtitles,
@@ -626,9 +1051,13 @@ class MainActivity: FlutterFragmentActivity() {
         
         // 4. EditedMediaItem 리스트 생성 (비디오 트랙)
         val videoSequence = ArrayList<EditedMediaItem>()
+        var forceAudioTrackEligibleCount = 0
+        var forceAudioTrackAppliedItemCount = 0
+        var forceAudioTrackFailedItemCount = 0
         for ((i, path) in paths.withIndex()) {
             val startTime = if (i < startTimes.size) startTimes[i] else 0L
             val endTime = if (i < endTimes.size) endTimes[i] else 0L
+            val preflight = preflightInfos.getOrNull(i)
             
             // ✅ Clipping Configuration
             val clippingBuilder = MediaItem.ClippingConfiguration.Builder()
@@ -639,7 +1068,7 @@ class MainActivity: FlutterFragmentActivity() {
             }
             
             val mediaItem = MediaItem.Builder()
-                .setUri(toMediaUri(path))
+                .setUri(preflight?.uri ?: toMediaUri(path))
                 .setClippingConfiguration(clippingBuilder.build())
                 .build()
             
@@ -663,12 +1092,25 @@ class MainActivity: FlutterFragmentActivity() {
                 Effects(mutableListOf<AudioProcessor>(), allVideoEffects as List<androidx.media3.common.Effect>)
             }
 
-            videoSequence.add(
-                EditedMediaItem.Builder(mediaItem)
-                    .setRemoveAudio(forceMuteOriginal)
-                    .setEffects(finalEffects)
-                    .build()
-            )
+            val itemBuilder = EditedMediaItem.Builder(mediaItem)
+                .setRemoveAudio(forceMuteOriginal)
+                .setEffects(finalEffects)
+
+            if (!forceMuteOriginal && preflight != null && !preflight.hasAudio) {
+                forceAudioTrackEligibleCount += 1
+                val forceApplied = applyForceAudioTrackIfPossible(itemBuilder, true)
+                if (!forceApplied) {
+                    forceAudioTrackFailedItemCount += 1
+                    Log.w(
+                        "3S_AUDIO",
+                        "[fallback] index=$i path=${preflight.path}: forceAudioTrack API 미지원. 기존 멀티트랙 방식 유지"
+                    )
+                } else {
+                    forceAudioTrackAppliedItemCount += 1
+                }
+            }
+
+            videoSequence.add(itemBuilder.build())
         }
 
         if (forceMuteOriginal) {
@@ -681,7 +1123,28 @@ class MainActivity: FlutterFragmentActivity() {
         val sequences = mutableListOf<EditedMediaItemSequence>()
         
         // 4-1. 비디오 시퀀스 추가
-        sequences.add(EditedMediaItemSequence(videoSequence))
+        val firstInfo = preflightInfos.firstOrNull()
+        val hasAnyAudio = preflightInfos.any { it.hasAudio }
+        val hasMixedAudioPresence = missingAudioCount > 0 && hasAnyAudio
+        val needSequenceForceAudio = !forceMuteOriginal && hasMixedAudioPresence
+        val (builtVideoSequence, sequenceForceState) = buildVideoSequenceWithOptionalForceAudioTrack(
+            videoItems = videoSequence,
+            forceAudioTrack = needSequenceForceAudio,
+        )
+
+        Log.w(
+            "3S_AUDIO",
+            "[diag] sequence_audio sessionId=${mergeSessionId ?: "none"} " +
+                "attempt=$mergeAttempt retryPlan=${mergeRetryPlan ?: "none"} " +
+                "audioSimplify=$mergeAudioSimplify qualityPreset=${mergeQualityPreset ?: "none"} " +
+                "firstClipHasAudio=${firstInfo?.hasAudio ?: false} " +
+                "missingAudioCount=$missingAudioCount totalClips=${paths.size} " +
+                "hasMixedAudioPresence=$hasMixedAudioPresence needSequenceForceAudio=$needSequenceForceAudio " +
+                "itemForceEligible=$forceAudioTrackEligibleCount itemForceApplied=$forceAudioTrackAppliedItemCount " +
+                "itemForceFailed=$forceAudioTrackFailedItemCount sequenceForceState=$sequenceForceState"
+        )
+
+        sequences.add(builtVideoSequence)
         
         // 4-2. BGM 시퀀스 추가 (있는 경우)
         if (bgmPath != null && File(bgmPath).exists()) {
@@ -736,66 +1199,118 @@ class MainActivity: FlutterFragmentActivity() {
         
         Log.d("3S_AUDIO", "✓ Composition 생성 완료: ${sequences.size}개 트랙")
 
-        // 6. 🚀 하드웨어 가속 Encoder Factory (4K 최적화)
-        val encoderFactory = create4KEncoderFactory(quality, userTier)
-
-        // 7. 🎥 Transformer 구성 (4K 렌더링 + GPU 가속)
-        val transformerBuilder = Transformer.Builder(this)
-            .setVideoMimeType(MimeTypes.VIDEO_H264)
-            .setAudioMimeType(MimeTypes.AUDIO_AAC)
-            .setEncoderFactory(encoderFactory)
-        
-        // 품질별 설정
-        when {
-            quality.equals("4K", ignoreCase = true) && userTier == "premium" -> {
-                // 💎 Premium 4K 렌더링
-                Log.d("3S_4K", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                Log.d("3S_4K", "✓ 4K 렌더링 모드 활성화")
-                Log.d("3S_4K", "  - 해상도: ${RESOLUTION_4K_WIDTH}x${RESOLUTION_4K_HEIGHT}")
-                Log.d("3S_4K", "  - 비트레이트: ${BITRATE_4K_MAX / 1_000_000}Mbps")
-                Log.d("3S_4K", "  - 하드웨어 가속: 강제 활성화")
-                Log.d("3S_4K", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            }
-            quality.contains("1080") -> {
-                Log.d("3S_4K", "✓ 1080p 고화질 모드 활성화 (비트레이트: ${BITRATE_1080P_MAX / 1_000_000}Mbps)")
-            }
-            else -> {
-                Log.d("3S_4K", "✓ 기본 품질 모드")
-            }
-        }
-        
-        val transformer = transformerBuilder
-            .addListener(object : Transformer.Listener {
-                override fun onCompleted(composition: Composition, exportResult: ExportResult) {
-                    Log.d("3S_AUDIO", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                    Log.d("3S_AUDIO", "✓ 병합 완료: $outputPath")
-                    Log.d("3S_AUDIO", "  - 파일 크기: ${exportResult.fileSizeBytes / 1024 / 1024}MB")
-                    Log.d("3S_AUDIO", "  - 처리 시간: ${exportResult.durationMs}ms")
-                    Log.d("3S_AUDIO", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                    Log.d("3S_AUDIO", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                    Handler(Looper.getMainLooper()).post { 
-                        result.success(outputPath) 
-                    }
-                }
-
-                override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
-                    Log.e("3S_AUDIO", "✗ 병합 실패: ${exportException.message}", exportException)
-                    Handler(Looper.getMainLooper()).post {
-                        result.error("EXPORT_FAILED", "Media3 Error: ${exportException.message}", null)
-                    }
-                }
-            })
-            .build()
-
-        // 8. 출력 파일 준비 및 병합 시작
-        val file = File(outputPath)
-        if (file.exists()) {
-            Log.d("3S_AUDIO", "기존 파일 삭제: $outputPath")
-            file.delete()
+        // 6. 2단계 이내 Fallback(4K → 1080p) 포함 재시도
+        val attemptQualities = if (quality.equals("4K", ignoreCase = true) && userTier == "premium") {
+            listOf("4K", "1080p")
+        } else {
+            listOf(quality)
         }
 
-        Log.d("3S_AUDIO", "⚡ Transformer 시작 (오디오 믹싱 모드)...")
-        transformer.start(composition, outputPath)
+        val attemptHistory = mutableListOf<String>()
+
+        fun startMergeAttempt(attemptIndex: Int) {
+            val attemptQuality = attemptQualities[attemptIndex]
+            val encoderFactory = create4KEncoderFactory(attemptQuality, userTier)
+
+            val transformerBuilder = Transformer.Builder(this)
+                .setVideoMimeType(MimeTypes.VIDEO_H264)
+                .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                .setEncoderFactory(encoderFactory)
+
+            when {
+                attemptQuality.equals("4K", ignoreCase = true) && userTier == "premium" -> {
+                    Log.d("3S_4K", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                    Log.d("3S_4K", "✓ 4K 렌더링 모드")
+                    Log.d("3S_4K", "  - 해상도: ${RESOLUTION_4K_WIDTH}x${RESOLUTION_4K_HEIGHT}")
+                    Log.d("3S_4K", "  - 비트레이트: ${BITRATE_4K_MAX / 1_000_000}Mbps")
+                    Log.d("3S_4K", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                }
+                attemptQuality.contains("1080") -> {
+                    Log.d("3S_4K", "✓ 1080p 하향 호환 모드")
+                }
+                else -> {
+                    Log.d("3S_4K", "✓ 기본 품질 모드")
+                }
+            }
+
+            val transformer = transformerBuilder
+                .addListener(object : Transformer.Listener {
+                    override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                        Log.w(
+                            "3S_LIFECYCLE",
+                            "[MergeComplete] sessionId=${mergeSessionId ?: "none"} " +
+                                "traceId=${mergeTraceId ?: "none"} attempt=${attemptIndex + 1} status=success"
+                        )
+                        Log.d("3S_AUDIO", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                        Log.d("3S_AUDIO", "✓ 병합 완료: $outputPath")
+                        Log.d("3S_AUDIO", "  - 사용 품질: $attemptQuality")
+                        Log.d("3S_AUDIO", "  - 파일 크기: ${exportResult.fileSizeBytes / 1024 / 1024}MB")
+                        Log.d("3S_AUDIO", "  - 처리 시간: ${exportResult.durationMs}ms")
+                        Log.d("3S_AUDIO", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                        Handler(Looper.getMainLooper()).post {
+                            activeMergeSessionId = null
+                            activeMergeTraceId = null
+                            activeMergeAttempt = null
+                            activeMergeRetryPlan = null
+                            result.success(outputPath)
+                        }
+                    }
+
+                    override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
+                        Log.w(
+                            "3S_LIFECYCLE",
+                            "[MergeComplete] sessionId=${mergeSessionId ?: "none"} " +
+                                "traceId=${mergeTraceId ?: "none"} attempt=${attemptIndex + 1} status=error " +
+                                "code=${exportException.errorCode}"
+                        )
+                        val errorDetails = createErrorDetails(
+                            exportException,
+                            attemptIndex + 1,
+                            attemptQuality,
+                            attemptHistory.toList()
+                        )
+                        attemptHistory.add("Attempt ${attemptIndex + 1}: ${errorDetails["summary"]}")
+
+                        Log.e(
+                            "3S_AUDIO",
+                            "✗ 병합 실패(시도 ${attemptIndex + 1}/${attemptQualities.size}): ${errorDetails["message"]}, cause=${errorDetails["cause"]}"
+                        )
+
+                        if (attemptIndex + 1 < attemptQualities.size) {
+                            Log.w("3S_AUDIO", "[fallback] 시도 1 실패. 2단계 재시도")
+                            startMergeAttempt(attemptIndex + 1)
+                            return
+                        }
+
+                        Handler(Looper.getMainLooper()).post {
+                            activeMergeSessionId = null
+                            activeMergeTraceId = null
+                            activeMergeAttempt = null
+                            activeMergeRetryPlan = null
+                            result.error(
+                                "EXPORT_FAILED",
+                                "Media3 Error: ${errorDetails["message"]}",
+                                errorDetails
+                            )
+                        }
+                    }
+                })
+                .build()
+
+            val file = File(outputPath)
+            if (file.exists()) {
+                Log.d("3S_AUDIO", "기존 파일 삭제: $outputPath")
+                file.delete()
+            }
+
+            Log.d(
+                "3S_AUDIO",
+                "⚡ Transformer 시작 (오디오 믹싱 모드, 시도=${attemptIndex + 1}/${attemptQualities.size}, 품질=$attemptQuality)..."
+            )
+            transformer.start(composition, outputPath)
+        }
+
+        startMergeAttempt(0)
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1167,7 +1682,7 @@ class MainActivity: FlutterFragmentActivity() {
 
     /// 비디오 클립 추출 (편집 기능)
     /// 
-    /// 입력 비디오에서 여러 3초 구간을 추출하여 개별 파일로 저장
+    /// 입력 비디오에서 여러 1초 구간을 추출하여 개별 파일로 저장
     /// 순차적 큐 처리로 메모리 부하 방지 (억만장자의 최적화)
     /// 노이즈 억제 지원
     /// 
@@ -1227,7 +1742,7 @@ class MainActivity: FlutterFragmentActivity() {
 
                 val segment = segments[index]
                 val startMs = (segment["start"] as? Number)?.toLong() ?: 0L
-                val endMs = (segment["end"] as? Number)?.toLong() ?: (startMs + 3000L)
+                val endMs = (segment["end"] as? Number)?.toLong() ?: (startMs + DEFAULT_EDIT_TARGET_DURATION_MS)
                 val durationMs = endMs - startMs
 
                 Log.d("3S_EDIT", "────────────────────────────────────────")

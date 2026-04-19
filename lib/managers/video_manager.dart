@@ -18,7 +18,11 @@ import 'dart:convert';
 import 'user_status_manager.dart';
 import '../models/vlog_project.dart';
 import '../services/cloud_service.dart';
+import '../services/auth_service.dart';
 import '../services/local_index_service.dart';
+import '../constants/clip_policy.dart';
+import '../models/clip_save_job_state.dart';
+import '../models/import_state.dart';
 import '../utils/quality_policy.dart';
 
 enum ClipTransferUiState {
@@ -28,12 +32,24 @@ enum ClipTransferUiState {
   failedDownload,
 }
 
+class ImportPreviewData {
+  final int? durationMs;
+  final String? thumbnailPath;
+
+  const ImportPreviewData({this.durationMs, this.thumbnailPath});
+}
+
 class VideoManager extends ChangeNotifier {
   static final VideoManager _instance = VideoManager._internal();
   factory VideoManager() => _instance;
   VideoManager._internal();
   static const int trimTimelineThumbCount = 3;
   static const int _timelineThumbMetaVersion = 1;
+  static const int importWorkerDefaultConcurrency = 2;
+  static const int importThumbnailWorkerDefaultConcurrency = 2;
+  static const int clipSaveWorkerDefaultConcurrency = 2;
+  static const int clipSaveSerialConcurrency = 1;
+  static const int clipSaveMaxRetry = 2;
 
   static const _rawBaseName = 'raw_clips';
   static const _projectBaseName = 'vlog_projects';
@@ -43,6 +59,13 @@ class VideoManager extends ChangeNotifier {
   static const _cloudSyncedKey = 'cloud_synced_paths';
   static const _clipDurationMetadataKey = 'clip_duration_metadata_v1';
   static const _clipOwnershipMetadataKey = 'clip_ownership_metadata_v1';
+  static const _mergeMemoryPressureWindow = Duration(seconds: 30);
+  static const int _mergeMemoryPressureGuardClipLimit1080p = 12;
+  static const int _mergeMemoryPressureGuardClipLimit4k = 8;
+  static const String _vlogMergeAbGroup = String.fromEnvironment(
+    'vlog_merge_ab',
+    defaultValue: 'A',
+  );
   static const List<String> _tutorialSampleAssets = [
     'assets/tutorial/videos/tutorial_clip_capture_day.mp4',
     'assets/tutorial/videos/tutorial_clip_capture_night.mp4',
@@ -66,9 +89,809 @@ class VideoManager extends ChangeNotifier {
   final Map<String, ClipTransferUiState> _clipTransferUiStateByPath = {};
   final Map<String, String?> _clipOwnerAccountByPath = {};
   final LocalIndexService _localIndexService = LocalIndexService();
+  bool _importCancelRequested = false;
+  bool _clipSaveCancelRequested = false;
+  bool _clipSaveWorkerRunning = false;
+  int _clipSaveWorkerConcurrency = clipSaveSerialConcurrency;
+  Completer<void>? _clipSaveDrainCompleter;
+  ImportState _importQueueState = ImportState.initial();
+  ClipSaveJobState _clipSaveQueueState = ClipSaveJobState.initial();
+  final ValueNotifier<ImportState> importQueueStateNotifier = ValueNotifier(
+    ImportState.initial(),
+  );
+  final ValueNotifier<ClipSaveJobState> clipSaveQueueStateNotifier =
+      ValueNotifier(ClipSaveJobState.initial());
+  bool _isDisposed = false;
 
   // ✅ 프로젝트 리스트 (Phase 5)
   List<VlogProject> vlogProjects = [];
+
+  bool get importCancelRequested => _importCancelRequested;
+  bool get clipSaveCancelRequested => _clipSaveCancelRequested;
+  bool get cancelRequested => _importCancelRequested;
+  ImportState get importQueueState => _importQueueState;
+  ClipSaveJobState get clipSaveQueueState => _clipSaveQueueState;
+
+  DateTime? _lastMemoryPressureAt;
+  int _memoryPressureEventCount = 0;
+
+  DateTime? get lastMemoryPressureAt => _lastMemoryPressureAt;
+  int get memoryPressureEventCount => _memoryPressureEventCount;
+  bool get hasRecentMemoryPressure {
+    final at = _lastMemoryPressureAt;
+    if (at == null) return false;
+    return DateTime.now().difference(at) <= _mergeMemoryPressureWindow;
+  }
+
+  int? get millisSinceLastMemoryPressure {
+    final at = _lastMemoryPressureAt;
+    if (at == null) return null;
+    return DateTime.now().difference(at).inMilliseconds;
+  }
+
+  void recordMemoryPressureEvent() {
+    final now = DateTime.now();
+    _lastMemoryPressureAt = now;
+    _memoryPressureEventCount += 1;
+    debugPrint(
+      '[VideoManager][MemoryPressure] event_count=$_memoryPressureEventCount '
+      'last_at=${now.toIso8601String()}',
+    );
+  }
+
+  void _warnIfRecentMemoryPressure(
+    String stage, {
+    required int clipCount,
+    String? quality,
+  }) {
+    final at = _lastMemoryPressureAt;
+    if (at == null) return;
+    final elapsedMs = DateTime.now().difference(at).inMilliseconds;
+    if (elapsedMs > _mergeMemoryPressureWindow.inMilliseconds) return;
+
+    final resolvedQuality = normalizeExportQuality(quality);
+    final clipLimit = resolvedQuality == kQuality4k
+        ? _mergeMemoryPressureGuardClipLimit4k
+        : _mergeMemoryPressureGuardClipLimit1080p;
+    final bool exceedsLimit = clipCount > clipLimit;
+
+    debugPrint(
+      '[VideoManager][MergeGuard][MemoryPressure] stage=$stage '
+      'recently=true clipCount=$clipCount quality=$resolvedQuality '
+      'memory_pressure_events=$_memoryPressureEventCount '
+      'last_pressure_ms=${DateTime.now().difference(at).inMilliseconds} '
+      'warning=advisory',
+    );
+
+    if (exceedsLimit) {
+      debugPrint(
+        '[VideoManager][MergeGuard][MemoryPressure] stage=$stage '
+        'clip_limit_warning clipCount=$clipCount limit=$clipLimit '
+        'quality=$resolvedQuality (export may be risky)',
+      );
+    }
+  }
+
+  String _resolvedMergeAbGroup() {
+    final String value = _vlogMergeAbGroup.trim().toUpperCase();
+    return value == 'B' ? 'B' : 'A';
+  }
+
+  String _retryPlanForAttempt({
+    required int attempt,
+    required String abGroup,
+    required bool forceRetry,
+  }) {
+    if (!forceRetry || attempt <= 1) return 'NONE';
+    if (abGroup == 'B') {
+      return 'QUALITY_AND_AUDIO';
+    }
+    return 'QUALITY_ONLY';
+  }
+
+  String _downgradeQualityForRetry(String quality) {
+    if (quality == kQuality4k) return kQuality1080p;
+    if (quality == kQuality1080p) return kQuality720p;
+    return quality;
+  }
+
+  bool _isMergeRetryAllowed(
+    Map<String, String> normalizedFailure,
+    bool isForceStopped,
+  ) {
+    if (isForceStopped) return false;
+    final normalizedFailCode = normalizedFailure['normalizedFailCode'];
+    return normalizedFailCode == 'ASSET_LOADER' ||
+        normalizedFailCode == 'ENCODER_ERROR';
+  }
+
+  void requestCancelAllQueues() {
+    _importCancelRequested = true;
+    _clipSaveCancelRequested = true;
+    _importQueueState = _importQueueState.copyWith(
+      cancelRequested: true,
+      updatedAt: DateTime.now(),
+    );
+    _clipSaveQueueState = _clipSaveQueueState.copyWith(cancelRequested: true);
+    _markRemainingClipSaveJobsCanceled();
+    _emitQueueStateChanged();
+  }
+
+  void clearCancelAllQueues() {
+    _importCancelRequested = false;
+    _clipSaveCancelRequested = false;
+    _importQueueState = _importQueueState.copyWith(
+      cancelRequested: false,
+      updatedAt: DateTime.now(),
+    );
+    _clipSaveQueueState = _clipSaveQueueState.copyWith(cancelRequested: false);
+    _emitQueueStateChanged();
+  }
+
+  void requestCancelImportQueue() {
+    _importCancelRequested = true;
+    _importQueueState = _importQueueState.copyWith(
+      cancelRequested: true,
+      updatedAt: DateTime.now(),
+    );
+    _emitQueueStateChanged();
+  }
+
+  void clearCancelImportQueue() {
+    _importCancelRequested = false;
+    _importQueueState = _importQueueState.copyWith(
+      cancelRequested: false,
+      updatedAt: DateTime.now(),
+    );
+    _emitQueueStateChanged();
+  }
+
+  void requestCancelClipSaveQueue() {
+    _clipSaveCancelRequested = true;
+    _clipSaveQueueState = _clipSaveQueueState.copyWith(cancelRequested: true);
+    _markRemainingClipSaveJobsCanceled();
+    _emitQueueStateChanged();
+  }
+
+  void clearCancelClipSaveQueue() {
+    _clipSaveCancelRequested = false;
+    _clipSaveQueueState = _clipSaveQueueState.copyWith(cancelRequested: false);
+    _emitQueueStateChanged();
+  }
+
+  void initializeImportQueue(List<ImportItemState> items) {
+    final map = <String, ImportItemState>{
+      for (final item in items) item.id: item,
+    };
+    _importCancelRequested = false;
+    _importQueueState = _rebuildImportState(
+      items: map,
+      cancelRequested: false,
+      updatedAt: DateTime.now(),
+    );
+    _emitQueueStateChanged();
+  }
+
+  void upsertImportItem(ImportItemState item) {
+    final next = Map<String, ImportItemState>.from(_importQueueState.items);
+    next[item.id] = item;
+    _importQueueState = _rebuildImportState(
+      items: next,
+      cancelRequested: _importQueueState.cancelRequested,
+      updatedAt: DateTime.now(),
+    );
+    _emitQueueStateChanged();
+  }
+
+  void markItemProcessing(String itemId) {
+    _updateImportItemStatus(itemId, status: ImportItemStatus.processing);
+  }
+
+  void markItemPreloading(String itemId) {
+    _updateImportItemStatus(itemId, status: ImportItemStatus.preloading);
+  }
+
+  void markItemLoaded(String itemId, {int? durationMs, String? thumbnailPath}) {
+    _updateImportItemStatus(
+      itemId,
+      status: ImportItemStatus.loaded,
+      durationMs: durationMs,
+      thumbnailPath: thumbnailPath,
+      clearError: true,
+    );
+  }
+
+  void markItemSkipped(String itemId, {String? error}) {
+    _updateImportItemStatus(
+      itemId,
+      status: ImportItemStatus.skipped,
+      error: error,
+    );
+  }
+
+  void markItemCanceled(String itemId, {String? error}) {
+    _updateImportItemStatus(
+      itemId,
+      status: ImportItemStatus.canceled,
+      error: error,
+    );
+  }
+
+  void markItemFailed(
+    String itemId, {
+    String? error,
+    bool incrementRetry = true,
+  }) {
+    _updateImportItemStatus(
+      itemId,
+      status: ImportItemStatus.failed,
+      error: error,
+      incrementRetry: incrementRetry,
+    );
+  }
+
+  void markItemCompleted(
+    String itemId, {
+    int? durationMs,
+    String? thumbnailPath,
+  }) {
+    _updateImportItemStatus(
+      itemId,
+      status: ImportItemStatus.completed,
+      durationMs: durationMs,
+      thumbnailPath: thumbnailPath,
+      clearError: true,
+    );
+  }
+
+  void markRemainingImportItemsCanceled() {
+    _importCancelRequested = true;
+    final now = DateTime.now();
+    final next = Map<String, ImportItemState>.from(_importQueueState.items);
+    var changed = false;
+    for (final entry in next.entries) {
+      final item = entry.value;
+      if (item.status == ImportItemStatus.completed ||
+          item.status == ImportItemStatus.failed ||
+          item.status == ImportItemStatus.canceled ||
+          item.status == ImportItemStatus.skipped) {
+        continue;
+      }
+      next[entry.key] = item.copyWith(
+        status: ImportItemStatus.canceled,
+        error: 'cancel_requested',
+        updatedAt: now,
+      );
+      changed = true;
+    }
+    if (!changed) return;
+    _importQueueState = _rebuildImportState(
+      items: next,
+      cancelRequested: true,
+      updatedAt: now,
+    );
+    _emitQueueStateChanged();
+  }
+
+  void initializeClipSaveQueue(List<ClipSaveJob> jobs) {
+    final sorted = _sortClipSaveJobs(jobs);
+    _clipSaveCancelRequested = false;
+    _clipSaveQueueState = _rebuildClipSaveState(
+      queue: sorted,
+      activeJobs: const [],
+      cancelRequested: false,
+    );
+    _emitQueueStateChanged();
+  }
+
+  void enqueueClipSaveJobs(
+    List<ClipSaveJob> jobs, {
+    int concurrency = clipSaveSerialConcurrency,
+  }) {
+    if (jobs.isEmpty) return;
+    final nextQueue = List<ClipSaveJob>.from(_clipSaveQueueState.queue)
+      ..addAll(jobs.map((job) => job.copyWith(maxRetry: clipSaveMaxRetry)));
+    _clipSaveCancelRequested = false;
+    _clipSaveQueueState = _rebuildClipSaveState(
+      queue: _sortClipSaveJobs(nextQueue),
+      activeJobs: _clipSaveQueueState.activeJobs,
+      cancelRequested: false,
+    );
+    _emitQueueStateChanged();
+    unawaited(startClipSaveQueueWorker(concurrency: concurrency));
+  }
+
+  Future<void> startClipSaveQueueWorker({
+    int concurrency = clipSaveSerialConcurrency,
+  }) async {
+    final effectiveConcurrency = concurrency.clamp(
+      clipSaveSerialConcurrency,
+      clipSaveWorkerDefaultConcurrency,
+    );
+    _clipSaveWorkerConcurrency = effectiveConcurrency;
+
+    if (_clipSaveWorkerRunning) {
+      return _clipSaveDrainCompleter?.future ?? Future.value();
+    }
+
+    _clipSaveWorkerRunning = true;
+    _clipSaveDrainCompleter = Completer<void>();
+
+    final runners = <Future<void>>[];
+    for (var i = 0; i < _clipSaveWorkerConcurrency; i++) {
+      runners.add(_clipSaveWorkerLoop());
+    }
+
+    await Future.wait(runners);
+    _clipSaveWorkerRunning = false;
+    if (!(_clipSaveDrainCompleter?.isCompleted ?? true)) {
+      _clipSaveDrainCompleter?.complete();
+    }
+  }
+
+  Future<void> _clipSaveWorkerLoop() async {
+    while (true) {
+      if (_clipSaveCancelRequested || _clipSaveQueueState.cancelRequested) {
+        _markRemainingClipSaveJobsCanceled();
+        return;
+      }
+
+      final nextJob = _dequeueNextRunnableClipSaveJob();
+      if (nextJob == null) {
+        return;
+      }
+
+      await _runClipSaveJobWithRetry(nextJob);
+    }
+  }
+
+  ClipSaveJob? _dequeueNextRunnableClipSaveJob() {
+    final queue = _clipSaveQueueState.queue;
+    for (final job in queue) {
+      if (job.status == ClipSaveJobStatus.queued ||
+          job.status == ClipSaveJobStatus.retrying) {
+        markClipSaveJobRunning(job.id);
+        return _clipSaveQueueState.queue.firstWhere((e) => e.id == job.id);
+      }
+    }
+    return null;
+  }
+
+  Future<void> _runClipSaveJobWithRetry(ClipSaveJob job) async {
+    while (true) {
+      if (_clipSaveCancelRequested || _clipSaveQueueState.cancelRequested) {
+        markClipSaveJobCanceled(job.id, error: 'cancel_requested');
+        await releaseClipSaveResourcesForJob(
+          job,
+          status: ClipSaveJobStatus.canceled,
+        );
+        return;
+      }
+
+      final current = _clipSaveQueueState.queue.firstWhere(
+        (e) => e.id == job.id,
+        orElse: () => job,
+      );
+
+      final targetAlbum = _resolveTargetAlbumFromJob(current);
+      try {
+        await saveExtractedClip(current.sourcePath, targetAlbum);
+        markClipSaveJobSuccess(current.id);
+        await releaseClipSaveResourcesForJob(
+          current,
+          status: ClipSaveJobStatus.success,
+        );
+        return;
+      } catch (e) {
+        final nextAttempts = current.attempts + 1;
+        final errorMessage = '$e';
+        final errorKind = classifyClipSaveError(errorMessage);
+
+        if (nextAttempts <= current.maxRetry) {
+          _setClipSaveJobRetrying(
+            current.id,
+            error: errorMessage,
+            errorKind: errorKind,
+          );
+          await Future.delayed(const Duration(milliseconds: 250));
+          continue;
+        }
+
+        markClipSaveJobFailed(
+          current.id,
+          error: errorMessage,
+          errorKind: errorKind,
+        );
+        await releaseClipSaveResourcesForJob(
+          current,
+          status: ClipSaveJobStatus.failed,
+        );
+        return;
+      }
+    }
+  }
+
+  void retryClipSaveJob(String jobId) {
+    final nextQueue = List<ClipSaveJob>.from(_clipSaveQueueState.queue);
+    final idx = nextQueue.indexWhere((j) => j.id == jobId);
+    if (idx == -1) return;
+    final job = nextQueue[idx];
+    if (job.status != ClipSaveJobStatus.failed &&
+        job.status != ClipSaveJobStatus.skipped &&
+        job.status != ClipSaveJobStatus.canceled) {
+      return;
+    }
+    _clipSaveCancelRequested = false;
+    nextQueue[idx] = job.copyWith(
+      status: ClipSaveJobStatus.queued,
+      attempts: 0,
+      clearLastError: true,
+      errorKind: ClipSaveErrorKind.unknown,
+    );
+    _clipSaveQueueState = _rebuildClipSaveState(
+      queue: _sortClipSaveJobs(nextQueue),
+      activeJobs: _clipSaveQueueState.activeJobs,
+      cancelRequested: false,
+    );
+    _emitQueueStateChanged();
+    unawaited(
+      startClipSaveQueueWorker(concurrency: _clipSaveWorkerConcurrency),
+    );
+  }
+
+  void retryFailedClipSaveJobs() {
+    final targetIds = _clipSaveQueueState.queue
+        .where(
+          (job) =>
+              job.status == ClipSaveJobStatus.failed ||
+              job.status == ClipSaveJobStatus.skipped ||
+              job.status == ClipSaveJobStatus.canceled,
+        )
+        .map((job) => job.id)
+        .toList(growable: false);
+    for (final id in targetIds) {
+      retryClipSaveJob(id);
+    }
+  }
+
+  ClipSaveErrorKind classifyClipSaveError(String errorMessage) {
+    final lowered = errorMessage.toLowerCase();
+    if (lowered.contains('permission') ||
+        lowered.contains('denied') ||
+        lowered.contains('권한')) {
+      return ClipSaveErrorKind.permission;
+    }
+    if (lowered.contains('codec') ||
+        lowered.contains('ffmpeg') ||
+        lowered.contains('format') ||
+        lowered.contains('decode') ||
+        lowered.contains('encode')) {
+      return ClipSaveErrorKind.codec;
+    }
+    if (lowered.contains('input') ||
+        lowered.contains('source') ||
+        lowered.contains('not found') ||
+        lowered.contains('no such file')) {
+      return ClipSaveErrorKind.input;
+    }
+    if (lowered.contains('io') ||
+        lowered.contains('disk') ||
+        lowered.contains('storage') ||
+        lowered.contains('space') ||
+        lowered.contains('write') ||
+        lowered.contains('read')) {
+      return ClipSaveErrorKind.io;
+    }
+    return ClipSaveErrorKind.unknown;
+  }
+
+  Future<void> releaseClipSaveResourcesForJob(
+    ClipSaveJob job, {
+    required ClipSaveJobStatus status,
+  }) async {
+    releaseImportPreparationResourcesForPath(job.sourcePath);
+    if (status == ClipSaveJobStatus.success) {
+      try {
+        final file = File(job.sourcePath);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      } catch (_) {
+        // 임시 파일 삭제 실패는 저장 결과에 영향 없으므로 무시
+      }
+    }
+  }
+
+  void _setClipSaveJobRetrying(
+    String jobId, {
+    String? error,
+    ClipSaveErrorKind errorKind = ClipSaveErrorKind.unknown,
+  }) {
+    final nextQueue = List<ClipSaveJob>.from(_clipSaveQueueState.queue);
+    final idx = nextQueue.indexWhere((j) => j.id == jobId);
+    if (idx == -1) return;
+    final current = nextQueue[idx];
+    nextQueue[idx] = current.copyWith(
+      status: ClipSaveJobStatus.retrying,
+      attempts: current.attempts + 1,
+      lastError: error,
+      errorKind: errorKind,
+    );
+    final nextActive = List<ClipSaveJob>.from(_clipSaveQueueState.activeJobs)
+      ..removeWhere((j) => j.id == jobId);
+    _clipSaveQueueState = _rebuildClipSaveState(
+      queue: nextQueue,
+      activeJobs: nextActive,
+      cancelRequested: _clipSaveQueueState.cancelRequested,
+    );
+    _emitQueueStateChanged();
+  }
+
+  void _markRemainingClipSaveJobsCanceled() {
+    _clipSaveCancelRequested = true;
+    final nextQueue = List<ClipSaveJob>.from(_clipSaveQueueState.queue);
+    var changed = false;
+    for (var i = 0; i < nextQueue.length; i++) {
+      final job = nextQueue[i];
+      if (job.status == ClipSaveJobStatus.success ||
+          job.status == ClipSaveJobStatus.failed ||
+          job.status == ClipSaveJobStatus.skipped ||
+          job.status == ClipSaveJobStatus.canceled) {
+        continue;
+      }
+      nextQueue[i] = job.copyWith(
+        status: ClipSaveJobStatus.canceled,
+        lastError: 'cancel_requested',
+      );
+      changed = true;
+    }
+    if (!changed) return;
+    _clipSaveQueueState = _rebuildClipSaveState(
+      queue: nextQueue,
+      activeJobs: const [],
+      cancelRequested: true,
+    );
+    _emitQueueStateChanged();
+  }
+
+  String _resolveTargetAlbumFromJob(ClipSaveJob job) {
+    final parts = p.split(job.destinationPath);
+    if (parts.isNotEmpty && parts.first.trim().isNotEmpty) {
+      return parts.first;
+    }
+    return currentAlbum;
+  }
+
+  List<ClipSaveJob> _sortClipSaveJobs(List<ClipSaveJob> jobs) {
+    final sorted = List<ClipSaveJob>.from(jobs)
+      ..sort((a, b) {
+        final p0 = b.priority.index.compareTo(a.priority.index);
+        if (p0 != 0) return p0;
+        return a.createdAt.compareTo(b.createdAt);
+      });
+    return sorted;
+  }
+
+  void markClipSaveJobRunning(String jobId) {
+    final nextQueue = List<ClipSaveJob>.from(_clipSaveQueueState.queue);
+    final nextActive = List<ClipSaveJob>.from(_clipSaveQueueState.activeJobs);
+    final idx = nextQueue.indexWhere((j) => j.id == jobId);
+    if (idx != -1) {
+      final runningJob = nextQueue[idx].copyWith(
+        status: ClipSaveJobStatus.running,
+      );
+      nextQueue[idx] = runningJob;
+      if (!nextActive.any((j) => j.id == jobId)) {
+        nextActive.add(runningJob);
+      }
+      _clipSaveQueueState = _rebuildClipSaveState(
+        queue: nextQueue,
+        activeJobs: nextActive,
+        cancelRequested: _clipSaveQueueState.cancelRequested,
+      );
+      _emitQueueStateChanged();
+    }
+  }
+
+  void markClipSaveJobSuccess(String jobId) {
+    _completeClipSaveJob(jobId, status: ClipSaveJobStatus.success);
+  }
+
+  void markClipSaveJobSkipped(String jobId, {String? error}) {
+    _completeClipSaveJob(
+      jobId,
+      status: ClipSaveJobStatus.skipped,
+      error: error,
+    );
+  }
+
+  void markClipSaveJobCanceled(String jobId, {String? error}) {
+    _completeClipSaveJob(
+      jobId,
+      status: ClipSaveJobStatus.canceled,
+      error: error,
+    );
+  }
+
+  void markClipSaveJobFailed(
+    String jobId, {
+    String? error,
+    ClipSaveErrorKind errorKind = ClipSaveErrorKind.unknown,
+  }) {
+    _completeClipSaveJob(
+      jobId,
+      status: ClipSaveJobStatus.failed,
+      error: error,
+      errorKind: errorKind,
+      incrementAttempts: true,
+    );
+  }
+
+  void _updateImportItemStatus(
+    String itemId, {
+    required ImportItemStatus status,
+    String? error,
+    bool clearError = false,
+    bool incrementRetry = false,
+    int? durationMs,
+    String? thumbnailPath,
+  }) {
+    final current = _importQueueState.items[itemId];
+    if (current == null) return;
+    final now = DateTime.now();
+    final nextItems = Map<String, ImportItemState>.from(
+      _importQueueState.items,
+    );
+    nextItems[itemId] = current.copyWith(
+      status: status,
+      error: error,
+      clearError: clearError,
+      retryCount: incrementRetry ? current.retryCount + 1 : current.retryCount,
+      durationMs: durationMs,
+      thumbnailPath: thumbnailPath,
+      updatedAt: now,
+    );
+    _importQueueState = _rebuildImportState(
+      items: nextItems,
+      cancelRequested: _importQueueState.cancelRequested,
+      updatedAt: now,
+    );
+    _emitQueueStateChanged();
+  }
+
+  void _completeClipSaveJob(
+    String jobId, {
+    required ClipSaveJobStatus status,
+    String? error,
+    ClipSaveErrorKind errorKind = ClipSaveErrorKind.unknown,
+    bool incrementAttempts = false,
+  }) {
+    final nextQueue = List<ClipSaveJob>.from(_clipSaveQueueState.queue);
+    final idx = nextQueue.indexWhere((j) => j.id == jobId);
+    if (idx == -1) return;
+    final current = nextQueue[idx];
+    nextQueue[idx] = current.copyWith(
+      status: status,
+      lastError: error,
+      clearLastError: error == null,
+      errorKind: errorKind,
+      attempts: incrementAttempts ? current.attempts + 1 : current.attempts,
+    );
+    final nextActive = List<ClipSaveJob>.from(_clipSaveQueueState.activeJobs)
+      ..removeWhere((j) => j.id == jobId);
+    _clipSaveQueueState = _rebuildClipSaveState(
+      queue: nextQueue,
+      activeJobs: nextActive,
+      cancelRequested: _clipSaveQueueState.cancelRequested,
+    );
+    _emitQueueStateChanged();
+  }
+
+  ImportState _rebuildImportState({
+    required Map<String, ImportItemState> items,
+    required bool cancelRequested,
+    required DateTime updatedAt,
+  }) {
+    var inProgress = 0;
+    var completed = 0;
+    var failed = 0;
+    var skipped = 0;
+    var canceled = 0;
+    for (final item in items.values) {
+      switch (item.status) {
+        case ImportItemStatus.completed:
+          completed++;
+          break;
+        case ImportItemStatus.failed:
+          failed++;
+          break;
+        case ImportItemStatus.skipped:
+          skipped++;
+          break;
+        case ImportItemStatus.canceled:
+          canceled++;
+          break;
+        case ImportItemStatus.queued:
+        case ImportItemStatus.preloading:
+        case ImportItemStatus.loaded:
+        case ImportItemStatus.processing:
+          inProgress++;
+          break;
+      }
+    }
+    return ImportState(
+      total: items.length,
+      inProgress: inProgress,
+      completed: completed,
+      failed: failed,
+      skipped: skipped,
+      canceled: canceled,
+      items: Map<String, ImportItemState>.unmodifiable(items),
+      updatedAt: updatedAt,
+      cancelRequested: cancelRequested,
+    );
+  }
+
+  ClipSaveJobState _rebuildClipSaveState({
+    required List<ClipSaveJob> queue,
+    required List<ClipSaveJob> activeJobs,
+    required bool cancelRequested,
+  }) {
+    var running = 0;
+    var completed = 0;
+    var failed = 0;
+    var skipped = 0;
+    var canceled = 0;
+    for (final job in queue) {
+      switch (job.status) {
+        case ClipSaveJobStatus.queued:
+          break;
+        case ClipSaveJobStatus.running:
+        case ClipSaveJobStatus.retrying:
+          running++;
+          break;
+        case ClipSaveJobStatus.success:
+          completed++;
+          break;
+        case ClipSaveJobStatus.failed:
+          failed++;
+          break;
+        case ClipSaveJobStatus.skipped:
+          skipped++;
+          break;
+        case ClipSaveJobStatus.canceled:
+          canceled++;
+          break;
+      }
+    }
+    return ClipSaveJobState(
+      total: queue.length,
+      running: running,
+      completed: completed,
+      failed: failed,
+      skipped: skipped,
+      canceled: canceled,
+      queue: List<ClipSaveJob>.unmodifiable(queue),
+      activeJobs: List<ClipSaveJob>.unmodifiable(activeJobs),
+      cancelRequested: cancelRequested,
+    );
+  }
+
+  void _emitQueueStateChanged() {
+    if (_isDisposed) return;
+    importQueueStateNotifier.value = _importQueueState;
+    clipSaveQueueStateNotifier.value = _clipSaveQueueState;
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    if (_isDisposed) return;
+    _isDisposed = true;
+    importQueueStateNotifier.dispose();
+    clipSaveQueueStateNotifier.dispose();
+    super.dispose();
+  }
 
   // 앱 시작 시 호출 (initAlbumSystem 등에서 호출)
   Future<void> loadProjects() async {
@@ -110,6 +933,10 @@ class VideoManager extends ChangeNotifier {
   }
 
   Future<void> _hydrateProjectCloudMetadata() async {
+    if (AuthService().isGuest) {
+      return;
+    }
+
     final cloudMap = await CloudService().getUserVlogProjectMetadataMap();
     if (cloudMap.isEmpty) return;
 
@@ -235,7 +1062,10 @@ class VideoManager extends ChangeNotifier {
   }
 
   // 새 프로젝트 생성
-  Future<VlogProject> createProject(List<String> videoPaths) async {
+  Future<VlogProject> createProject(
+    List<String> videoPaths, {
+    void Function(int current, int total, String path)? onClipPrepared,
+  }) async {
     final timestamp = DateTime.now();
     final ownerUid = UserStatusManager().userId;
     // 현재 폴더가 휴지통이면 '기본'으로 생성, 아니면 현재 폴더 사용
@@ -246,22 +1076,96 @@ class VideoManager extends ChangeNotifier {
     // Create initial clips from paths
     final clips = videoPaths.map((path) => VlogClip(path: path)).toList();
 
+    _warnIfRecentMemoryPressure(
+      'createProject',
+      clipCount: clips.length,
+      quality: null,
+    );
+
     // Pre-cache durations for all clips (so edit screen doesn't need temp controllers)
-    for (final clip in clips) {
-      final duration = await getVideoDuration(clip.path);
-      clip.originalDuration = duration; // Store original duration
-      if (clip.endTime == Duration.zero) {
-        clip.endTime = duration;
-      }
-      if (duration > Duration.zero) {
-        await ensureTimelineThumbnailMetadataForClip(
-          clip,
-          durationMs: duration.inMilliseconds,
-          count: trimTimelineThumbCount,
+    int failedClipPrecacheCount = 0;
+    for (var i = 0; i < clips.length; i++) {
+      final clip = clips[i];
+      final int clipIndex = i + 1;
+      final Stopwatch clipStopwatch = Stopwatch()..start();
+      debugPrint(
+        '[VideoManager][CreateProject][Clip] start '
+        'clipIndex=$clipIndex totalClips=${clips.length} path=${clip.path}',
+      );
+
+      try {
+        final clipDurationStartMs = DateTime.now().millisecondsSinceEpoch;
+        final duration = await getVideoDuration(clip.path);
+        final int durationMs = duration.inMilliseconds;
+        clip.originalDuration = duration; // Store original duration
+        debugPrint(
+          '[VideoManager][CreateProject][Clip] duration_done '
+          'clipIndex=$clipIndex path=${clip.path} '
+          'durationMs=$durationMs startMs=$clipDurationStartMs '
+          'elapsedMs=${DateTime.now().millisecondsSinceEpoch - clipDurationStartMs}',
+        );
+
+        if (clip.endTime == Duration.zero) {
+          clip.endTime = duration;
+        }
+
+        if (duration > Duration.zero) {
+          final Stopwatch thumbStopwatch = Stopwatch()..start();
+          final bool thumbUpdated =
+              await ensureTimelineThumbnailMetadataForClip(
+                clip,
+                durationMs: duration.inMilliseconds,
+                count: trimTimelineThumbCount,
+              );
+          final thumbElapsed = thumbStopwatch.elapsedMilliseconds;
+          debugPrint(
+            '[VideoManager][CreateProject][Clip] thumbnail_done '
+            'clipIndex=$clipIndex path=${clip.path} '
+            'durationMs=$durationMs thumbUpdated=$thumbUpdated '
+            'thumbElapsedMs=$thumbElapsed',
+          );
+        } else {
+          failedClipPrecacheCount++;
+          debugPrint(
+            '[VideoManager][CreateProject][Clip] duration_zero clipIndex=$clipIndex '
+            'path=${clip.path}',
+          );
+        }
+      } catch (e) {
+        failedClipPrecacheCount++;
+        debugPrint(
+          '[VideoManager][CreateProject][Clip] failure '
+          'clipIndex=$clipIndex path=${clip.path} '
+          'type=${e.runtimeType} message=$e',
         );
       }
+
+      final clipElapsedMs = clipStopwatch.elapsedMilliseconds;
+      final int durationMs = clip.originalDuration.inMilliseconds;
+      debugPrint(
+        '[VideoManager][CreateProject][Clip] end '
+        'clipIndex=$clipIndex path=${clip.path} '
+        'durationMs=$durationMs '
+        'totalElapsedMs=$clipElapsedMs',
+      );
+
+      onClipPrepared?.call(clipIndex, clips.length, clip.path);
+      debugPrint(
+        '[VideoManager][CreateProject][Progress] '
+        'current=$clipIndex total=${clips.length} path=${clip.path}',
+      );
     }
-    debugPrint('[VideoManager] Pre-cached durations for ${clips.length} clips');
+
+    if (failedClipPrecacheCount > 0) {
+      debugPrint(
+        '[VideoManager][CreateProject] failedClipPrecacheCount=$failedClipPrecacheCount '
+        'totalClips=${clips.length}',
+      );
+    }
+    debugPrint(
+      '[VideoManager] Pre-cached durations for ${clips.length} clips '
+      'failedClipPrecacheCount=$failedClipPrecacheCount',
+    );
 
     final newProject = VlogProject(
       id: timestamp.millisecondsSinceEpoch.toString(),
@@ -289,7 +1193,9 @@ class VideoManager extends ChangeNotifier {
 
       var projectToSave = project;
 
-      final cloudMeta = await CloudService().upsertVlogProjectMetadata(project);
+      final cloudMeta = AuthService().isGuest
+          ? null
+          : await CloudService().upsertVlogProjectMetadata(project);
       if (cloudMeta != null) {
         projectToSave = project.copyWith(
           cloudProjectId: cloudMeta.projectId,
@@ -326,10 +1232,12 @@ class VideoManager extends ChangeNotifier {
           break;
         }
       }
-      await CloudService().deleteVlogProjectMetadata(
-        localProjectId: id,
-        cloudProjectId: target?.cloudProjectId,
-      );
+      if (!AuthService().isGuest) {
+        await CloudService().deleteVlogProjectMetadata(
+          localProjectId: id,
+          cloudProjectId: target?.cloudProjectId,
+        );
+      }
 
       if (await file.exists()) {
         await file.delete();
@@ -344,8 +1252,30 @@ class VideoManager extends ChangeNotifier {
   }
 
   static const platform = MethodChannel('com.dk.three_sec/video_engine');
-  static const int _targetRecordingDurationMs = 3000;
+  static const int _targetRecordingDurationMs = kTargetClipMs;
   static const String _recordingTrimMode = 'center';
+
+  void _logChannelGuardFail({
+    required String step,
+    required String platformError,
+    required String message,
+  }) {
+    debugPrint(
+      '[VideoManager][Channel][GuardFail] '
+      'step=$step platformError=$platformError message=$message',
+    );
+  }
+
+  void _logChannelCallFail({
+    required String step,
+    required String platformError,
+    required String message,
+  }) {
+    debugPrint(
+      '[VideoManager][Channel][CallFail] '
+      'step=$step platformError=$platformError message=$message',
+    );
+  }
 
   Future<Directory> _docDir() async => await getApplicationDocumentsDirectory();
 
@@ -461,6 +1391,60 @@ class VideoManager extends ChangeNotifier {
       thumbFile.writeAsBytes(data).catchError((_) => thumbFile);
     }
     return data;
+  }
+
+  Future<String> _thumbnailFilePathFor(String videoPath) async {
+    final docDir = await getApplicationDocumentsDirectory();
+    final thumbDir = Directory(p.join(docDir.path, 'thumbnails'));
+    if (!await thumbDir.exists()) await thumbDir.create(recursive: true);
+    return p.join(thumbDir.path, '${p.basename(videoPath)}.jpg');
+  }
+
+  Future<String?> ensureThumbnailFilePath(String videoPath) async {
+    final outputPath = await _thumbnailFilePathFor(videoPath);
+    final outputFile = File(outputPath);
+    if (await outputFile.exists()) {
+      return outputPath;
+    }
+
+    await getThumbnail(videoPath);
+    if (await outputFile.exists()) {
+      return outputPath;
+    }
+    return null;
+  }
+
+  Future<ImportPreviewData> prepareImportPreview(
+    String videoPath, {
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    final durationFuture = getVideoDuration(videoPath);
+    final thumbnailFuture = ensureThumbnailFilePath(videoPath);
+
+    final results = await Future.wait<dynamic>([
+      durationFuture,
+      thumbnailFuture,
+    ]).timeout(timeout);
+
+    final Duration duration = results[0] as Duration;
+    final String? thumbPath = results[1] as String?;
+
+    return ImportPreviewData(
+      durationMs: duration > Duration.zero ? duration.inMilliseconds : null,
+      thumbnailPath: thumbPath,
+    );
+  }
+
+  void releaseImportPreparationResourcesForPath(String videoPath) {
+    thumbnailCache.remove(videoPath);
+    _durationCache.remove(videoPath);
+    _timelineCache.removeWhere((key, _) => key.startsWith('${videoPath}_'));
+  }
+
+  void releaseImportPreparationResourcesForPaths(Iterable<String> paths) {
+    for (final path in paths) {
+      releaseImportPreparationResourcesForPath(path);
+    }
   }
 
   // Get multiple thumbnails distributed evenly across duration
@@ -667,22 +1651,161 @@ class VideoManager extends ChangeNotifier {
     return true;
   }
 
+  Map<String, String> _buildExportFailureContext({
+    required Object? platformCode,
+    required String? platformMessage,
+    required Object? details,
+    required String fallbackErrorClass,
+  }) {
+    final Map<String, String> detailMap = {};
+    if (details is Map) {
+      for (final entry in details.entries) {
+        final dynamic key = entry.key;
+        final String keyText = key?.toString() ?? '';
+        if (keyText.isNotEmpty) {
+          detailMap[keyText] = entry.value?.toString() ?? '';
+        }
+      }
+    }
+
+    final String messageText = (platformMessage ?? '').toLowerCase();
+    final String detailMessage = (detailMap['message'] ?? '').toLowerCase();
+    final String cause = (detailMap['cause'] ?? '').toLowerCase();
+    final String causeClass = (detailMap['causeClass'] ?? fallbackErrorClass)
+        .toString()
+        .toLowerCase();
+    final String errorCode = (detailMap['errorCode'] ?? '')
+        .toString()
+        .toLowerCase();
+    final String rawCode = (platformCode ?? '').toString().toLowerCase();
+    final String stack = (detailMap['stack'] ?? '').toLowerCase();
+
+    final String signatureText =
+        '$rawCode $messageText $detailMessage $cause $causeClass $errorCode $stack';
+    final String forceStopSignature = _detectForceStopSignature(signatureText);
+    if (forceStopSignature.isNotEmpty) {
+      return {
+        'normalizedFailCode': 'EXTERNAL_FORCE_STOP',
+        'normalizedFailSource': 'EXTERNAL_FORCE_STOP',
+        'errorClass': detailMap['causeClass']?.toString() ?? fallbackErrorClass,
+        'forceStopSignature': forceStopSignature,
+      };
+    }
+
+    if (_isAssetLoaderFailure(signatureText, causeClass)) {
+      return {
+        'normalizedFailCode': 'ASSET_LOADER',
+        'normalizedFailSource': 'ASSET_LOADER',
+        'errorClass': detailMap['causeClass']?.toString() ?? fallbackErrorClass,
+      };
+    }
+
+    if (_isEncoderFailure(signatureText, causeClass)) {
+      return {
+        'normalizedFailCode': 'ENCODER_ERROR',
+        'normalizedFailSource': 'ENCODER_ERROR',
+        'errorClass': detailMap['causeClass']?.toString() ?? fallbackErrorClass,
+      };
+    }
+
+    return {
+      'normalizedFailCode': 'UNKNOWN',
+      'normalizedFailSource': 'UNKNOWN',
+      'errorClass': detailMap['causeClass']?.toString() ?? fallbackErrorClass,
+    };
+  }
+
+  bool _isAssetLoaderFailure(String signatureText, String causeClass) {
+    return signatureText.contains('asset') ||
+        signatureText.contains('loader') ||
+        signatureText.contains('extract') ||
+        causeClass.contains('asset') ||
+        causeClass.contains('extractor') ||
+        causeClass.contains('mediametadataretriever') ||
+        causeClass.contains('mediamuxer');
+  }
+
+  bool _isEncoderFailure(String signatureText, String causeClass) {
+    return signatureText.contains('encoder') ||
+        signatureText.contains('encoding') ||
+        signatureText.contains('decode') ||
+        signatureText.contains('codec') ||
+        causeClass.contains('encoder') ||
+        causeClass.contains('codec') ||
+        causeClass.contains('transformer');
+  }
+
+  String _detectForceStopSignature(String signatureText) {
+    final lower = signatureText.toLowerCase();
+    if (lower.contains('from pid')) return 'FROM_PID';
+    if (lower.contains('runforcestop') ||
+        lower.contains('run forcestop') ||
+        lower.contains('run_force_stop')) {
+      return 'RUN_FORCE_STOP';
+    }
+    if (lower.contains('killing') && lower.contains('pid'))
+      return 'KILLING_FROM_PID';
+    if (lower.contains('external force') || lower.contains('force stop'))
+      return 'FORCE_STOP';
+    return '';
+  }
+
   Future<void> convertPhotoToVideo(String imagePath, String targetAlbum) async {
     final outDir = await _rawAlbumDir(targetAlbum);
-    final String outPath = p.join(
-      outDir.path,
-      "photo_${DateTime.now().millisecondsSinceEpoch}.mp4",
-    );
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final String rawOutPath = p.join(outDir.path, "photo_${timestamp}_raw.mp4");
+    final String outPath = p.join(outDir.path, "photo_$timestamp.mp4");
 
-    final String result = await platform.invokeMethod('convertImageToVideo', {
-      'imagePath': imagePath,
-      'outputPath': outPath,
-      'duration': 3,
-    });
+    final convertDurationMs = kTargetClipSaveMs;
+    if (convertDurationMs <= 0) {
+      _logChannelGuardFail(
+        step: 'photo_to_video',
+        platformError: 'INVALID_DURATION',
+        message: 'duration must be greater than 0 (ms)',
+      );
+      throw StateError('Invalid convert duration: $convertDurationMs');
+    }
+
+    final String result;
+    try {
+      result = await platform.invokeMethod('convertImageToVideo', {
+        'imagePath': imagePath,
+        'outputPath': rawOutPath,
+        'duration': convertDurationMs,
+      });
+    } on PlatformException catch (e) {
+      _logChannelCallFail(
+        step: 'photo_to_video',
+        platformError: e.code,
+        message: e.message ?? e.toString(),
+      );
+      rethrow;
+    } catch (e) {
+      _logChannelCallFail(
+        step: 'photo_to_video',
+        platformError: 'UNKNOWN',
+        message: e.toString(),
+      );
+      rethrow;
+    }
 
     if (result != "SUCCESS") {
       throw Exception("Native Conversion Error: $result");
     }
+    final normalized = await _normalizeRecordedVideo(
+      rawOutPath,
+      outPath,
+      targetDurationMs: _targetRecordingDurationMs,
+    );
+
+    if (!normalized) {
+      await File(rawOutPath).copy(outPath);
+    }
+
+    try {
+      await File(rawOutPath).delete();
+    } catch (_) {}
+
     await _setClipOwnership(
       outPath,
       ownerAccountId: UserStatusManager().userId,
@@ -698,12 +1821,183 @@ class VideoManager extends ChangeNotifier {
     double bgmVolume = 0.5,
     String quality = '1080p',
     String userTier = 'free',
+    String? mergeSessionId,
+    String? debugTag,
+    bool Function()? isCancelRequested,
+    String Function()? getExportPhase,
+    double Function()? getExportProgress,
+    String Function()? getExportCancelReason,
   }) async {
+    final int exportStartMs = DateTime.now().millisecondsSinceEpoch;
+    final String resolvedMergeSessionId =
+        (mergeSessionId?.trim().isNotEmpty == true)
+        ? mergeSessionId!.trim()
+        : 'merge_$exportStartMs';
+    final String mergeTraceId =
+        '${resolvedMergeSessionId}_engine_${exportStartMs}';
+
+    void _logExportState({
+      required String phase,
+      required String state,
+      String? status,
+      int? attempt,
+      String? reason,
+      int? resultBytes,
+      String? outputPath,
+      String? errorCode,
+      String? details,
+    }) {
+      debugPrint(
+        '[VideoManager][Export][State] phase=$phase state=$state '
+        'sessionId=$resolvedMergeSessionId traceId=$mergeTraceId '
+        'attempt=$attempt status=$status reason=$reason '
+        'outputPath=$outputPath resultBytes=$resultBytes '
+        'errorCode=$errorCode details=$details',
+      );
+    }
+
+    bool _isCancelRequested() {
+      return isCancelRequested?.call() == true;
+    }
+
+    String _resolveExportPhase({required String fallbackPhase}) {
+      final String? phaseFromUi = getExportPhase?.call();
+      if (phaseFromUi != null && phaseFromUi.trim().isNotEmpty) {
+        return phaseFromUi.trim();
+      }
+      return fallbackPhase;
+    }
+
+    String _resolveExportCancelReason({required String fallbackReason}) {
+      final String? reason = getExportCancelReason?.call();
+      if (reason != null && reason.trim().isNotEmpty) {
+        return reason.trim();
+      }
+      return fallbackReason;
+    }
+
+    double? _resolveExportProgress() {
+      return getExportProgress?.call();
+    }
+
+    bool hasLoggedCancel = false;
+
+    bool _checkAndLogCancel({
+      required String phase,
+      required String reason,
+      int? attempt,
+    }) {
+      if (!_isCancelRequested()) return false;
+
+      final String exportPhase = _resolveExportPhase(fallbackPhase: phase);
+      final double? progress = _resolveExportProgress();
+      final String cancelReason = _resolveExportCancelReason(
+        fallbackReason: reason,
+      );
+
+      _logExportState(
+        phase: exportPhase,
+        state: 'cancel',
+        status: hasLoggedCancel ? 'cancelled_poll' : 'cancelled',
+        attempt: attempt,
+        reason: cancelReason,
+        details:
+            'progress=${progress != null ? progress.toStringAsFixed(3) : 'null'}',
+      );
+      hasLoggedCancel = true;
+      return true;
+    }
+
+    final int totalDurationMs = clips.fold<int>(0, (sum, clip) {
+      final playbackMs =
+          clip.endTime.inMilliseconds - clip.startTime.inMilliseconds;
+      if (playbackMs > 0) return sum + playbackMs;
+      if (clip.originalDuration > Duration.zero)
+        return sum + clip.originalDuration.inMilliseconds;
+      if (clip.endTime > Duration.zero)
+        return sum + clip.endTime.inMilliseconds;
+      return sum;
+    });
+    final String? callerTag = debugTag;
+
+    _logExportState(
+      phase: 'init',
+      state: 'preparing',
+      status: 'start',
+      reason: 'export_started',
+    );
+
+    if (_checkAndLogCancel(phase: 'init', reason: 'cancel_before_start')) {
+      return null;
+    }
+
+    int missingAudioConfigCount = 0;
+    int zeroOrNegativeVolumeCount = 0;
+    int duplicatePathCount = 0;
+    final Set<String> seenPaths = <String>{};
+    final List<String> missingAudioPaths = [];
+    final List<String> zeroVolumePaths = [];
+
+    for (final clip in clips) {
+      final String clipPath = clip.path;
+      if (!seenPaths.add(clipPath)) {
+        duplicatePathCount++;
+      }
+      if (!audioConfig.containsKey(clipPath)) {
+        missingAudioConfigCount++;
+        if (missingAudioPaths.length < 3) missingAudioPaths.add(clipPath);
+      }
+      final double? audioVolume = audioConfig[clipPath];
+      if (audioVolume != null && audioVolume <= 0) {
+        zeroOrNegativeVolumeCount++;
+        if (zeroVolumePaths.length < 3) {
+          zeroVolumePaths.add(clipPath);
+        }
+      }
+    }
+
     try {
+      final String abGroup = _resolvedMergeAbGroup();
       final normalizedTier = normalizeUserTierKey(userTier);
       final clampedQuality = clampExportQualityForTier(
         requestedQuality: normalizeExportQuality(quality),
         tier: userTierFromKey(normalizedTier),
+      );
+      final String fallbackQuality = _downgradeQualityForRetry(clampedQuality);
+
+      _warnIfRecentMemoryPressure(
+        'exportVlog',
+        clipCount: clips.length,
+        quality: clampedQuality,
+      );
+
+      debugPrint(
+        '[VideoManager][Export] args_summary '
+        'clipCount=${clips.length} totalDurationMs=$totalDurationMs '
+        'quality=$clampedQuality tier=$normalizedTier '
+        'audioConfigCount=${audioConfig.length} hasBgm=${bgmPath?.isNotEmpty == true} '
+        'bgmVolume=$bgmVolume '
+        'memoryPressureRecent=${hasRecentMemoryPressure} '
+        'memoryPressureElapsedMs=${millisSinceLastMemoryPressure ?? -1} '
+        'eventCount=${memoryPressureEventCount}',
+      );
+
+      _logExportState(
+        phase: 'preflight',
+        state: 'preparing',
+        status: 'preflight_summary',
+        details:
+            'clipCount=${clips.length} totalDurationMs=$totalDurationMs quality=$clampedQuality '
+            'tier=$normalizedTier',
+      );
+
+      debugPrint(
+        '[VideoManager][Export] preflight_summary '
+        'sessionId=$resolvedMergeSessionId traceId=$mergeTraceId caller=${callerTag ?? "unknown"} '
+        'duplicateClipPaths=$duplicatePathCount missingAudioConfigCount=$missingAudioConfigCount '
+        'zeroOrNegativeVolumeCount=$zeroOrNegativeVolumeCount '
+        'missingAudioSamples=${missingAudioPaths.join("|")} '
+        'zeroVolumeSamples=${zeroVolumePaths.join("|")} ',
       );
 
       // 1. 🛡️ 권한 체크 (Android 13 대응)
@@ -731,7 +2025,21 @@ class VideoManager extends ChangeNotifier {
 
       if (!hasPermission) {
         print("❌ Export Error: 권한이 거부되었습니다.");
-        // UI에서 처리를 위해 예외 발생 또는 null 리턴
+        _logExportState(
+          phase: 'permission',
+          state: 'error',
+          status: 'permission_denied',
+          reason: 'permission_check_failed',
+        );
+        debugPrint(
+          '[VideoManager][Export][MergeComplete] result=null reason=permission_denied',
+        );
+        if (_checkAndLogCancel(
+          phase: 'permission',
+          reason: 'cancel_after_permission',
+        )) {
+          return null;
+        }
         return null;
       }
 
@@ -748,6 +2056,21 @@ class VideoManager extends ChangeNotifier {
       // 3. 🎞️ 대상 파일 준비
       if (clips.isEmpty) {
         print("❌ Export Error: 병합할 영상이 없습니다.");
+        _logExportState(
+          phase: 'validation',
+          state: 'error',
+          status: 'empty_clips',
+          reason: 'validation_failed',
+        );
+        debugPrint(
+          '[VideoManager][Export][MergeComplete] result=null reason=empty_clips',
+        );
+        if (_checkAndLogCancel(
+          phase: 'validation',
+          reason: 'cancel_after_validation',
+        )) {
+          return null;
+        }
         return null;
       }
 
@@ -756,44 +2079,517 @@ class VideoManager extends ChangeNotifier {
       print("   - Quality: $clampedQuality");
       print("   - User Tier: $normalizedTier");
 
-      // Extract data for native call
+      // 4. ⚡ Native Engine 호출
       final videoPaths = clips.map((c) => c.path).toList();
       final startTimes = clips.map((c) => c.startTime.inMilliseconds).toList();
       final endTimes = clips.map((c) => c.endTime.inMilliseconds).toList();
 
-      // 4. ⚡ Native Engine 호출
-      final args = {
-        'videoPaths': videoPaths,
-        'startTimes': startTimes, // Pass start times
-        'endTimes': endTimes, // Pass end times
-        'outputPath': outputPath,
-        'audioChanges': audioConfig,
-        'bgmPath': bgmPath,
-        'bgmVolume': bgmVolume,
-        'quality': clampedQuality,
-        'userTier': normalizedTier,
-      };
+      Future<String?> invokeMergeAttempt({
+        required int attempt,
+        required String qualityValue,
+        required String retryPlan,
+        required bool audioSimplify,
+      }) async {
+        final args = {
+          'videoPaths': videoPaths,
+          'startTimes': startTimes, // Pass start times
+          'endTimes': endTimes, // Pass end times
+          'outputPath': outputPath,
+          'audioChanges': audioConfig,
+          'bgmPath': bgmPath,
+          'bgmVolume': bgmVolume,
+          'quality': qualityValue,
+          'userTier': normalizedTier,
+          'attempt': attempt,
+          'abGroup': abGroup,
+          'retryPlan': retryPlan,
+          'audioSimplify': audioSimplify,
+          'qualityPreset': qualityValue,
+          'mergeSessionId': resolvedMergeSessionId,
+          'mergeTraceId': mergeTraceId,
+          'caller': callerTag ?? 'unknown',
+        };
 
-      final String? result = await platform.invokeMethod('mergeVideos', args);
+        debugPrint(
+          '[VideoManager][Export] invoking_merge start clipCount=${clips.length} '
+          'quality=$qualityValue tier=$normalizedTier totalDurationMs=$totalDurationMs '
+          'attempt=$attempt retryPlan=$retryPlan audioSimplify=$audioSimplify '
+          'abGroup=$abGroup qualityPreset=$qualityValue '
+          'outputPath=$outputPath sessionId=$resolvedMergeSessionId traceId=$mergeTraceId '
+          'caller=${callerTag ?? "unknown"}',
+        );
 
-      print("✅ Export Success: $result");
+        _logExportState(
+          phase: 'rendering',
+          state: 'rendering',
+          status: 'invoke_start',
+          attempt: attempt,
+          outputPath: outputPath,
+          reason: 'native_invoke',
+          details:
+              'quality=$qualityValue retryPlan=$retryPlan audioSimplify=$audioSimplify',
+        );
 
-      // 갤러리에 저장 (Gal 패키지 사용)
-      if (result != null) {
+        if (_checkAndLogCancel(
+          phase: 'rendering',
+          reason: 'cancel_before_native_invoke',
+        )) {
+          return null;
+        }
+
+        final String? result = await platform.invokeMethod('mergeVideos', args);
+
+        final mergeElapsedMs =
+            DateTime.now().millisecondsSinceEpoch - exportStartMs;
+        bool resultExists = false;
+        int resultBytes = -1;
+
+        if (result != null) {
+          try {
+            final File resultFile = File(result);
+            resultExists = await resultFile.exists();
+            if (resultExists) {
+              resultBytes = await resultFile.length();
+            }
+          } catch (_) {}
+        }
+        debugPrint(
+          '[VideoManager][Export] invoke_merge_done '
+          'elapsedMs=$mergeElapsedMs result=$result '
+          'clipCount=${clips.length} quality=$qualityValue '
+          'attempt=$attempt retryPlan=$retryPlan '
+          'sessionId=$resolvedMergeSessionId traceId=$mergeTraceId '
+          'resultExists=$resultExists resultBytes=$resultBytes',
+        );
+
+        _logExportState(
+          phase: 'rendering',
+          state: result == null ? 'error' : 'rendering',
+          status: result == null ? 'native_result_null' : 'native_result_ready',
+          attempt: attempt,
+          outputPath: result,
+          resultBytes: resultBytes,
+          reason: result == null
+              ? 'platform_returned_null'
+              : 'platform_returned_path',
+        );
+
+        debugPrint(
+          '[VideoManager][Export] MergeComplete result=$result '
+          'attempt=$attempt retryPlan=$retryPlan '
+          'sessionId=$resolvedMergeSessionId traceId=$mergeTraceId '
+          'caller=${callerTag ?? "unknown"}',
+        );
+
+        if (result == null) {
+          debugPrint(
+            '[VideoManager][Export][MergeComplete] result=null '
+            'reason=platform_returned_null attempt=$attempt '
+            'retryPlan=$retryPlan '
+            'abGroup=$abGroup '
+            'sessionId=$resolvedMergeSessionId traceId=$mergeTraceId',
+          );
+        }
+
+        // 갤러리에 저장 (Gal 패키지 사용)
+        if (result != null) {
+          try {
+            await Gal.putVideo(result, album: '2S_Vlog');
+            _logExportState(
+              phase: 'saving',
+              state: 'done',
+              status: 'gallery_saved',
+              attempt: attempt,
+              outputPath: result,
+              resultBytes: resultBytes,
+              reason: 'Gal.putVideo',
+            );
+            debugPrint(
+              '[VideoManager][Export] SavedToGallery result=$result album=2S_Vlog',
+            );
+          } catch (e) {
+            _logExportState(
+              phase: 'saving',
+              state: 'error',
+              status: 'gallery_save_failed',
+              attempt: attempt,
+              outputPath: result,
+              reason: 'Gal.putVideo_failed',
+              details: e.toString(),
+            );
+            debugPrint('[VideoManager][Export] save_gallery_failed message=$e');
+          }
+        }
+
+        return result;
+      }
+
+      for (int attempt = 1; attempt <= 2; attempt++) {
+        final bool isRetryAttempt = attempt == 2;
+        final String qualityValue = isRetryAttempt
+            ? fallbackQuality
+            : clampedQuality;
+        final bool audioSimplify = isRetryAttempt && abGroup == 'B';
+        final String retryPlan = _retryPlanForAttempt(
+          attempt: attempt,
+          abGroup: abGroup,
+          forceRetry: isRetryAttempt,
+        );
+
         try {
-          await Gal.putVideo(result, album: '3S_Vlogs');
-          print("✅ Saved to Gallery (Album: 3S_Vlogs)");
+          if (_checkAndLogCancel(
+            phase: 'rendering',
+            reason: 'cancel_before_attempt_$attempt',
+            attempt: attempt,
+          )) {
+            return null;
+          }
+
+          final String? result = await invokeMergeAttempt(
+            attempt: attempt,
+            qualityValue: qualityValue,
+            retryPlan: retryPlan,
+            audioSimplify: audioSimplify,
+          );
+
+          if (_checkAndLogCancel(
+            phase: 'rendering',
+            reason: 'cancel_after_attempt_$attempt',
+            attempt: attempt,
+          )) {
+            return null;
+          }
+          if (result != null) {
+            _logExportState(
+              phase: 'done',
+              state: 'done',
+              status: 'merge_completed',
+              attempt: attempt,
+              outputPath: result,
+              reason: 'export_success',
+            );
+            return result;
+          }
+          if (isRetryAttempt) {
+            return null;
+          }
+
+          return null;
+        } on PlatformException catch (e) {
+          if (_checkAndLogCancel(
+            phase: 'error',
+            reason: 'cancel_after_platform_exception',
+            attempt: attempt,
+          )) {
+            return null;
+          }
+
+          final int failElapsedMs =
+              DateTime.now().millisecondsSinceEpoch - exportStartMs;
+          final rawDetails = e.details;
+          final detailText = rawDetails != null
+              ? (rawDetails is String
+                    ? rawDetails
+                    : rawDetails is Map
+                    ? jsonEncode(rawDetails)
+                    : rawDetails.toString())
+              : null;
+          final clippedDetails = detailText != null && detailText.length > 4000
+              ? detailText.substring(0, 4000)
+              : detailText;
+          final normalizedFailure = _buildExportFailureContext(
+            platformCode: e.code,
+            platformMessage: e.message,
+            details: rawDetails,
+            fallbackErrorClass: e.runtimeType.toString(),
+          );
+          final forceStopLabel = normalizedFailure['forceStopSignature'];
+          final bool isForceStop =
+              normalizedFailure['normalizedFailSource'] ==
+                  'EXTERNAL_FORCE_STOP' ||
+              normalizedFailure['normalizedFailCode'] == 'EXTERNAL_FORCE_STOP';
+          final bool retryAllowed =
+              attempt == 1 &&
+              _isMergeRetryAllowed(normalizedFailure, isForceStop);
+          final String nextRetryPlan = _retryPlanForAttempt(
+            attempt: 2,
+            abGroup: abGroup,
+            forceRetry: true,
+          );
+          final bool nextAudioSimplify = abGroup == 'B';
+
+          print("❌ Native Error [${e.code}] ${e.message}");
+          if (clippedDetails != null) {
+            print("❌ Native Error Details: $clippedDetails");
+          } else {
+            print("❌ Native Error Details: <none>");
+          }
+          debugPrint(
+            '[VideoManager][Export][MergeFail] result=null exception=PlatformException '
+            'type=${e.runtimeType} code=${e.code} message=${e.message} '
+            'attempt=$attempt retryPlan=$retryPlan abGroup=$abGroup '
+            'audioSimplify=$audioSimplify '
+            'normalizedFailCode=${normalizedFailure['normalizedFailCode']} '
+            'normalizedFailSource=${normalizedFailure['normalizedFailSource']} '
+            'errorClass=${normalizedFailure['errorClass']} '
+            '${forceStopLabel != null ? 'forceStopSignature=$forceStopLabel ' : ''}'
+            'details=$clippedDetails elapsedMs=$failElapsedMs '
+            'sessionId=$resolvedMergeSessionId traceId=$mergeTraceId '
+            'caller=${callerTag ?? "unknown"}',
+          );
+
+          _logExportState(
+            phase: 'error',
+            state: 'error',
+            status: 'merge_exception_platform',
+            attempt: attempt,
+            reason: 'platform_exception',
+            errorCode: e.code,
+            details:
+                'message=${e.message} normalizedFailCode=${normalizedFailure['normalizedFailCode']}'
+                ' normalizedFailSource=${normalizedFailure['normalizedFailSource']}'
+                ' attempt=$attempt retryPlan=$retryPlan forceStop=$isForceStop',
+          );
+
+          if (retryAllowed) {
+            if (_checkAndLogCancel(
+              phase: 'error',
+              reason: 'cancel_before_retry',
+              attempt: attempt,
+            )) {
+              return null;
+            }
+
+            _logExportState(
+              phase: 'error',
+              state: 'error',
+              status: 'retry_planned',
+              attempt: attempt,
+              reason: 'retry_allowed',
+              details:
+                  'normalizedFailCode=${normalizedFailure['normalizedFailCode']}'
+                  ' nextRetryPlan=$nextRetryPlan',
+            );
+            debugPrint(
+              '[VideoManager][Export][MergeRetry] decision=retry attempt=2 '
+              'fromAttempt=$attempt normalizedFailCode=${normalizedFailure['normalizedFailCode']} '
+              'abGroup=$abGroup nextRetryPlan=$nextRetryPlan '
+              'nextQuality=$fallbackQuality nextAudioSimplify=$nextAudioSimplify '
+              'sessionId=$resolvedMergeSessionId traceId=$mergeTraceId '
+              'caller=${callerTag ?? "unknown"}',
+            );
+            continue;
+          }
+
+          _logExportState(
+            phase: 'error',
+            state: 'error',
+            status: 'merge_exception_terminal',
+            attempt: attempt,
+            reason: 'retry_not_allowed',
+            errorCode: e.code,
+            details:
+                'attempt=$attempt retryPlan=$retryPlan forceStop=$isForceStop'
+                ' normalizedFailCode=${normalizedFailure['normalizedFailCode']}',
+          );
+
+          return null;
         } catch (e) {
-          print("❌ Failed to save to gallery: $e");
+          final int failElapsedMs =
+              DateTime.now().millisecondsSinceEpoch - exportStartMs;
+          final normalizedFailure = _buildExportFailureContext(
+            platformCode: null,
+            platformMessage: e.toString(),
+            details: null,
+            fallbackErrorClass: e.runtimeType.toString(),
+          );
+          final bool isForceStop =
+              normalizedFailure['normalizedFailSource'] ==
+                  'EXTERNAL_FORCE_STOP' ||
+              normalizedFailure['normalizedFailCode'] == 'EXTERNAL_FORCE_STOP';
+          final bool retryAllowed =
+              attempt == 1 &&
+              _isMergeRetryAllowed(normalizedFailure, isForceStop);
+          final String nextRetryPlan = _retryPlanForAttempt(
+            attempt: 2,
+            abGroup: abGroup,
+            forceRetry: true,
+          );
+          final bool nextAudioSimplify = abGroup == 'B';
+
+          print("❌ Unexpected Error: $e");
+          debugPrint(
+            '[VideoManager][Export][MergeFail] result=null exception=${e.runtimeType} '
+            'message=$e attempt=$attempt retryPlan=$retryPlan abGroup=$abGroup '
+            'audioSimplify=$audioSimplify '
+            'normalizedFailCode=${normalizedFailure['normalizedFailCode']} '
+            'normalizedFailSource=${normalizedFailure['normalizedFailSource']} '
+            'errorClass=${normalizedFailure['errorClass']} '
+            'elapsedMs=$failElapsedMs '
+            'sessionId=$resolvedMergeSessionId traceId=$mergeTraceId '
+            'caller=${callerTag ?? "unknown"}',
+          );
+
+          _logExportState(
+            phase: 'error',
+            state: 'error',
+            status: 'merge_exception_unexpected',
+            attempt: attempt,
+            reason: 'unexpected_exception',
+            errorCode: e.runtimeType.toString(),
+            details:
+                'message=$e isForceStop=$isForceStop attempt=$attempt retryPlan=$retryPlan',
+          );
+
+          if (retryAllowed) {
+            if (_checkAndLogCancel(
+              phase: 'error',
+              reason: 'cancel_before_retry',
+              attempt: attempt,
+            )) {
+              return null;
+            }
+
+            _logExportState(
+              phase: 'error',
+              state: 'error',
+              status: 'retry_planned',
+              attempt: attempt,
+              reason: 'retry_allowed',
+              details:
+                  'normalizedFailCode=${normalizedFailure['normalizedFailCode']}'
+                  ' nextRetryPlan=$nextRetryPlan',
+            );
+            debugPrint(
+              '[VideoManager][Export][MergeRetry] decision=retry attempt=2 '
+              'fromAttempt=$attempt normalizedFailCode=${normalizedFailure['normalizedFailCode']} '
+              'abGroup=$abGroup nextRetryPlan=$nextRetryPlan '
+              'nextQuality=$fallbackQuality nextAudioSimplify=$nextAudioSimplify '
+              'sessionId=$resolvedMergeSessionId traceId=$mergeTraceId '
+              'caller=${callerTag ?? "unknown"}',
+            );
+            continue;
+          }
+
+          _logExportState(
+            phase: 'error',
+            state: 'error',
+            status: 'merge_exception_terminal',
+            attempt: attempt,
+            reason: 'retry_not_allowed',
+            errorCode: e.runtimeType.toString(),
+            details:
+                'attempt=$attempt retryPlan=$retryPlan isForceStop=$isForceStop',
+          );
+
+          return null;
         }
       }
 
-      return result;
+      if (_checkAndLogCancel(
+        phase: 'error',
+        reason: 'cancel_after_attempt_loop',
+      )) {
+        return null;
+      }
+
+      _logExportState(
+        phase: 'error',
+        state: 'error',
+        status: 'no_result_after_retry',
+        attempt: 2,
+        reason: 'all_attempts_completed',
+      );
+
+      return null;
     } on PlatformException catch (e) {
-      print("❌ Native Error: ${e.message}");
+      if (_checkAndLogCancel(
+        phase: 'error',
+        reason: 'cancel_after_outer_platform_exception',
+      )) {
+        return null;
+      }
+
+      final int failElapsedMs =
+          DateTime.now().millisecondsSinceEpoch - exportStartMs;
+      final rawDetails = e.details;
+      final detailText = rawDetails != null
+          ? (rawDetails is String
+                ? rawDetails
+                : rawDetails is Map
+                ? jsonEncode(rawDetails)
+                : rawDetails.toString())
+          : null;
+      final clippedDetails = detailText != null && detailText.length > 4000
+          ? detailText.substring(0, 4000)
+          : detailText;
+      final normalizedFailure = _buildExportFailureContext(
+        platformCode: e.code,
+        platformMessage: e.message,
+        details: rawDetails,
+        fallbackErrorClass: e.runtimeType.toString(),
+      );
+      final forceStopLabel = normalizedFailure['forceStopSignature'];
+
+      print("❌ Native Error [${e.code}] ${e.message}");
+      if (clippedDetails != null) {
+        print("❌ Native Error Details: $clippedDetails");
+      } else {
+        print("❌ Native Error Details: <none>");
+      }
+      debugPrint(
+        '[VideoManager][Export][MergeFail] result=null exception=PlatformException '
+        'type=${e.runtimeType} code=${e.code} message=${e.message} '
+        'normalizedFailCode=${normalizedFailure['normalizedFailCode']} '
+        'normalizedFailSource=${normalizedFailure['normalizedFailSource']} '
+        'errorClass=${normalizedFailure['errorClass']} '
+        '${forceStopLabel != null ? 'forceStopSignature=$forceStopLabel ' : ''}'
+        'details=$clippedDetails elapsedMs=$failElapsedMs '
+        'sessionId=$resolvedMergeSessionId traceId=$mergeTraceId '
+        'caller=${callerTag ?? "unknown"}',
+      );
+      _logExportState(
+        phase: 'error',
+        state: 'error',
+        status: 'merge_exception_outer',
+        errorCode: e.code,
+        details: e.message,
+      );
       return null;
     } catch (e) {
+      if (_checkAndLogCancel(
+        phase: 'error',
+        reason: 'cancel_after_outer_exception',
+      )) {
+        return null;
+      }
+
+      final int failElapsedMs =
+          DateTime.now().millisecondsSinceEpoch - exportStartMs;
+      final normalizedFailure = _buildExportFailureContext(
+        platformCode: null,
+        platformMessage: e.toString(),
+        details: null,
+        fallbackErrorClass: e.runtimeType.toString(),
+      );
+
       print("❌ Unexpected Error: $e");
+      debugPrint(
+        '[VideoManager][Export][MergeFail] result=null exception=${e.runtimeType} '
+        'message=$e normalizedFailCode=${normalizedFailure['normalizedFailCode']} '
+        'normalizedFailSource=${normalizedFailure['normalizedFailSource']} '
+        'errorClass=${normalizedFailure['errorClass']} '
+        'elapsedMs=$failElapsedMs '
+        'sessionId=$resolvedMergeSessionId traceId=$mergeTraceId '
+        'caller=${callerTag ?? "unknown"}',
+      );
+      _logExportState(
+        phase: 'error',
+        state: 'error',
+        status: 'merge_exception_outer_unexpected',
+        errorCode: e.runtimeType.toString(),
+        details: e.toString(),
+      );
       return null;
     }
   }
@@ -1157,7 +2953,21 @@ class VideoManager extends ChangeNotifier {
     );
     final currentPath = savePath;
 
+    debugPrint(
+      '[VideoManager] saveRecordedVideo_paths '
+      'sourcePath=${video.path} '
+      'outputPath=$currentPath '
+      'targetDurationMs=$_targetRecordingDurationMs '
+      'trimMode=$_recordingTrimMode',
+    );
+
     final sourceDurationMs = await _getVideoDurationMsNative(video.path);
+    if (sourceDurationMs != null && sourceDurationMs < _targetRecordingDurationMs) {
+      debugPrint(
+        '[VideoManager][Warn] source shorter than trim target '
+        'sourceDurationMs=$sourceDurationMs targetDurationMs=$_targetRecordingDurationMs',
+      );
+    }
     final expectedClipMs = sourceDurationMs != null
         ? (sourceDurationMs < _targetRecordingDurationMs
               ? sourceDurationMs
@@ -1186,6 +2996,15 @@ class VideoManager extends ChangeNotifier {
       }
     }
 
+    final normalizedDurationMs = await _getVideoDurationMsNative(currentPath);
+    debugPrint(
+      '[VideoManager] saveRecordedVideo_result '
+      'sourceDurationMs=$sourceDurationMs '
+      'targetDurationMs=$_targetRecordingDurationMs '
+      'normalizedDurationMs=$normalizedDurationMs '
+      'normalizeSuccess=$normalized',
+    );
+
     await _setClipOwnership(
       currentPath,
       ownerAccountId: UserStatusManager().userId,
@@ -1211,27 +3030,71 @@ class VideoManager extends ChangeNotifier {
       if (result is String) {
         return int.tryParse(result);
       }
+    } on PlatformException catch (e) {
+      _logChannelCallFail(
+        step: 'duration_query',
+        platformError: e.code,
+        message: e.message ?? e.toString(),
+      );
     } catch (e) {
-      debugPrint('[VideoManager] getVideoDurationMs failed: $e');
+      _logChannelCallFail(
+        step: 'duration_query',
+        platformError: 'UNKNOWN',
+        message: e.toString(),
+      );
     }
     return null;
   }
 
   Future<bool> _normalizeRecordedVideo(
     String sourcePath,
-    String outputPath,
-  ) async {
+    String outputPath, {
+    int? targetDurationMs,
+  }) async {
     try {
+      final effectiveTargetDurationMs =
+          targetDurationMs ?? _targetRecordingDurationMs;
+      if (effectiveTargetDurationMs <= 0) {
+        _logChannelGuardFail(
+          step: 'normalize',
+          platformError: 'INVALID_DURATION',
+          message: 'targetDurationMs must be greater than 0',
+        );
+        return false;
+      }
+      debugPrint(
+        '[VideoManager] normalizeRecordedVideo_request '
+        'sourcePath=$sourcePath '
+        'outputPath=$outputPath '
+        'targetDurationMs=$effectiveTargetDurationMs '
+        'trimMode=$_recordingTrimMode',
+      );
+
       final result = await platform.invokeMethod('normalizeVideoDuration', {
         'inputPath': sourcePath,
         'outputPath': outputPath,
-        'targetDurationMs': _targetRecordingDurationMs,
+        'targetDurationMs': effectiveTargetDurationMs,
         'trimMode': _recordingTrimMode,
       });
 
+      debugPrint(
+        '[VideoManager] normalizeRecordedVideo_response result=$result',
+      );
+
       return result == 'SUCCESS';
+    } on PlatformException catch (e) {
+      _logChannelCallFail(
+        step: 'normalize',
+        platformError: e.code,
+        message: e.message ?? e.toString(),
+      );
+      return false;
     } catch (e) {
-      debugPrint('[VideoManager] normalizeRecordedVideo failed: $e');
+      _logChannelCallFail(
+        step: 'normalize',
+        platformError: 'UNKNOWN',
+        message: e.toString(),
+      );
       return false;
     }
   }

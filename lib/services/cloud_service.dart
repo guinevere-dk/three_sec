@@ -11,6 +11,7 @@ import 'auth_service.dart';
 import 'notification_settings_service.dart';
 import 'sync_queue_store.dart';
 import '../utils/error_copy.dart';
+import 'review_fallback_metrics.dart';
 
 /// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 /// 🌩️ 클라우드 백업 서비스 (Firebase Storage + Firestore)
@@ -37,6 +38,7 @@ class CloudService {
   final AuthService _authService = AuthService();
   final UserStatusManager _userStatusManager = UserStatusManager();
   final SyncQueueStore _syncQueueStore = SyncQueueStore();
+  final ReviewFallbackMetrics _reviewFallbackMetrics = ReviewFallbackMetrics();
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   // 📦 상수 정의
@@ -48,6 +50,7 @@ class CloudService {
   static const int _maxRetryAttempts = 5;
 
   static const String _errorAuthRequired = 'auth_required';
+  static const String _errorGuestModeBlocked = 'guest_mode_blocked';
   static const String _errorTierRequired = 'tier_required';
   static const String _errorStorageLimit = 'storage_limit';
   static const String _errorCloudApiDisabled = 'cloud_api_disabled';
@@ -55,6 +58,8 @@ class CloudService {
   static const String _errorNetwork = 'network_unavailable';
   static const String _errorQuota = 'quota_exceeded';
   static const String _errorUploadFailed = 'upload_failed';
+  static const String _errorFileSystem = 'file_system_error';
+  static const String _errorNotFound = 'resource_not_found';
 
   /// Firestore 컬렉션 경로
   static const String _videosCollection = 'videos';
@@ -67,13 +72,14 @@ class CloudService {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   final List<UploadTask> _uploadQueue = [];
-  final StreamController<UploadProgress> _progressController = 
+  final StreamController<UploadProgress> _progressController =
       StreamController<UploadProgress>.broadcast();
   final StreamController<SyncStatusSummary> _syncSummaryController =
       StreamController<SyncStatusSummary>.broadcast();
 
   bool _isProcessingQueue = false;
   bool _syncJobsLoaded = false;
+  bool _isRestoringUploadQueue = false;
   List<SyncJob> _syncJobs = [];
   String? _lastImmediateUploadErrorCode;
   String? _lastImmediateUploadErrorCopy;
@@ -81,7 +87,8 @@ class CloudService {
 
   /// 업로드 진행률 스트림
   Stream<UploadProgress> get uploadProgressStream => _progressController.stream;
-  Stream<SyncStatusSummary> get syncSummaryStream => _syncSummaryController.stream;
+  Stream<SyncStatusSummary> get syncSummaryStream =>
+      _syncSummaryController.stream;
   String? get lastImmediateUploadErrorCode => _lastImmediateUploadErrorCode;
   String? get lastImmediateUploadErrorCopy => _lastImmediateUploadErrorCopy;
 
@@ -96,6 +103,236 @@ class CloudService {
     _syncJobsLoaded = true;
   }
 
+  /// 앱 시작/복귀/로그인 복귀 시 저장된 업로드 큐를 재정렬 및 재시작
+  Future<void> restoreUploadQueueFromStore() async {
+    if (_isRestoringUploadQueue) return;
+    _isRestoringUploadQueue = true;
+
+    try {
+      await _ensureQueueStoreLoaded();
+
+      final uid = _getCurrentUserId();
+      if (uid == null) {
+        print('[CloudService] ⛔ 큐 복구 스킵: 로그인 사용자 미확인');
+        return;
+      }
+
+      final recoverable = _syncJobs.where(_isRecoverableUploadJob).toList();
+      if (recoverable.isEmpty) {
+        print('[CloudService] 🔁 복구 대상 업로드 큐 없음');
+        return;
+      }
+
+      var restored = 0;
+      var skipped = 0;
+
+      for (final job in recoverable) {
+        if (job.ownerUid != null && job.ownerUid != uid) {
+          skipped += 1;
+          continue;
+        }
+
+        if (job.localPath == null ||
+            job.localPath!.trim().isEmpty ||
+            job.storagePath == null ||
+            job.storagePath!.trim().isEmpty) {
+          print(
+            '[CloudService] ⚠️ 복구 스킵: 동기화 메타데이터 누락 '
+            '(videoId=${job.entityId}, localPath=${job.localPath}, storagePath=${job.storagePath})',
+          );
+          skipped += 1;
+          continue;
+        }
+
+        final file = File(job.localPath!);
+        if (!await file.exists()) {
+          print(
+            '[CloudService] ⚠️ 복구 스킵: 로컬 파일 미존재 '
+            '(videoId=${job.entityId}, localPath=${job.localPath})',
+          );
+          skipped += 1;
+          continue;
+        }
+
+        final dedupeKey = _uploadTaskDedupeKey(
+          localPath: job.localPath,
+          projectId: job.projectId,
+          createdAt: job.createdAt,
+        );
+
+        if (_hasUploadTaskForDedupeKey(
+          key: dedupeKey,
+          videoId: job.entityId,
+          storagePath: job.storagePath!,
+          localPath: job.localPath,
+          includeSyncJobs: false,
+        )) {
+          print(
+            '[CloudService] 🔁 복구 큐 중복 스킵 '
+            '(videoId=${job.entityId}, dedupe=$dedupeKey)',
+          );
+          skipped += 1;
+          continue;
+        }
+
+        final availableAt = _restoreAvailableAt(job);
+        _uploadQueue.add(
+          UploadTask(
+            videoFile: file,
+            videoId: job.entityId,
+            storagePath: job.storagePath!,
+            fileSize: await file.length(),
+            uid: uid,
+            localPath: job.localPath,
+            projectId: job.projectId,
+            attemptCount: job.attemptCount,
+            createdAt: job.createdAt,
+            availableAt: availableAt,
+          ),
+        );
+
+        await _setSyncJobStateForVideo(
+          videoId: job.entityId,
+          status: SyncJobStatus.inProgress,
+          attemptCount: job.attemptCount,
+        );
+        restored += 1;
+      }
+
+      print(
+        '[CloudService] 🔁 업로드 큐 복구 완료: restored=$restored, skipped=$skipped, '
+        'queueDepth=${_uploadQueue.length}',
+      );
+
+      if (restored > 0 && !_isProcessingQueue) {
+        _processUploadQueue();
+      }
+    } finally {
+      _isRestoringUploadQueue = false;
+    }
+  }
+
+  bool _isRecoverableUploadJob(SyncJob job) {
+    if (job.entityType != SyncJobEntityType.clip || job.action != SyncJobAction.upload) {
+      return false;
+    }
+
+    return _isActiveUploadJobStatus(job.status);
+  }
+
+  bool _isActiveUploadJobStatus(SyncJobStatus status) {
+    return status == SyncJobStatus.queued ||
+        status == SyncJobStatus.inProgress ||
+        status == SyncJobStatus.failed;
+  }
+
+  DateTime? _restoreAvailableAt(SyncJob job) {
+    if (job.status == SyncJobStatus.failed) {
+      if (job.nextRetryAt == null) return DateTime.now();
+      return job.nextRetryAt;
+    }
+
+    return null;
+  }
+
+  String _uploadTaskDedupeKey({
+    required String? localPath,
+    required String? projectId,
+    required DateTime createdAt,
+  }) {
+    return '${localPath ?? ''}|${projectId ?? ''}|${createdAt.toIso8601String()}';
+  }
+
+  bool _hasUploadTaskForDedupeKey({
+    required String key,
+    required String videoId,
+    required String storagePath,
+    String? localPath,
+    bool includeSyncJobs = true,
+  }) {
+    if (_uploadQueue.any(
+      (task) =>
+          _uploadTaskDedupeKey(
+            localPath: task.localPath,
+            projectId: task.projectId,
+            createdAt: task.createdAt,
+          ) ==
+            key ||
+          task.videoId == videoId ||
+          task.storagePath == storagePath ||
+          (localPath != null && task.localPath != null && task.localPath == localPath),
+    )) {
+      return true;
+    }
+
+    if (!includeSyncJobs) {
+      return false;
+    }
+
+    return _syncJobs.any(
+      (task) =>
+          task.entityType == SyncJobEntityType.clip &&
+          task.action == SyncJobAction.upload &&
+          _isActiveUploadJobStatus(task.status) &&
+          (task.entityId == videoId ||
+              task.storagePath == storagePath ||
+              (localPath != null &&
+                  task.localPath != null &&
+                  task.localPath == localPath)),
+    );
+  }
+
+  int _nextAttemptCountForVideo(String videoId) {
+    final index = _syncJobs.indexWhere(
+      (j) =>
+          j.entityType == SyncJobEntityType.clip &&
+          j.entityId == videoId &&
+          j.action == SyncJobAction.upload,
+    );
+    if (index == -1) return 0;
+    return _syncJobs[index].attemptCount;
+  }
+
+  Future<void> _setSyncJobStateForVideo({
+    required String videoId,
+    required SyncJobStatus status,
+    required int attemptCount,
+    DateTime? nextRetryAt,
+    String? errorCode,
+    String? errorMessage,
+  }) async {
+    await _ensureQueueStoreLoaded();
+
+    final index = _syncJobs.indexWhere(
+      (j) =>
+          j.entityType == SyncJobEntityType.clip &&
+          j.entityId == videoId &&
+          j.action == SyncJobAction.upload,
+    );
+
+    if (index == -1) return;
+
+    final prev = _syncJobs[index];
+    _syncJobs[index] = SyncJob(
+      id: prev.id,
+      entityType: prev.entityType,
+      entityId: prev.entityId,
+      action: prev.action,
+      ownerUid: prev.ownerUid,
+      status: status,
+      storagePath: prev.storagePath,
+      projectId: prev.projectId,
+      localPath: prev.localPath,
+      attemptCount: attemptCount,
+      createdAt: prev.createdAt,
+      nextRetryAt: nextRetryAt,
+      lastErrorCode: errorCode ?? prev.lastErrorCode,
+      lastErrorMessage: errorMessage ?? prev.lastErrorMessage,
+    );
+
+    await _syncQueueStore.saveJobs(_syncJobs);
+  }
+
   Future<void> _ensureQueueStoreLoaded() async {
     if (_syncJobsLoaded) return;
     await initializeQueueStore();
@@ -107,6 +344,19 @@ class CloudService {
     return code == 'object-not-found' ||
         message.contains('object does not exist at location') ||
         (message.contains('not found') && message.contains('404'));
+  }
+
+  bool _ensureNotGuestForCloud(String operation) {
+    if (!_authService.isGuest) return true;
+
+    print('[CloudService] ✗ 게스트 모드 차단: $operation');
+    unawaited(
+      _reviewFallbackMetrics.recordCloudAccessBlocked(
+        operation: operation,
+        reason: 'guest_mode',
+      ),
+    );
+    return false;
   }
 
   SettableMetadata _buildVideoMetadata(String filePath) {
@@ -128,6 +378,11 @@ class CloudService {
 
   /// 사용자 인증 확인
   String? _getCurrentUserId() {
+    if (_authService.isGuest) {
+      print('[CloudService] ✗ 게스트 모드에서는 인증 기반 조회가 비활성입니다.');
+      return null;
+    }
+
     final user = _authService.currentUser;
     if (user == null) {
       print('[CloudService] ✗ 로그인 필요 (auth.currentUser=null)');
@@ -139,7 +394,9 @@ class CloudService {
   /// Standard 등급 이상 확인
   bool _checkStandardOrAbove() {
     if (!_userStatusManager.isStandardOrAbove()) {
-      print('[CloudService] ✗ Standard 등급 이상 필요 (현재: ${_userStatusManager.currentTier})');
+      print(
+        '[CloudService] ✗ Standard 등급 이상 필요 (현재: ${_userStatusManager.currentTier})',
+      );
       return false;
     }
     return true;
@@ -152,7 +409,7 @@ class CloudService {
 
     // 현재 사용량 조회
     final currentUsage = await _getCurrentStorageUsage(uid);
-    
+
     // 등급별 제한
     final limit = switch (_userStatusManager.currentTier) {
       UserTier.premium => _premiumStorageLimit,
@@ -249,11 +506,11 @@ class CloudService {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   /// 영상 업로드 (큐에 추가)
-  /// 
+  ///
   /// [videoFile] 업로드할 영상 파일
   /// [albumName] 앨범 이름
   /// [isFavorite] 즐겨찾기 여부
-  /// 
+  ///
   /// 반환: 업로드 작업 ID (Firestore 문서 ID)
   Future<String?> uploadVideo({
     required File videoFile,
@@ -267,6 +524,10 @@ class CloudService {
     print('[CloudService]   - 앨범: $albumName');
     print('[CloudService]   - 즐겨찾기: $isFavorite');
 
+    if (!_ensureNotGuestForCloud('클라우드 이동')) {
+      return null;
+    }
+
     // 1. 보안 검증
     final uid = _getCurrentUserId();
     if (uid == null) return null;
@@ -277,7 +538,9 @@ class CloudService {
 
     // 2. 파일 크기 확인
     final fileSize = await videoFile.length();
-    print('[CloudService]   - 파일 크기: ${(fileSize / (1024 * 1024)).toStringAsFixed(2)}MB');
+    print(
+      '[CloudService]   - 파일 크기: ${(fileSize / (1024 * 1024)).toStringAsFixed(2)}MB',
+    );
 
     // 3. 용량 제한 확인
     if (!await _checkStorageLimit(fileSize)) {
@@ -291,23 +554,20 @@ class CloudService {
 
     try {
       // Firestore 메타데이터 저장
-      await _firestore
-          .collection(_videosCollection)
-          .doc(videoId)
-          .set({
-            'uid': uid,
-            'videoId': videoId,
-            'fileName': fileName,
-            'storagePath': storagePath,
-            if (localPath != null) 'localPath': localPath,
-            'albumName': albumName,
-            'isFavorite': isFavorite,
-            'fileSize': fileSize,
-            'uploadStatus': 'queued',
-            'uploadProgress': 0,
-            'createdAt': FieldValue.serverTimestamp(),
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
+      await _firestore.collection(_videosCollection).doc(videoId).set({
+        'uid': uid,
+        'videoId': videoId,
+        'fileName': fileName,
+        'storagePath': storagePath,
+        if (localPath != null) 'localPath': localPath,
+        'albumName': albumName,
+        'isFavorite': isFavorite,
+        'fileSize': fileSize,
+        'uploadStatus': 'queued',
+        'uploadProgress': 0,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
 
       print('[CloudService] ✓ 메타데이터 생성: $videoId');
 
@@ -336,11 +596,17 @@ class CloudService {
   }) async {
     clearLastImmediateUploadError();
 
+    if (!_ensureNotGuestForCloud('클라우드 이동')) {
+      _lastImmediateUploadErrorCode = _errorGuestModeBlocked;
+      _lastImmediateUploadErrorCopy =
+          '게스트 모드에서는 클라우드 이동이 비활성입니다. 로그인 후 이용해 주세요.';
+      return null;
+    }
+
     final uid = _getCurrentUserId();
     if (uid == null) {
       _lastImmediateUploadErrorCode = _errorAuthRequired;
-      _lastImmediateUploadErrorCopy =
-          '로그인이 필요해요. 다시 로그인한 뒤 클라우드 이동을 재시도해주세요.';
+      _lastImmediateUploadErrorCopy = '로그인이 필요해요. 다시 로그인한 뒤 클라우드 이동을 재시도해주세요.';
       return null;
     }
     if (!_checkStandardOrAbove()) {
@@ -363,26 +629,25 @@ class CloudService {
     final storagePath = 'users/$uid/videos/$videoId/$fileName';
 
     try {
-      await _firestore
-          .collection(_videosCollection)
-          .doc(videoId)
-          .set({
-            'uid': uid,
-            'videoId': videoId,
-            'fileName': fileName,
-            'storagePath': storagePath,
-            if (localPath != null) 'localPath': localPath,
-            'albumName': albumName,
-            'isFavorite': isFavorite,
-            'fileSize': fileSize,
-            'uploadStatus': 'uploading',
-            'uploadProgress': 0,
-            'createdAt': FieldValue.serverTimestamp(),
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
+      await _firestore.collection(_videosCollection).doc(videoId).set({
+        'uid': uid,
+        'videoId': videoId,
+        'fileName': fileName,
+        'storagePath': storagePath,
+        if (localPath != null) 'localPath': localPath,
+        'albumName': albumName,
+        'isFavorite': isFavorite,
+        'fileSize': fileSize,
+        'uploadStatus': 'uploading',
+        'uploadProgress': 0,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
 
       final metadata = _buildVideoMetadata(videoFile.path);
-      print('[CloudService][Diag] immediate upload metadata: ${metadata.contentType}');
+      print(
+        '[CloudService][Diag] immediate upload metadata: ${metadata.contentType}',
+      );
       final ref = _storage.ref().child(storagePath);
       final task = await ref.putFile(videoFile, metadata);
       final downloadUrl = await task.ref.getDownloadURL();
@@ -437,11 +702,40 @@ class CloudService {
   }) async {
     await _ensureQueueStoreLoaded();
 
+    final now = DateTime.now();
+    final projectId = localPath != null ? p.dirname(localPath).split('/').last : null;
+    final dedupeKey = _uploadTaskDedupeKey(
+      localPath: localPath,
+      projectId: projectId,
+      createdAt: now,
+    );
+
+    final hasQueuedTaskDuplicate = _hasUploadTaskForDedupeKey(
+      key: dedupeKey,
+      videoId: videoId,
+      storagePath: storagePath,
+      localPath: localPath,
+      includeSyncJobs: false,
+    );
+
+    final hasActiveSyncDuplicate = _syncJobs.any(
+      (j) =>
+          j.entityType == SyncJobEntityType.clip &&
+          j.action == SyncJobAction.upload &&
+          _isActiveUploadJobStatus(j.status) &&
+          (j.entityId == videoId ||
+              j.storagePath == storagePath ||
+              (localPath != null &&
+                  j.localPath != null &&
+                  j.localPath == localPath)),
+    );
+
     final existing = _syncJobs.any(
       (j) =>
           j.entityType == SyncJobEntityType.clip &&
           j.entityId == videoId &&
-          j.action == SyncJobAction.upload,
+          j.action == SyncJobAction.upload &&
+          _isActiveUploadJobStatus(j.status),
     );
 
     if (!existing) {
@@ -451,11 +745,42 @@ class CloudService {
           entityType: SyncJobEntityType.clip,
           entityId: videoId,
           action: SyncJobAction.upload,
+          ownerUid: uid,
+          status: SyncJobStatus.queued,
+          storagePath: storagePath,
+          localPath: localPath,
           attemptCount: 0,
-          createdAt: DateTime.now(),
+          createdAt: now,
         ),
       );
       await _syncQueueStore.saveJobs(_syncJobs);
+    }
+
+    if (hasQueuedTaskDuplicate) {
+      print(
+        '[CloudService] ⚠️ 큐 중복 삽입 스킵: '
+        '(videoId=$videoId, dedupe=$dedupeKey)',
+      );
+      return;
+    }
+
+    if (hasActiveSyncDuplicate && !existing) {
+      print(
+        '[CloudService] ⚠️ 동기화 작업 중복 삽입 스킵: '
+        '(videoId=$videoId, storagePath=$storagePath, localPath=$localPath)',
+      );
+      return;
+    }
+
+    final attemptCount = _nextAttemptCountForVideo(videoId);
+
+    if (existing) {
+      await _setSyncJobStateForVideo(
+        videoId: videoId,
+        status: SyncJobStatus.inProgress,
+        attemptCount: attemptCount,
+        nextRetryAt: null,
+      );
     }
 
     final uploadTask = UploadTask(
@@ -465,6 +790,9 @@ class CloudService {
       fileSize: fileSize,
       uid: uid,
       localPath: localPath,
+      projectId: projectId,
+      attemptCount: attemptCount,
+      createdAt: now,
     );
 
     _uploadQueue.add(uploadTask);
@@ -478,6 +806,11 @@ class CloudService {
 
   /// 업로드 큐 순차 처리
   Future<void> _processUploadQueue() async {
+    if (!_ensureNotGuestForCloud('백그라운드 업로드')) {
+      _uploadQueue.clear();
+      return;
+    }
+
     if (_isProcessingQueue) return;
     _isProcessingQueue = true;
 
@@ -486,7 +819,8 @@ class CloudService {
     while (_uploadQueue.isNotEmpty) {
       final task = _uploadQueue.removeAt(0);
 
-      if (task.availableAt != null && DateTime.now().isBefore(task.availableAt!)) {
+      if (task.availableAt != null &&
+          DateTime.now().isBefore(task.availableAt!)) {
         _uploadQueue.add(task);
         await Future.delayed(const Duration(milliseconds: 500));
         continue;
@@ -510,10 +844,12 @@ class CloudService {
       'signedIn=${_authService.isSignedIn}, path=${task.storagePath}',
     );
 
-    try {
+  try {
       // Firebase Storage 업로드
       final metadata = _buildVideoMetadata(task.videoFile.path);
-      print('[CloudService][Diag] queue upload metadata: ${metadata.contentType}');
+      print(
+        '[CloudService][Diag] queue upload metadata: ${metadata.contentType}',
+      );
       final ref = _storage.ref().child(task.storagePath);
       final uploadTask = ref.putFile(task.videoFile, metadata);
 
@@ -523,21 +859,20 @@ class CloudService {
         final progressPercent = (progress * 100).toInt();
 
         // Firestore 진행률 업데이트
-        _firestore
-            .collection(_videosCollection)
-            .doc(task.videoId)
-            .update({
-              'uploadProgress': progressPercent,
-              'uploadStatus': 'uploading',
-            });
+        _firestore.collection(_videosCollection).doc(task.videoId).update({
+          'uploadProgress': progressPercent,
+          'uploadStatus': 'uploading',
+        });
 
         // 스트림 발행
-        _progressController.add(UploadProgress(
-          videoId: task.videoId,
-          progress: progress,
-          bytesTransferred: snapshot.bytesTransferred,
-          totalBytes: snapshot.totalBytes,
-        ));
+        _progressController.add(
+          UploadProgress(
+            videoId: task.videoId,
+            progress: progress,
+            bytesTransferred: snapshot.bytesTransferred,
+            totalBytes: snapshot.totalBytes,
+          ),
+        );
 
         if (progressPercent % 20 == 0) {
           print('[CloudService] 📊 진행률: $progressPercent%');
@@ -549,15 +884,12 @@ class CloudService {
       final downloadUrl = await snapshot.ref.getDownloadURL();
 
       // Firestore 업데이트 (완료)
-      await _firestore
-          .collection(_videosCollection)
-          .doc(task.videoId)
-          .update({
-            'uploadStatus': 'completed',
-            'uploadProgress': 100,
-            'downloadUrl': downloadUrl,
-            'completedAt': FieldValue.serverTimestamp(),
-          });
+      await _firestore.collection(_videosCollection).doc(task.videoId).update({
+        'uploadStatus': 'completed',
+        'uploadProgress': 100,
+        'downloadUrl': downloadUrl,
+        'completedAt': FieldValue.serverTimestamp(),
+      });
 
       // 사용량 업데이트
       await _updateStorageUsageIdempotent(
@@ -571,12 +903,16 @@ class CloudService {
         await VideoManager().markClipCloudSynced(task.localPath!);
       }
 
+      await _setSyncJobStateForVideo(
+        videoId: task.videoId,
+        status: SyncJobStatus.completed,
+        attemptCount: task.attemptCount,
+      );
       await _removeSyncJobForVideo(task.videoId);
 
       print('[CloudService] ✓ 업로드 완료: ${task.videoId}');
       print('[CloudService]   - URL: $downloadUrl');
-
-    } catch (e) {
+  } catch (e) {
       final authUidOnError = _authService.currentUser?.uid;
       final detail = _classifySyncError(e.toString());
       print(
@@ -597,6 +933,15 @@ class CloudService {
         e.toString(),
         detail.code,
       );
+      if (nextRetryAt == null) {
+        await _setSyncJobStateForVideo(
+          videoId: task.videoId,
+          status: SyncJobStatus.failed,
+          attemptCount: task.attemptCount + 1,
+          errorCode: detail.code,
+          errorMessage: e.toString(),
+        );
+      }
       if (detail.retryable &&
           nextRetryAt != null &&
           task.attemptCount < _maxRetryAttempts) {
@@ -605,6 +950,14 @@ class CloudService {
             attemptCount: task.attemptCount + 1,
             availableAt: nextRetryAt,
           ),
+        );
+        await _setSyncJobStateForVideo(
+          videoId: task.videoId,
+          status: SyncJobStatus.failed,
+          attemptCount: task.attemptCount + 1,
+          nextRetryAt: nextRetryAt,
+          errorCode: detail.code,
+          errorMessage: e.toString(),
         );
       } else if (!detail.retryable) {
         print('[CloudService] ⛔ 비재시도 오류로 큐 재시도 중단: ${detail.code}');
@@ -639,12 +992,25 @@ class CloudService {
 
     final prev = _syncJobs[index];
     final attempt = prev.attemptCount + 1;
-    final nextRetryAt = _computeBackoffWithJitter(attempt);
+    final isTerminalFailure = _isNonRetryableErrorCode(errorCode) ||
+        (!_classifySyncError(error).retryable) ||
+        attempt >= _maxRetryAttempts;
+
+    DateTime? nextRetryAt;
+    if (!isTerminalFailure) {
+      nextRetryAt = _computeBackoffWithJitter(attempt);
+    }
+
     _syncJobs[index] = SyncJob(
       id: prev.id,
       entityType: prev.entityType,
       entityId: prev.entityId,
       action: prev.action,
+      ownerUid: prev.ownerUid,
+      status: SyncJobStatus.failed,
+      storagePath: prev.storagePath,
+      projectId: prev.projectId,
+      localPath: prev.localPath,
       attemptCount: attempt,
       createdAt: prev.createdAt,
       lastErrorCode: errorCode,
@@ -653,6 +1019,18 @@ class CloudService {
     );
     await _syncQueueStore.saveJobs(_syncJobs);
     return nextRetryAt;
+  }
+
+  bool _isNonRetryableErrorCode(String errorCode) {
+    return errorCode == _errorAuthRequired ||
+        errorCode == _errorGuestModeBlocked ||
+        errorCode == _errorTierRequired ||
+        errorCode == _errorPermissionDenied ||
+        errorCode == _errorCloudApiDisabled ||
+        errorCode == _errorStorageLimit ||
+        errorCode == _errorQuota ||
+        errorCode == _errorFileSystem ||
+        errorCode == _errorNotFound;
   }
 
   DateTime _computeBackoffWithJitter(int attempt) {
@@ -665,11 +1043,11 @@ class CloudService {
   SyncErrorDetail _classifySyncError(String rawError) {
     final normalized = rawError.toLowerCase();
 
-    if (normalized.contains('cloud firestore api has not been used') ||
-        normalized.contains('firestore.googleapis.com') ||
-        normalized.contains('api is disabled')) {
+    if (normalized.contains('object-not-found') ||
+        normalized.contains('storage/object-not-found') ||
+        normalized.contains('object does not exist at location')) {
       return SyncErrorDetail(
-        code: _errorCloudApiDisabled,
+        code: _errorNotFound,
         retryable: false,
         copy: ErrorCopy.syncFailureWithAction(rawError),
       );
@@ -677,9 +1055,31 @@ class CloudService {
 
     if (normalized.contains('permission_denied') ||
         normalized.contains('permission denied') ||
-        normalized.contains('unauthorized')) {
+        normalized.contains('unauthorized') ||
+        normalized.contains('forbidden')) {
       return SyncErrorDetail(
         code: _errorPermissionDenied,
+        retryable: false,
+        copy: ErrorCopy.syncFailureWithAction(rawError),
+      );
+    }
+
+    if (normalized.contains('not authenticated') ||
+        normalized.contains('auth/currentuser is null') ||
+        normalized.contains('auth required') ||
+        normalized.contains('sign in')) {
+      return SyncErrorDetail(
+        code: _errorAuthRequired,
+        retryable: false,
+        copy: ErrorCopy.syncFailureWithAction(rawError),
+      );
+    }
+
+    if (normalized.contains('cloud firestore api has not been used') ||
+        normalized.contains('firestore.googleapis.com') ||
+        normalized.contains('api is disabled')) {
+      return SyncErrorDetail(
+        code: _errorCloudApiDisabled,
         retryable: false,
         copy: ErrorCopy.syncFailureWithAction(rawError),
       );
@@ -696,9 +1096,46 @@ class CloudService {
       );
     }
 
-    if (normalized.contains('quota') || normalized.contains('storage')) {
+    if (normalized.contains('storage') ||
+        normalized.contains('too large') ||
+        normalized.contains('quota') ||
+        normalized.contains('exceeded')) {
+      if (normalized.contains('quota') || normalized.contains('exceeded')) {
+        return SyncErrorDetail(
+          code: _errorQuota,
+          retryable: false,
+          copy: ErrorCopy.syncFailureWithAction(rawError),
+        );
+      }
+
+      if (normalized.contains('not found') ||
+          normalized.contains('object-not-found') ||
+          normalized.contains('does not exist')) {
+        return SyncErrorDetail(
+          code: _errorNotFound,
+          retryable: false,
+          copy: ErrorCopy.syncFailureWithAction(rawError),
+        );
+      }
+    }
+
+    if (normalized.contains('io exception') ||
+        normalized.contains('filesystem') ||
+        normalized.contains('no such file') ||
+        normalized.contains('file not found') ||
+        normalized.contains('os error')) {
       return SyncErrorDetail(
-        code: _errorQuota,
+        code: _errorFileSystem,
+        retryable: false,
+        copy: ErrorCopy.syncFailureWithAction(rawError),
+      );
+    }
+
+    if (normalized.contains('firestore') ||
+        normalized.contains('documentreference') ||
+        normalized.contains('firestoreexception')) {
+      return SyncErrorDetail(
+        code: _errorUploadFailed,
         retryable: false,
         copy: ErrorCopy.syncFailureWithAction(rawError),
       );
@@ -793,6 +1230,8 @@ class CloudService {
     VideoManager manager, {
     String trigger = 'manual',
   }) async {
+    if (!_ensureNotGuestForCloud('클라우드 자동 업로드')) return;
+
     final uid = _getCurrentUserId();
     if (uid == null) return;
     if (!_checkStandardOrAbove()) return;
@@ -824,13 +1263,15 @@ class CloudService {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   /// 영상 다운로드
-  /// 
+  ///
   /// [videoId] Firestore 영상 문서 ID
   /// [localPath] 로컬 저장 경로
   Future<bool> downloadVideo({
     required String videoId,
     required String localPath,
   }) async {
+    if (!_ensureNotGuestForCloud('클라우드 다운로드')) return false;
+
     print('[CloudService] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     print('[CloudService] 📥 다운로드 요청: $videoId');
 
@@ -855,7 +1296,7 @@ class CloudService {
       }
 
       final data = doc.data()!;
-      
+
       // 3. 소유권 확인 (보안)
       if (data['uid'] != uid) {
         print('[CloudService] ✗ 접근 권한 없음 (소유자: ${data['uid']})');
@@ -876,7 +1317,6 @@ class CloudService {
 
       print('[CloudService] ✓ 다운로드 완료: $localPath');
       return true;
-
     } catch (e) {
       print('[CloudService] ✗ 다운로드 실패: $e');
       return false;
@@ -893,15 +1333,17 @@ class CloudService {
     String? albumName,
     bool? isFavorite,
   }) async {
+    if (!_ensureNotGuestForCloud('클라우드 메타데이터 업데이트')) return false;
+
     final uid = _getCurrentUserId();
     if (uid == null) return false;
 
     try {
       final updateData = <String, dynamic>{};
-      
+
       if (albumName != null) updateData['albumName'] = albumName;
       if (isFavorite != null) updateData['isFavorite'] = isFavorite;
-      
+
       updateData['updatedAt'] = FieldValue.serverTimestamp();
 
       await _firestore
@@ -922,6 +1364,8 @@ class CloudService {
     String? albumName,
     bool? isFavorite,
   }) {
+    if (!_ensureNotGuestForCloud('클라우드 영상 목록 조회')) return Stream.value([]);
+
     final uid = _getCurrentUserId();
     if (uid == null) {
       return Stream.value([]);
@@ -949,6 +1393,8 @@ class CloudService {
 
   /// 영상 삭제 (Storage + Firestore)
   Future<bool> deleteVideo(String videoId) async {
+    if (!_ensureNotGuestForCloud('클라우드 영상 삭제')) return false;
+
     print('[CloudService] 🗑️ 삭제 요청: $videoId');
 
     final uid = _getCurrentUserId();
@@ -964,7 +1410,7 @@ class CloudService {
       if (!doc.exists) return false;
 
       final data = doc.data()!;
-      
+
       // 2. 소유권 확인
       if (data['uid'] != uid) {
         print('[CloudService] ✗ 접근 권한 없음');
@@ -979,10 +1425,7 @@ class CloudService {
       await ref.delete();
 
       // 4. Firestore 문서 삭제
-      await _firestore
-          .collection(_videosCollection)
-          .doc(videoId)
-          .delete();
+      await _firestore.collection(_videosCollection).doc(videoId).delete();
 
       // 5. 사용량 업데이트 (마이너스)
       await _updateStorageUsageIdempotent(
@@ -994,7 +1437,6 @@ class CloudService {
 
       print('[CloudService] ✓ 삭제 완료: $videoId');
       return true;
-
     } catch (e) {
       print('[CloudService] ✗ 삭제 실패: $e');
       return false;
@@ -1002,6 +1444,8 @@ class CloudService {
   }
 
   Future<VideoMetadata?> findUserVideoByLocalPath(String localPath) async {
+    if (!_ensureNotGuestForCloud('클라우드 메타데이터 조회')) return null;
+
     final uid = _getCurrentUserId();
     if (uid == null) return null;
 
@@ -1055,6 +1499,14 @@ class CloudService {
   /// - vlog_projects 문서
   /// - users/{uid} 문서
   Future<CloudPurgeResult> purgeCurrentUserCloudData() async {
+    if (!_ensureNotGuestForCloud('클라우드 데이터 정리')) {
+      return const CloudPurgeResult(
+        success: false,
+        message: '게스트 모드에서는 클라우드 정리가 비활성입니다.',
+        failedPhase: 'guest_mode',
+      );
+    }
+
     final uid = _getCurrentUserId();
     if (uid == null) {
       return const CloudPurgeResult(
@@ -1066,7 +1518,9 @@ class CloudService {
 
     final inFlight = _purgeInFlightByUid[uid];
     if (inFlight != null) {
-      print('[CloudService] purgeCurrentUserCloudData 중복 호출 감지: uid=$uid, 기존 작업 완료 대기');
+      print(
+        '[CloudService] purgeCurrentUserCloudData 중복 호출 감지: uid=$uid, 기존 작업 완료 대기',
+      );
       return inFlight;
     }
 
@@ -1083,7 +1537,6 @@ class CloudService {
   }
 
   Future<CloudPurgeResult> _performPurgeCurrentUserCloudData(String uid) async {
-
     var deletedVideoDocs = 0;
     var deletedStorageFiles = 0;
     var skippedStorageDeletes = 0;
@@ -1101,14 +1554,17 @@ class CloudService {
       for (final doc in videoSnapshot.docs) {
         final data = doc.data();
         final storagePath = (data['storagePath'] as String?)?.trim();
-        final uploadStatus =
-            (data['uploadStatus'] as String? ?? '').trim().toLowerCase();
+        final uploadStatus = (data['uploadStatus'] as String? ?? '')
+            .trim()
+            .toLowerCase();
         final hasDownloadUrl =
             ((data['downloadUrl'] as String?)?.trim().isNotEmpty ?? false);
         final shouldAttemptStorageDelete =
             uploadStatus == 'completed' || hasDownloadUrl;
 
-        if (storagePath != null && storagePath.isNotEmpty && shouldAttemptStorageDelete) {
+        if (storagePath != null &&
+            storagePath.isNotEmpty &&
+            shouldAttemptStorageDelete) {
           try {
             await _storage.ref().child(storagePath).delete();
             deletedStorageFiles++;
@@ -1199,15 +1655,19 @@ class CloudService {
   // 🧾 Vlog 프로젝트 메타데이터 관리
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  Future<ProjectCloudMetadata?> upsertVlogProjectMetadata(VlogProject project) async {
+  Future<ProjectCloudMetadata?> upsertVlogProjectMetadata(
+    VlogProject project,
+  ) async {
+    if (!_ensureNotGuestForCloud('프로젝트 메타데이터 업서트')) return null;
+
     final uid = _getCurrentUserId();
     if (uid == null) return null;
 
     try {
       final projectDocId =
           (project.cloudProjectId != null && project.cloudProjectId!.isNotEmpty)
-              ? project.cloudProjectId!
-              : _firestore.collection(_vlogProjectsCollection).doc().id;
+          ? project.cloudProjectId!
+          : _firestore.collection(_vlogProjectsCollection).doc().id;
 
       final authUid = _authService.currentUser?.uid;
       print(
@@ -1218,19 +1678,22 @@ class CloudService {
         'clipCount=${project.clips.length} deleted=false',
       );
 
-      await _firestore.collection(_vlogProjectsCollection).doc(projectDocId).set({
-        'uid': uid,
-        'localProjectId': project.id,
-        'title': project.title,
-        'clipPaths': project.clips.map((c) => c.path).toList(),
-        'clipCount': project.clips.length,
-        'folderName': project.folderName,
-        'lockState': project.lockState,
-        'clientCreatedAt': Timestamp.fromDate(project.createdAt),
-        'clientUpdatedAt': Timestamp.fromDate(project.updatedAt),
-        'lastSyncedAt': FieldValue.serverTimestamp(),
-        'deleted': false,
-      }, SetOptions(merge: true));
+      await _firestore
+          .collection(_vlogProjectsCollection)
+          .doc(projectDocId)
+          .set({
+            'uid': uid,
+            'localProjectId': project.id,
+            'title': project.title,
+            'clipPaths': project.clips.map((c) => c.path).toList(),
+            'clipCount': project.clips.length,
+            'folderName': project.folderName,
+            'lockState': project.lockState,
+            'clientCreatedAt': Timestamp.fromDate(project.createdAt),
+            'clientUpdatedAt': Timestamp.fromDate(project.updatedAt),
+            'lastSyncedAt': FieldValue.serverTimestamp(),
+            'deleted': false,
+          }, SetOptions(merge: true));
 
       print(
         '[CloudService][Diag][vlogMeta][upsert][ok] '
@@ -1270,7 +1733,11 @@ class CloudService {
     }
   }
 
-  Future<Map<String, ProjectCloudMetadata>> getUserVlogProjectMetadataMap() async {
+  Future<Map<String, ProjectCloudMetadata>>
+  getUserVlogProjectMetadataMap() async {
+    if (!_ensureNotGuestForCloud('프로젝트 메타데이터 조회'))
+      return <String, ProjectCloudMetadata>{};
+
     final uid = _getCurrentUserId();
     if (uid == null) return <String, ProjectCloudMetadata>{};
 
@@ -1330,6 +1797,8 @@ class CloudService {
     required String localProjectId,
     String? cloudProjectId,
   }) async {
+    if (!_ensureNotGuestForCloud('프로젝트 메타데이터 삭제')) return false;
+
     final uid = _getCurrentUserId();
     if (uid == null) return false;
 
@@ -1343,7 +1812,10 @@ class CloudService {
       );
 
       if (cloudProjectId != null && cloudProjectId.isNotEmpty) {
-        await _firestore.collection(_vlogProjectsCollection).doc(cloudProjectId).delete();
+        await _firestore
+            .collection(_vlogProjectsCollection)
+            .doc(cloudProjectId)
+            .delete();
         print(
           '[CloudService][Diag][vlogMeta][delete][ok] '
           'collection=$_vlogProjectsCollection '
@@ -1403,6 +1875,8 @@ class CloudService {
 
   /// 현재 저장 용량 사용량 조회 (GB)
   Future<double> getStorageUsageGB() async {
+    if (!_ensureNotGuestForCloud('클라우드 용량 조회')) return 0.0;
+
     final uid = _getCurrentUserId();
     if (uid == null) return 0.0;
 
@@ -1436,18 +1910,18 @@ class CloudService {
   ///
   /// 90% 이상 도달 시 Premium 전환 알림 트리거
   Future<void> checkUsageAndAlert(VideoManager _) async {
+    if (!_ensureNotGuestForCloud('클라우드 용량 알림')) return;
+
     try {
-      final notificationsEnabled =
-          await NotificationSettingsService.instance.isNotificationsEnabled();
+      final notificationsEnabled = await NotificationSettingsService.instance
+          .isNotificationsEnabled();
       if (!notificationsEnabled) {
         print('[CloudService] 알림 off 상태로 용량 알림 발송을 스킵합니다.');
         return;
       }
 
-      final storageAlertEnabled =
-          await NotificationSettingsService.instance.isCategoryEnabled(
-            NotificationCategory.storageAlert,
-          );
+      final storageAlertEnabled = await NotificationSettingsService.instance
+          .isCategoryEnabled(NotificationCategory.storageAlert);
       if (!storageAlertEnabled) {
         print('[CloudService] storage_alert 카테고리 off 상태로 용량 알림을 스킵합니다.');
         return;
@@ -1473,15 +1947,17 @@ class CloudService {
         // 90% 도달 시 알림 트리거
         print('[CloudService] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         print('[CloudService] ⚠️ 용량 90% 도달!');
-        print('[CloudService]   - 현재 사용량: ${(ratio * 100).toStringAsFixed(1)}%');
+        print(
+          '[CloudService]   - 현재 사용량: ${(ratio * 100).toStringAsFixed(1)}%',
+        );
         print('[CloudService]   - 사용량: ${usedBytes / (1024 * 1024 * 1024)} GB');
         print('[CloudService]   - 제한: ${limitBytes / (1024 * 1024 * 1024)} GB');
         print('[CloudService] 📢 Premium 전환 알림 발송 준비');
         print('[CloudService] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        
+
         // TODO: FCM 푸시 알림 전송
         // await _sendHighUsageNotification();
-        
+
         // TODO: 인앱 다이얼로그 표시
         // - "클라우드 저장 공간이 거의 찼습니다!"
         // - "Premium으로 업그레이드하여 200GB를 확보하세요"
@@ -1505,6 +1981,8 @@ class UploadTask {
   final int fileSize;
   final String uid;
   final String? localPath;
+  final String? projectId;
+  final DateTime createdAt;
   final int attemptCount;
   final DateTime? availableAt;
 
@@ -1515,14 +1993,13 @@ class UploadTask {
     required this.fileSize,
     required this.uid,
     this.localPath,
+    this.projectId,
+    required this.createdAt,
     this.attemptCount = 0,
     this.availableAt,
   });
 
-  UploadTask copyWith({
-    int? attemptCount,
-    DateTime? availableAt,
-  }) {
+  UploadTask copyWith({int? attemptCount, DateTime? availableAt}) {
     return UploadTask(
       videoFile: videoFile,
       videoId: videoId,
@@ -1530,6 +2007,8 @@ class UploadTask {
       fileSize: fileSize,
       uid: uid,
       localPath: localPath,
+      projectId: projectId,
+      createdAt: createdAt,
       attemptCount: attemptCount ?? this.attemptCount,
       availableAt: availableAt ?? this.availableAt,
     );
@@ -1599,7 +2078,7 @@ class UploadProgress {
 
   int get progressPercent => (progress * 100).toInt();
 
-  String get progressText => 
+  String get progressText =>
       '${(bytesTransferred / (1024 * 1024)).toStringAsFixed(1)}MB / '
       '${(totalBytes / (1024 * 1024)).toStringAsFixed(1)}MB';
 }
@@ -1640,7 +2119,7 @@ class VideoMetadata {
 
   factory VideoMetadata.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
-    
+
     return VideoMetadata(
       videoId: doc.id,
       uid: data['uid'] ?? '',
@@ -1659,7 +2138,7 @@ class VideoMetadata {
     );
   }
 
-  String get fileSizeText => 
+  String get fileSizeText =>
       (fileSize / (1024 * 1024)).toStringAsFixed(2) + 'MB';
 }
 

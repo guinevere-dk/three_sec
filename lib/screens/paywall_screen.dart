@@ -147,6 +147,31 @@ class _PaywallScreenState extends State<PaywallScreen> {
     return UserTier.premium;
   }
 
+  Future<void> _handleRestorePressed() async {
+    if (!mounted) {
+      return;
+    }
+
+    setState(() => _isPurchaseLoading = true);
+
+    final success = await _iapService.restorePurchases();
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() => _isPurchaseLoading = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          success
+              ? '구매 복원 요청을 처리했습니다. 잠시 후 상태가 반영됩니다.'
+              : '구매 복원에 실패했습니다. 네트워크 상태를 확인하고 다시 시도해주세요.',
+        ),
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _subscription?.cancel();
@@ -626,7 +651,34 @@ class _PaywallScreenState extends State<PaywallScreen> {
 
   Widget _buildLegalTextButton(String label) {
     return InkWell(
-      onTap: () {},
+      onTap: () async {
+        if (!mounted) {
+          return;
+        }
+
+        if (label == 'RESTORE') {
+          await _handleRestorePressed();
+          return;
+        }
+
+        if (label == 'TERMS') {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('이용약관이 준비되지 않았습니다.')),
+          );
+          return;
+        }
+
+        if (label == 'PRIVACY') {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('개인정보 처리방침이 준비되지 않았습니다.')),
+          );
+          return;
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('준비되지 않은 링크입니다.')),
+        );
+      },
       borderRadius: BorderRadius.circular(8),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),

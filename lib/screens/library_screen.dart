@@ -11,6 +11,7 @@ import '../utils/haptics.dart';
 import '../utils/media_selection_helper.dart';
 import '../managers/video_manager.dart';
 import '../services/cloud_service.dart';
+import '../services/auth_service.dart';
 
 enum _SelectionActionState { local, cloud, mixed }
 
@@ -803,6 +804,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   VoidCallback? _transferHandlerForSelectionState(_SelectionActionState state) {
+    if (AuthService().isGuest) {
+      return _showGuestCloudActionBlockedToast;
+    }
+
     switch (state) {
       case _SelectionActionState.local:
         return _moveSelectedLocalToCloud;
@@ -813,9 +818,23 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
   }
 
+  void _showGuestCloudActionBlockedToast() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('게스트 모드에서는 클라우드 이동/복원이 비활성입니다. 로그인 후 이용해 주세요.'),
+      ),
+    );
+  }
+
   Future<void> _moveSelectedLocalToCloud() async {
     final targets = List<String>.from(_selectedClipPaths);
     if (targets.isEmpty) return;
+
+    if (AuthService().isGuest) {
+      _showGuestCloudActionBlockedToast();
+      return;
+    }
 
     setState(() {
       _isClipSelectionMode = false;
@@ -911,6 +930,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
     required String? fallback,
   }) {
     switch (errorCode) {
+      case 'guest_mode_blocked':
+        return '게스트 모드에서는 클라우드 이동/복원이 비활성입니다. 로그인 후 이용해 주세요.';
       case 'cloud_api_disabled':
         return '서버 설정 문제로 클라우드 이동이 막혀 있어요. Firestore API 활성화 후 다시 시도해주세요.';
       case 'permission_denied':
@@ -949,6 +970,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
   Future<void> _moveSelectedCloudToLocal() async {
     final targets = List<String>.from(_selectedClipPaths);
     if (targets.isEmpty) return;
+
+    if (AuthService().isGuest) {
+      _showGuestCloudActionBlockedToast();
+      return;
+    }
 
     setState(() {
       _isClipSelectionMode = false;

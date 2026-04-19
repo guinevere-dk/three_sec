@@ -65,6 +65,16 @@ flutter build appbundle --release
 build\app\outputs\bundle\release\app-release.aab
 ```
 
+가독화 파일(난독화 매핑) 생성 경로:
+
+```text
+build\app\outputs\mapping\release\mapping.txt
+```
+
+Play Console 업로드 경로(릴리즈 상세 화면):
+- `앱 번들 탐색기` 또는 해당 릴리즈의 `디옵스큐레이션 파일(가독화 파일)` 업로드 영역에서 `mapping.txt` 업로드
+- 새 AAB를 올릴 때마다 같은 버전에 대응하는 `mapping.txt`를 함께 업로드
+
 권장 추가 검증:
 - 빌드 오류 없음
 - 앱 실행 스모크 테스트(실기기)
@@ -105,6 +115,7 @@ build\app\outputs\bundle\release\app-release.aab
 
 ### 빌드 후
 - [ ] `app-release.aab` 생성 확인
+- [ ] `mapping.txt` 생성 확인 (`build\app\outputs\mapping\release\mapping.txt`)
 - [ ] 실기기 스모크 테스트 완료
 - [ ] 크래시/ANR 즉시 발생 없음
 
@@ -128,6 +139,10 @@ build\app\outputs\bundle\release\app-release.aab
 ### 이슈 C: 업로드는 됐는데 릴리즈 불가
 - 원인: 정책/데이터 안전/콘텐츠 등 Play Console 미완료 항목
 - 해결: 콘솔의 `정책 상태` 및 `앱 콘텐츠` 누락 항목 먼저 완료
+
+### 이슈 D: 가독화 파일 누락 경고
+- 원인: 난독화(R8/Proguard) 사용 빌드인데 `mapping.txt` 미업로드
+- 해결: `build\app\outputs\mapping\release\mapping.txt`를 릴리즈 화면에 업로드
 
 ---
 
