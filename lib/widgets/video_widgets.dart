@@ -30,49 +30,108 @@ class VideoPreviewWidget extends StatefulWidget {
 }
 
 class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
-  late VideoPlayerController _vController;
+  VideoPlayerController? _vController;
+  String? _initError;
   bool _showControls = true;
 
   @override
   void initState() {
     super.initState();
-    _vController = VideoPlayerController.file(File(widget.filePath))
-      ..initialize().then((_) {
-        if (mounted) {
-          setState(() {});
-          _vController.setLooping(true);
-          _vController.play();
-        }
+    _initializePreviewController();
+  }
+
+  @override
+  void didUpdateWidget(covariant VideoPreviewWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.filePath != widget.filePath) {
+      _initializePreviewController();
+    }
+  }
+
+  Future<void> _initializePreviewController() async {
+    final oldController = _vController;
+    final file = File(widget.filePath);
+
+    if (!file.existsSync()) {
+      if (!mounted) return;
+      setState(() {
+        _vController = null;
+        _initError = '파일을 찾을 수 없습니다.';
       });
-    _vController.addListener(() {
+      await oldController?.dispose();
+      return;
+    }
+
+    final controller = VideoPlayerController.file(file);
+    controller.addListener(() {
       if (mounted) setState(() {});
     });
+
+    if (mounted) {
+      setState(() {
+        _vController = controller;
+        _initError = null;
+      });
+    }
+
+    await oldController?.dispose();
+
+    try {
+      await controller.initialize();
+      await controller.setLooping(true);
+      await controller.play();
+      if (!mounted || _vController != controller) return;
+      setState(() {});
+    } catch (_) {
+      if (!mounted || _vController != controller) return;
+      setState(() {
+        _initError = '미리보기를 재생할 수 없습니다.';
+      });
+    }
   }
 
   @override
   void dispose() {
-    _vController.dispose();
+    _vController?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final isFav = widget.favorites.contains(widget.filePath);
-    final duration = _vController.value.duration;
-    final position = _vController.value.position;
+    final controller = _vController;
+    final duration = controller?.value.duration ?? Duration.zero;
+    final position = controller?.value.position ?? Duration.zero;
+    final isInitialized = controller?.value.isInitialized ?? false;
+    final isPlaying = controller?.value.isPlaying ?? false;
     
     return GestureDetector(
       onTap: () => setState(() => _showControls = !_showControls),
-      child: Positioned.fill(
+      child: SizedBox.expand(
         child: Container(
           color: Colors.black,
           child: Stack(
             children: [
               Center(
-                child: _vController.value.isInitialized
+                child: _initError != null
+                    ? Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            _initError!,
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+                          const SizedBox(height: 12),
+                          TextButton(
+                            onPressed: _initializePreviewController,
+                            child: const Text('다시 시도'),
+                          ),
+                        ],
+                      )
+                    : isInitialized
                     ? AspectRatio(
-                        aspectRatio: _vController.value.aspectRatio,
-                        child: VideoPlayer(_vController),
+                        aspectRatio: controller!.value.aspectRatio,
+                        child: VideoPlayer(controller),
                       )
                     : const CircularProgressIndicator(),
               ),
@@ -93,9 +152,25 @@ class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
                   child: MediaWidgets.buildVideoProgressBar(
                     position: position,
                     duration: duration,
-                    onSeek: (d) => _vController.seekTo(d),
+                    onSeek: (d) => controller?.seekTo(d),
                   ),
                 ),
+                if (isInitialized && !isPlaying)
+                  Positioned(
+                    bottom: 160,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: IconButton(
+                        icon: const Icon(
+                          Icons.play_circle_fill,
+                          size: 56,
+                          color: Colors.white,
+                        ),
+                        onPressed: () => controller?.play(),
+                      ),
+                    ),
+                  ),
                 Positioned(
                   bottom: 50,
                   left: 0,

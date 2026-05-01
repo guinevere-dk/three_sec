@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants/clip_policy.dart';
 import '../main.dart';
@@ -18,6 +19,29 @@ enum _CaptureFlowState { idle, preparing, recording, stopping, saving, error }
 enum _CaptureQualityMode { auto, p1080, p4k }
 
 extension _PreviewAspectPresetX on _PreviewAspectPreset {
+  static _PreviewAspectPreset fromStorageKey(String? value) {
+    switch (value) {
+      case 'r3_4':
+        return _PreviewAspectPreset.ratio3x4;
+      case 'r1_1':
+        return _PreviewAspectPreset.ratio1x1;
+      case 'r9_16':
+      default:
+        return _PreviewAspectPreset.ratio9x16;
+    }
+  }
+
+  String get saveAspectPreset {
+    switch (this) {
+      case _PreviewAspectPreset.ratio9x16:
+        return 'r9_16';
+      case _PreviewAspectPreset.ratio3x4:
+        return 'r3_4';
+      case _PreviewAspectPreset.ratio1x1:
+        return 'r1_1';
+    }
+  }
+
   double get aspectRatio {
     switch (this) {
       case _PreviewAspectPreset.ratio9x16:
@@ -42,6 +66,29 @@ extension _PreviewAspectPresetX on _PreviewAspectPreset {
 }
 
 extension _CaptureQualityModeX on _CaptureQualityMode {
+  static _CaptureQualityMode fromStorageKey(String? value) {
+    switch (value) {
+      case 'auto':
+        return _CaptureQualityMode.auto;
+      case 'p4k':
+        return _CaptureQualityMode.p4k;
+      case 'p1080':
+      default:
+        return _CaptureQualityMode.p1080;
+    }
+  }
+
+  String get storageKey {
+    switch (this) {
+      case _CaptureQualityMode.auto:
+        return 'auto';
+      case _CaptureQualityMode.p1080:
+        return 'p1080';
+      case _CaptureQualityMode.p4k:
+        return 'p4k';
+    }
+  }
+
   String get label {
     switch (this) {
       case _CaptureQualityMode.auto:
@@ -70,6 +117,8 @@ class _CaptureScreenState extends State<CaptureScreen>
   static final Map<String, bool> _probe4kSupportByLens = <String, bool>{};
   static final Map<String, Future<bool>> _probe4kSupportFutureByLens =
       <String, Future<bool>>{};
+  static const String _prefCaptureAspectPresetKey = 'capture_aspect_preset_v1';
+  static const String _prefCaptureQualityModeKey = 'capture_quality_mode_v1';
 
   CameraController? _controller;
 
@@ -211,7 +260,7 @@ class _CaptureScreenState extends State<CaptureScreen>
       vsync: this,
       duration: const Duration(milliseconds: 400),
     );
-    _initCamera();
+    unawaited(_restoreCaptureSettingsAndInitCamera());
   }
 
   @override
@@ -222,6 +271,60 @@ class _CaptureScreenState extends State<CaptureScreen>
 
   void _initCamera() {
     unawaited(_initializeCameraFlow());
+  }
+
+  Future<void> _restoreCaptureSettingsAndInitCamera() async {
+    await _restoreCaptureSettings();
+    if (!mounted) return;
+    _initCamera();
+  }
+
+  Future<void> _restoreCaptureSettings() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final aspectPreset = _PreviewAspectPresetX.fromStorageKey(
+        prefs.getString(_prefCaptureAspectPresetKey),
+      );
+      final qualityMode = _CaptureQualityModeX.fromStorageKey(
+        prefs.getString(_prefCaptureQualityModeKey),
+      );
+      if (!mounted) return;
+      setState(() {
+        _selectedAspectPreset = aspectPreset;
+        _selectedQualityMode = qualityMode;
+      });
+      debugPrint(
+        '[Capture] settings_restored aspect=${aspectPreset.saveAspectPreset} '
+        'quality=${qualityMode.storageKey}',
+      );
+    } catch (e) {
+      debugPrint('[Capture] settings_restore_failed error=$e');
+    }
+  }
+
+  Future<void> _persistCaptureAspectPreset(
+    _PreviewAspectPreset aspectPreset,
+  ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _prefCaptureAspectPresetKey,
+        aspectPreset.saveAspectPreset,
+      );
+      debugPrint('[Capture] aspect_persisted aspect=${aspectPreset.saveAspectPreset}');
+    } catch (e) {
+      debugPrint('[Capture] aspect_persist_failed error=$e');
+    }
+  }
+
+  Future<void> _persistCaptureQualityMode(_CaptureQualityMode mode) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_prefCaptureQualityModeKey, mode.storageKey);
+      debugPrint('[Capture] quality_persisted quality=${mode.storageKey}');
+    } catch (e) {
+      debugPrint('[Capture] quality_persist_failed error=$e');
+    }
   }
 
   Future<void> _initializeCameraFlow() async {
@@ -260,7 +363,9 @@ class _CaptureScreenState extends State<CaptureScreen>
         return true;
       }
 
-      if (!requestIfDenied || status.isPermanentlyDenied || status.isRestricted) {
+      if (!requestIfDenied ||
+          status.isPermanentlyDenied ||
+          status.isRestricted) {
         setState(() {
           _cameraError = _cameraPermissionGuideText(status);
         });
@@ -321,7 +426,9 @@ class _CaptureScreenState extends State<CaptureScreen>
     _CaptureQualityMode mode,
     String lensKey,
   ) {
-    final base = List<ResolutionPreset>.from(_resolutionCandidatesForMode(mode));
+    final base = List<ResolutionPreset>.from(
+      _resolutionCandidatesForMode(mode),
+    );
     final cached = _lastSuccessfulPresetByLens[lensKey];
     if (cached == null) return base;
     final reordered = <ResolutionPreset>[cached];
@@ -329,7 +436,9 @@ class _CaptureScreenState extends State<CaptureScreen>
     return reordered;
   }
 
-  List<ResolutionPreset> _resolutionCandidatesForMode(_CaptureQualityMode mode) {
+  List<ResolutionPreset> _resolutionCandidatesForMode(
+    _CaptureQualityMode mode,
+  ) {
     switch (mode) {
       case _CaptureQualityMode.auto:
         return const <ResolutionPreset>[
@@ -370,7 +479,8 @@ class _CaptureScreenState extends State<CaptureScreen>
       final result = await inFlight;
       logFirstCameraPreviewStage(
         'probe_4k_done',
-        detail: 'lens=$lensKey cached=false shared_future=true supported=$result',
+        detail:
+            'lens=$lensKey cached=false shared_future=true supported=$result',
       );
       return result;
     }
@@ -439,7 +549,9 @@ class _CaptureScreenState extends State<CaptureScreen>
       await controller.setZoomLevel(clampedZoom);
       logFirstCameraPreviewStage('exposure_zoom_query_done');
 
-      if (!mounted || _cameraInitSequence != initToken || _controller != controller) {
+      if (!mounted ||
+          _cameraInitSequence != initToken ||
+          _controller != controller) {
         return;
       }
       setState(() {
@@ -511,7 +623,10 @@ class _CaptureScreenState extends State<CaptureScreen>
       'candidate_selection_start',
       detail: 'lens=$lensKey mode=${effectiveMode.name}',
     );
-    final candidates = _orderedResolutionCandidatesForMode(effectiveMode, lensKey);
+    final candidates = _orderedResolutionCandidatesForMode(
+      effectiveMode,
+      lensKey,
+    );
     logFirstCameraPreviewStage(
       'candidate_selection_end',
       detail:
@@ -694,6 +809,13 @@ class _CaptureScreenState extends State<CaptureScreen>
 
       if (elapsedMs >= _targetRecordingMilliseconds) {
         setState(() => _remainingTime = 0);
+        debugPrint(
+          '[Capture] auto_stop_timer_fired '
+          'elapsedMs=$elapsedMs '
+          'targetCaptureMs=$_targetRecordingMilliseconds '
+          'targetSaveMs=$kTargetClipSaveMs '
+          'targetPolicyMs=$kTargetClipMs',
+        );
         _stopRecording();
         timer.cancel();
       } else {
@@ -727,7 +849,10 @@ class _CaptureScreenState extends State<CaptureScreen>
     try {
       debugPrint(
         '[Capture] stop_recording targetCaptureMs=$_targetRecordingMilliseconds '
-        'targetSaveMs=$kTargetClipSaveMs targetUiSec=$kTargetClipSecForDisplay',
+        'targetSaveMs=$kTargetClipSaveMs '
+        'targetPolicyMs=$kTargetClipMs '
+        'captureSafetyMs=$kTargetCaptureSafetyMs '
+        'targetUiSec=$kTargetClipSecForDisplay',
       );
       _logCaptureRotationDiag('stop_before');
       final video = await _controller!.stopVideoRecording();
@@ -739,7 +864,11 @@ class _CaptureScreenState extends State<CaptureScreen>
         });
       }
       await _controller!.setExposureMode(ExposureMode.auto);
-      await videoManager.saveRecordedVideo(video);
+      await videoManager.enqueueRecordedVideoSave(
+        video,
+        aspectPreset: _selectedAspectPreset.saveAspectPreset,
+      );
+      debugPrint('[Capture] recorded_clip_enqueued source=${video.path}');
       if (mounted) {
         setState(() {
           _flowState = _CaptureFlowState.idle;
@@ -748,10 +877,16 @@ class _CaptureScreenState extends State<CaptureScreen>
         });
       }
     } catch (e) {
+      final raw = e.toString();
+      final friendlyError = raw.startsWith('StateError: ')
+          ? raw.substring('StateError: '.length)
+          : raw;
       if (mounted) {
         setState(() {
           _flowState = _CaptureFlowState.error;
-          _flowError = '녹화 저장에 실패했습니다.';
+          _flowError = friendlyError.isNotEmpty
+              ? friendlyError
+              : '녹화 저장에 실패했습니다.';
           _remainingTime = kTargetClipSecForDisplay;
           _hasRecordingActuallyStarted = false;
         });
@@ -1046,6 +1181,7 @@ class _CaptureScreenState extends State<CaptureScreen>
                                   setState(
                                     () => _selectedAspectPreset = aspect,
                                   );
+                                  unawaited(_persistCaptureAspectPreset(aspect));
                                   hapticFeedback();
                                 },
                               ),
@@ -1094,22 +1230,22 @@ class _CaptureScreenState extends State<CaptureScreen>
                                 backgroundColor: const Color(0xFFF1F1F1),
                                 onSelected: enabled
                                     ? (_) async {
-                                  if (applyingPreset ||
-                                      selectedMode == preset) {
-                                    return;
-                                  }
-                                  setModalState(() {
-                                    selectedMode = preset;
-                                    applyingPreset = true;
-                                  });
-                                  await _applyCaptureQualityMode(preset);
-                                  if (!mounted) return;
-                                  setModalState(() {
-                                    selectedMode = _selectedQualityMode;
-                                    applyingPreset = false;
-                                  });
-                                  hapticFeedback();
-                                }
+                                        if (applyingPreset ||
+                                            selectedMode == preset) {
+                                          return;
+                                        }
+                                        setModalState(() {
+                                          selectedMode = preset;
+                                          applyingPreset = true;
+                                        });
+                                        await _applyCaptureQualityMode(preset);
+                                        if (!mounted) return;
+                                        setModalState(() {
+                                          selectedMode = _selectedQualityMode;
+                                          applyingPreset = false;
+                                        });
+                                        hapticFeedback();
+                                      }
                                     : null,
                               ),
                             );
@@ -1151,7 +1287,9 @@ class _CaptureScreenState extends State<CaptureScreen>
     if (!_hasInitializedController && mounted) {
       setState(() => _selectedQualityMode = previousMode);
       await _initCameraAsync();
+      return;
     }
+    await _persistCaptureQualityMode(_selectedQualityMode);
   }
 
   @override
@@ -1176,7 +1314,7 @@ class _CaptureScreenState extends State<CaptureScreen>
         (_canStopRecording || _canStartRecording);
 
     if (!_hasInitializedController) {
-    return Scaffold(
+      return Scaffold(
         backgroundColor: Colors.black,
         body: Center(
           child: _cameraError != null
@@ -1253,93 +1391,101 @@ class _CaptureScreenState extends State<CaptureScreen>
                   final baseWidth = baseHeight * cameraPortraitAspect;
 
                   return Center(
-                    child: AspectRatio(
-                      aspectRatio: targetAspect,
-                      child: LayoutBuilder(
-                        builder: (context, previewConstraints) {
-                          return Stack(
-                            children: [
-                              ClipRect(
-                                child: FittedBox(
-                                  fit: BoxFit.cover,
-                                  child: SizedBox(
-                                    width: baseWidth,
-                                    height: baseHeight,
-                                    child: CameraPreview(_controller!),
-                                  ),
-                                ),
-                              ),
-                              Positioned.fill(
-                                child: GestureDetector(
-                                  behavior: HitTestBehavior.opaque,
-                                  onTapDown: (d) =>
-                                      _handleFocus(d, previewConstraints),
-                                  onScaleStart: _onPreviewScaleStart,
-                                  onScaleUpdate: _onPreviewScaleUpdate,
-                                  onScaleEnd: _onPreviewScaleEnd,
-                                ),
-                              ),
-                              if (_tapPosition != null &&
-                                  _showExposureSlider) ...[
-                                Positioned(
-                                  left: _tapPosition!.dx - 35,
-                                  top: _tapPosition!.dy - 35,
-                                  child: AnimatedBuilder(
-                                    animation: _focusAnimController,
-                                    builder: (context, child) => Container(
-                                      width: 70,
-                                      height: 70,
-                                      decoration: BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        border: Border.all(
-                                          color: Colors.yellow,
-                                          width: 2,
-                                        ),
+                    child: SizedBox(
+                      width: constraints.maxWidth,
+                      child: AspectRatio(
+                        aspectRatio: targetAspect,
+                        child: LayoutBuilder(
+                          builder: (context, previewConstraints) {
+                            return Stack(
+                              children: [
+                                ClipRect(
+                                  child: SizedBox.expand(
+                                    child: FittedBox(
+                                      fit: BoxFit.cover,
+                                      alignment: Alignment.center,
+                                      child: SizedBox(
+                                        width: baseWidth,
+                                        height: baseHeight,
+                                        child: CameraPreview(_controller!),
                                       ),
                                     ),
                                   ),
                                 ),
-                                Positioned(
-                                  left: _tapPosition!.dx + 45,
-                                  top: _tapPosition!.dy - 60,
-                                  child: SizedBox(
-                                    height: 120,
-                                    child: RotatedBox(
-                                      quarterTurns: 3,
-                                      child: SliderTheme(
-                                        data: SliderTheme.of(context).copyWith(
-                                          trackHeight: 2,
-                                          thumbShape:
-                                              const RoundSliderThumbShape(
-                                                enabledThumbRadius: 6,
-                                              ),
-                                          overlayShape:
-                                              const RoundSliderOverlayShape(
-                                                overlayRadius: 14,
-                                              ),
-                                          activeTrackColor: Colors.yellow,
-                                          inactiveTrackColor: Colors.white30,
-                                          thumbColor: Colors.yellow,
-                                        ),
-                                        child: Slider(
-                                          value: _exposureOffset,
-                                          min: _minExposure,
-                                          max: _maxExposure,
-                                          onChanged: (v) async {
-                                            setState(() => _exposureOffset = v);
-                                            await _controller!
-                                                .setExposureOffset(v);
-                                            _startExposureTimer();
-                                          },
+                                Positioned.fill(
+                                  child: GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
+                                    onTapDown: (d) =>
+                                        _handleFocus(d, previewConstraints),
+                                    onScaleStart: _onPreviewScaleStart,
+                                    onScaleUpdate: _onPreviewScaleUpdate,
+                                    onScaleEnd: _onPreviewScaleEnd,
+                                  ),
+                                ),
+                                if (_tapPosition != null &&
+                                    _showExposureSlider) ...[
+                                  Positioned(
+                                    left: _tapPosition!.dx - 35,
+                                    top: _tapPosition!.dy - 35,
+                                    child: AnimatedBuilder(
+                                      animation: _focusAnimController,
+                                      builder: (context, child) => Container(
+                                        width: 70,
+                                        height: 70,
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          border: Border.all(
+                                            color: Colors.yellow,
+                                            width: 2,
+                                          ),
                                         ),
                                       ),
                                     ),
                                   ),
-                                ),
+                                  Positioned(
+                                    left: _tapPosition!.dx + 45,
+                                    top: _tapPosition!.dy - 60,
+                                    child: SizedBox(
+                                      height: 120,
+                                      child: RotatedBox(
+                                        quarterTurns: 3,
+                                        child: SliderTheme(
+                                          data: SliderTheme.of(context).copyWith(
+                                            trackHeight: 2,
+                                            thumbShape:
+                                                const RoundSliderThumbShape(
+                                                  enabledThumbRadius: 6,
+                                                ),
+                                            overlayShape:
+                                                const RoundSliderOverlayShape(
+                                                  overlayRadius: 14,
+                                                ),
+                                            activeTrackColor: Colors.yellow,
+                                            inactiveTrackColor: Colors.white30,
+                                            thumbColor: Colors.yellow,
+                                          ),
+                                          child: Slider(
+                                            value: _exposureOffset,
+                                            min: _minExposure,
+                                            max: _maxExposure,
+                                            onChanged: (v) async {
+                                              setState(
+                                                () => _exposureOffset = v,
+                                              );
+                                              await _controller!
+                                                  .setExposureOffset(v);
+                                              _startExposureTimer();
+                                            },
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ],
-                            ],
-                          );
-                        },
+                            );
+                          },
+                        ),
                       ),
                     ),
                   );

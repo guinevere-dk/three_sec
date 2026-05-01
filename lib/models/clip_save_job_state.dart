@@ -1,7 +1,4 @@
-enum ClipSavePriority {
-  normal,
-  high,
-}
+enum ClipSavePriority { normal, high }
 
 enum ClipSaveJobStatus {
   queued,
@@ -13,13 +10,7 @@ enum ClipSaveJobStatus {
   canceled,
 }
 
-enum ClipSaveErrorKind {
-  input,
-  io,
-  permission,
-  codec,
-  unknown,
-}
+enum ClipSaveErrorKind { input, io, permission, codec, unknown }
 
 class ClipSaveJob {
   final String id;
@@ -205,3 +196,108 @@ class ClipSaveJobState {
   }
 }
 
+enum RecordedClipSaveJobStatus { queued, running, saved, failed }
+
+class RecordedClipSaveJob {
+  final String jobId;
+  final String sourceStagingPath;
+  final String albumName;
+  final String aspectPreset;
+  final int createdAtMs;
+  final RecordedClipSaveJobStatus status;
+  final int retryCount;
+  final String? lastErrorCode;
+  final String? lastErrorMessage;
+
+  const RecordedClipSaveJob({
+    required this.jobId,
+    required this.sourceStagingPath,
+    required this.albumName,
+    required this.aspectPreset,
+    required this.createdAtMs,
+    required this.status,
+    required this.retryCount,
+    required this.lastErrorCode,
+    required this.lastErrorMessage,
+  });
+
+  factory RecordedClipSaveJob.queued({
+    required String jobId,
+    required String sourceStagingPath,
+    required String albumName,
+    String aspectPreset = 'r9_16',
+    int? createdAtMs,
+  }) {
+    return RecordedClipSaveJob(
+      jobId: jobId,
+      sourceStagingPath: sourceStagingPath,
+      albumName: albumName,
+      aspectPreset: aspectPreset,
+      createdAtMs: createdAtMs ?? DateTime.now().millisecondsSinceEpoch,
+      status: RecordedClipSaveJobStatus.queued,
+      retryCount: 0,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+    );
+  }
+
+  RecordedClipSaveJob copyWith({
+    String? jobId,
+    String? sourceStagingPath,
+    String? albumName,
+    String? aspectPreset,
+    int? createdAtMs,
+    RecordedClipSaveJobStatus? status,
+    int? retryCount,
+    String? lastErrorCode,
+    String? lastErrorMessage,
+    bool clearError = false,
+  }) {
+    return RecordedClipSaveJob(
+      jobId: jobId ?? this.jobId,
+      sourceStagingPath: sourceStagingPath ?? this.sourceStagingPath,
+      albumName: albumName ?? this.albumName,
+      aspectPreset: aspectPreset ?? this.aspectPreset,
+      createdAtMs: createdAtMs ?? this.createdAtMs,
+      status: status ?? this.status,
+      retryCount: retryCount ?? this.retryCount,
+      lastErrorCode: clearError ? null : (lastErrorCode ?? this.lastErrorCode),
+      lastErrorMessage: clearError
+          ? null
+          : (lastErrorMessage ?? this.lastErrorMessage),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'jobId': jobId,
+      'sourceStagingPath': sourceStagingPath,
+      'albumName': albumName,
+      'aspectPreset': aspectPreset,
+      'createdAtMs': createdAtMs,
+      'status': status.name,
+      'retryCount': retryCount,
+      'lastErrorCode': lastErrorCode,
+      'lastErrorMessage': lastErrorMessage,
+    };
+  }
+
+  factory RecordedClipSaveJob.fromJson(Map<String, dynamic> json) {
+    final statusName = json['status'] as String?;
+    final status = RecordedClipSaveJobStatus.values.firstWhere(
+      (value) => value.name == statusName,
+      orElse: () => RecordedClipSaveJobStatus.queued,
+    );
+    return RecordedClipSaveJob(
+      jobId: json['jobId'] as String? ?? '',
+      sourceStagingPath: json['sourceStagingPath'] as String? ?? '',
+      albumName: json['albumName'] as String? ?? '일상',
+      aspectPreset: json['aspectPreset'] as String? ?? 'r9_16',
+      createdAtMs: json['createdAtMs'] as int? ?? 0,
+      status: status,
+      retryCount: json['retryCount'] as int? ?? 0,
+      lastErrorCode: json['lastErrorCode'] as String?,
+      lastErrorMessage: json['lastErrorMessage'] as String?,
+    );
+  }
+}

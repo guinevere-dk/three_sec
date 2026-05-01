@@ -61,11 +61,13 @@ import AVFoundation
                 }()
 
                 let targetDurationMs = parsedTargetDurationMs > 0 ? parsedTargetDurationMs : DEFAULT_TARGET_DURATION_MS
+                let aspectPreset = (args["aspectPreset"] as? String) ?? "r9_16"
 
                 self?.normalizeVideoDuration(
                     inputPath: inputPath,
                     outputPath: outputPath,
                     targetDurationMs: targetDurationMs,
+                    aspectPreset: aspectPreset,
                     result: result
                 )
             } else if call.method == "convertImageToVideo" {
@@ -148,6 +150,7 @@ import AVFoundation
         inputPath: String,
         outputPath: String,
         targetDurationMs: Int64,
+        aspectPreset: String,
         result: @escaping FlutterResult
     ) {
         let safeTargetDurationMs = targetDurationMs > 0 ? targetDurationMs : DEFAULT_TARGET_DURATION_MS
@@ -164,7 +167,8 @@ import AVFoundation
             )
             return
         }
-        NSLog("[3S_NORMALIZE] normalizeVideoDuration sourceDurationMs=\(sourceDurationMs) targetDurationMs=\(safeTargetDurationMs)")
+        let normalizedAspectPreset = normalizeCaptureAspectPreset(aspectPreset)
+        NSLog("[3S_NORMALIZE] normalizeVideoDuration sourceDurationMs=\(sourceDurationMs) targetDurationMs=\(safeTargetDurationMs) aspectPreset=\(normalizedAspectPreset)")
 
         guard let sourceVideoTrack = asset.tracks(withMediaType: .video).first else {
             reportChannelError(
@@ -230,6 +234,13 @@ import AVFoundation
             try? FileManager.default.removeItem(atPath: outputPath)
         }
 
+        let videoComposition = makeAspectCropVideoComposition(
+            sourceTrack: sourceVideoTrack,
+            compositionTrack: outputVideoTrack,
+            duration: CMTime(value: safeTargetDurationMs, timescale: 1000),
+            aspectPreset: normalizedAspectPreset
+        )
+
         guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPreset1920x1080) else {
             reportChannelError(
                 step: "normalize",
@@ -244,6 +255,9 @@ import AVFoundation
         exporter.outputFileType = .mp4
         exporter.shouldOptimizeForNetworkUse = true
         exporter.timeRange = CMTimeRange(start: .zero, duration: CMTime(value: safeTargetDurationMs, timescale: 1000))
+        if let videoComposition = videoComposition {
+            exporter.videoComposition = videoComposition
+        }
 
         exporter.exportAsynchronously {
             DispatchQueue.main.async {
@@ -255,6 +269,7 @@ import AVFoundation
                         "[3S_NORMALIZE] normalizeVideoDuration complete " +
                         "sourceDurationMs=\(sourceDurationMs) " +
                         "targetDurationMs=\(safeTargetDurationMs) " +
+                        "aspectPreset=\(normalizedAspectPreset) " +
                         "normalizedDurationMs=\(normalizedDurationMs)"
                     )
                     result("SUCCESS")
@@ -282,5 +297,71 @@ import AVFoundation
                 }
             }
         }
+    }
+
+    private func normalizeCaptureAspectPreset(_ aspectPreset: String) -> String {
+        switch aspectPreset.lowercased() {
+        case "r1_1", "1:1", "1x1":
+            return "r1_1"
+        case "r3_4", "3:4", "3x4":
+            return "r3_4"
+        default:
+            return "r9_16"
+        }
+    }
+
+    private func captureAspectRatio(_ aspectPreset: String) -> CGFloat {
+        switch normalizeCaptureAspectPreset(aspectPreset) {
+        case "r1_1":
+            return 1.0
+        case "r3_4":
+            return 3.0 / 4.0
+        default:
+            return 9.0 / 16.0
+        }
+    }
+
+    private func makeAspectCropVideoComposition(
+        sourceTrack: AVAssetTrack,
+        compositionTrack: AVMutableCompositionTrack,
+        duration: CMTime,
+        aspectPreset: String
+    ) -> AVMutableVideoComposition? {
+        let targetAspect = captureAspectRatio(aspectPreset)
+        guard targetAspect > 0 else { return nil }
+
+        let naturalSize = sourceTrack.naturalSize.applying(sourceTrack.preferredTransform)
+        let displayWidth = abs(naturalSize.width)
+        let displayHeight = abs(naturalSize.height)
+        guard displayWidth > 0, displayHeight > 0 else { return nil }
+
+        let sourceAspect = displayWidth / displayHeight
+        let renderSize: CGSize
+        if sourceAspect > targetAspect {
+            renderSize = CGSize(width: displayHeight * targetAspect, height: displayHeight)
+        } else {
+            renderSize = CGSize(width: displayWidth, height: displayWidth / targetAspect)
+        }
+
+        var transform = sourceTrack.preferredTransform
+        let transformedRect = CGRect(origin: .zero, size: sourceTrack.naturalSize).applying(transform)
+        transform = transform.translatedBy(x: -transformedRect.origin.x, y: -transformedRect.origin.y)
+        transform = transform.translatedBy(
+            x: (renderSize.width - displayWidth) / 2.0,
+            y: (renderSize.height - displayHeight) / 2.0
+        )
+
+        let instruction = AVMutableVideoCompositionInstruction()
+        instruction.timeRange = CMTimeRange(start: .zero, duration: duration)
+
+        let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionTrack)
+        layerInstruction.setTransform(transform, at: .zero)
+        instruction.layerInstructions = [layerInstruction]
+
+        let videoComposition = AVMutableVideoComposition()
+        videoComposition.instructions = [instruction]
+        videoComposition.renderSize = renderSize
+        videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+        return videoComposition
     }
 }

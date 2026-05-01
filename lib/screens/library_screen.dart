@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -48,6 +49,8 @@ class LibraryScreen extends StatefulWidget {
 }
 
 class _LibraryScreenState extends State<LibraryScreen> {
+  static const String _traceTag = '[LibraryTrace]';
+
   bool _isInAlbumDetail = false;
   bool _isClipSelectionMode = false;
   bool _isAlbumSelectionMode = false;
@@ -70,6 +73,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
   final CloudService _cloudService = CloudService();
   bool _lastAlbumDetailVisible = false;
   bool _lastCreateProjectButtonVisible = false;
+  String? _lastDetailRenderSignature;
+  final Set<String> _thumbnailLoggedLoadingPaths = <String>{};
+  final Set<String> _thumbnailLoggedReadyPaths = <String>{};
+  final Set<String> _thumbnailLoggedErrorPaths = <String>{};
 
   bool _isCreateProjectButtonVisible() {
     return _isClipSelectionMode &&
@@ -168,11 +175,82 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Future<void> _loadClipsFromCurrentAlbum() async {
+    final album = videoManager.currentAlbum;
+    final startedAt = DateTime.now();
+    debugPrint('$_traceTag load_clips_start album=$album');
     setState(() {
       videoManager.recordedVideoPaths.clear();
     });
-    await videoManager.loadClipsFromCurrentAlbum();
-    if (mounted) setState(() {});
+    try {
+      await videoManager.loadClipsFromCurrentAlbum();
+      final elapsedMs = DateTime.now().difference(startedAt).inMilliseconds;
+      debugPrint(
+        '$_traceTag load_clips_success album=$album '
+        'count=${videoManager.recordedVideoPaths.length} elapsedMs=$elapsedMs',
+      );
+      if (mounted) setState(() {});
+    } catch (error, stackTrace) {
+      final elapsedMs = DateTime.now().difference(startedAt).inMilliseconds;
+      debugPrint(
+        '$_traceTag load_clips_error album=$album elapsedMs=$elapsedMs '
+        'error=$error\n$stackTrace',
+      );
+      rethrow;
+    }
+  }
+
+  void _traceDetailRender(List<String> visibleClipPaths) {
+    final firstPath = visibleClipPaths.isNotEmpty ? visibleClipPaths.first : 'none';
+    final lastPath = visibleClipPaths.isNotEmpty ? visibleClipPaths.last : 'none';
+    final signature = [
+      videoManager.currentAlbum,
+      _storageFilter,
+      _gridColumnCount,
+      visibleClipPaths.length,
+      firstPath,
+      lastPath,
+    ].join('|');
+    if (_lastDetailRenderSignature == signature) return;
+    _lastDetailRenderSignature = signature;
+    debugPrint(
+      '$_traceTag clip_list_render album=${videoManager.currentAlbum} '
+      'filter=$_storageFilter count=${visibleClipPaths.length} '
+      'grid=$_gridColumnCount first=$firstPath last=$lastPath',
+    );
+  }
+
+  Future<Uint8List?> _traceThumbnailRequest(String path, int index) async {
+    if (_thumbnailLoggedLoadingPaths.add(path)) {
+      debugPrint(
+        '$_traceTag thumbnail_request album=${videoManager.currentAlbum} '
+        'index=$index path=$path',
+      );
+    }
+    try {
+      final thumbnail = await videoManager.getThumbnail(path);
+      if (thumbnail == null) {
+        if (_thumbnailLoggedErrorPaths.add('null:$path')) {
+          debugPrint(
+            '$_traceTag thumbnail_null album=${videoManager.currentAlbum} '
+            'index=$index path=$path',
+          );
+        }
+      } else if (_thumbnailLoggedReadyPaths.add(path)) {
+        debugPrint(
+          '$_traceTag thumbnail_ready album=${videoManager.currentAlbum} '
+          'index=$index bytes=${thumbnail.length} path=$path',
+        );
+      }
+      return thumbnail;
+    } catch (error, stackTrace) {
+      if (_thumbnailLoggedErrorPaths.add('error:$path')) {
+        debugPrint(
+          '$_traceTag thumbnail_error album=${videoManager.currentAlbum} '
+          'index=$index path=$path error=$error\n$stackTrace',
+        );
+      }
+      rethrow;
+    }
   }
 
   Widget _buildLibraryTab() {
@@ -296,6 +374,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                 }
                               });
                             } else {
+                              debugPrint(
+                                '$_traceTag album_enter_tap album=$albumName '
+                                'clipCount=$clipCount',
+                              );
                               setState(() {
                                 videoManager.currentAlbum = albumName;
                                 _isInAlbumDetail = true;
@@ -366,6 +448,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
               videoManager.isClipVisibleByStorageFilter(path, _storageFilter),
         )
         .toList();
+    _traceDetailRender(visibleClipPaths);
 
     // Determine subtitle
     final int count = visibleClipPaths.length;
@@ -540,7 +623,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         });
                         hapticFeedback();
                       },
-                      getThumbnail: videoManager.getThumbnail,
+                      getThumbnail: (path) => _traceThumbnailRequest(path, index),
                     );
 
                     if (index == 0) {

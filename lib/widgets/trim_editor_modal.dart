@@ -43,7 +43,7 @@ class _TrimEditorModalState extends State<TrimEditorModal> {
   DateTime? _lastDragSeekAt;
   int _loopLogCounter = 0;
 
-  static const double _fixedWindowMs = kTargetClipMs.toDouble();
+  static const double _fixedWindowMs = kTargetClipMs * 1.0;
   static const int _loopTickMs = 80;
   static const int _loopSeekCooldownMs = 140;
   static const int _loopSeekDuplicateWindowMs = 240;

@@ -31,7 +31,7 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
   static const MethodChannel _platform = MethodChannel('com.dk.three_sec/video_engine');
   static const int _fixedWindowMs = kTargetClipMs;
   static const int _minValidClipBytes = 8 * 1024;
-  static const int _minValidClipDurationMs = 400;
+  static const int _minValidClipDurationMs = kTargetClipMs;
   static const int _minEstimatedFrameCount = 6;
   static const double _validationMinFps = 10.0;
   static const bool _allowParallelClipSave = bool.fromEnvironment(
@@ -753,6 +753,10 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
         videoFileLength > 0 ? (_sourceTotalDurationMs ?? _controller.value.duration.inMilliseconds) : 0;
     if (totalMs <= 0) {
       Fluttertoast.showToast(msg: '원본 영상 정보를 읽을 수 없습니다');
+      return;
+    }
+    if (totalMs < kTargetClipMs) {
+      Fluttertoast.showToast(msg: '원본 영상 길이가 2초 미만이라 클립을 생성할 수 없습니다');
       return;
     }
 

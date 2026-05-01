@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import '../utils/haptics.dart';
+import '../utils/clip_duration_label.dart';
 
 /// 📦 공용 미디어 위젯 컴포넌트
 /// Library와 Project 화면에서 공통으로 사용하는 UI 요소들
@@ -227,6 +228,7 @@ class MediaWidgets {
     required VoidCallback onLongPress,
     required Future<Uint8List?> Function(String) getThumbnail,
     Future<Duration> Function(String)? getDuration,
+    ValueChanged<AsyncSnapshot<Uint8List?>>? onThumbnailSnapshot,
   }) {
     final bool showSelectedState = isSelectionMode && isSelected;
 
@@ -248,13 +250,16 @@ class MediaWidgets {
             // Thumbnail
             FutureBuilder<Uint8List?>(
               future: getThumbnail(path),
-              builder: (c, s) => s.hasData
-                  ? Image.memory(s.data!, fit: BoxFit.cover)
-                  : Container(
-                      color: benchmarkStyle
-                          ? const Color(0xFFD6DBE2)
-                          : Colors.grey[200],
-                    ),
+              builder: (c, s) {
+                onThumbnailSnapshot?.call(s);
+                return s.hasData
+                    ? Image.memory(s.data!, fit: BoxFit.cover)
+                    : Container(
+                        color: benchmarkStyle
+                            ? const Color(0xFFD6DBE2)
+                            : Colors.grey[200],
+                      );
+              },
             ),
 
             if (showDurationBadge && getDuration != null)
@@ -433,8 +438,7 @@ class MediaWidgets {
   }
 
   static String _formatDurationShort(Duration d) {
-    final int seconds = d.inSeconds;
-    return '${seconds}s';
+    return formatClipDurationBadge(d);
   }
 
   static bool _isLoadingBadge(String statusBadge) => statusBadge == '로딩중';

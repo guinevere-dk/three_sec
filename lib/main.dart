@@ -1646,9 +1646,21 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   Future<void> _shareExportResult(String resultPath) async {
     if (resultPath.isEmpty || !mounted) return;
 
-    final String fileName = p.basename(resultPath);
-    final message = '결과 영상: $fileName\n$resultPath';
-    await Share.share(message);
+    final File exportedVideoFile = File(resultPath);
+    if (!exportedVideoFile.existsSync()) {
+      Fluttertoast.showToast(msg: '공유할 영상을 찾을 수 없습니다.');
+      return;
+    }
+
+    const String appIntroText = '원세컨 브이로그와 함께 2초씩 빠르게 브이로그를 기록해보세요!';
+    const String appShareSubject = '원세컨 브이로그';
+    final files = <XFile>[XFile(resultPath)];
+
+    await Share.shareXFiles(
+      files,
+      text: appIntroText,
+      subject: appShareSubject,
+    );
   }
 
   Future<void> _openExportedVideoInGallery(String resultPath) async {

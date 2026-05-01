@@ -50,6 +50,10 @@ class VideoManager extends ChangeNotifier {
   static const int clipSaveWorkerDefaultConcurrency = 2;
   static const int clipSaveSerialConcurrency = 1;
   static const int clipSaveMaxRetry = 2;
+  static const bool useAsyncRecordedClipSaveQueue = bool.fromEnvironment(
+    'async_recorded_clip_save_queue',
+    defaultValue: true,
+  );
 
   static const _rawBaseName = 'raw_clips';
   static const _projectBaseName = 'vlog_projects';
@@ -59,6 +63,11 @@ class VideoManager extends ChangeNotifier {
   static const _cloudSyncedKey = 'cloud_synced_paths';
   static const _clipDurationMetadataKey = 'clip_duration_metadata_v1';
   static const _clipOwnershipMetadataKey = 'clip_ownership_metadata_v1';
+  static const _recordedClipSaveJobsKey = 'recorded_clip_save_jobs_v1';
+  static const _recordedClipStagingBaseName = 'recorded_clip_staging';
+  static const String recordedAspectPreset9x16 = 'r9_16';
+  static const String recordedAspectPreset3x4 = 'r3_4';
+  static const String recordedAspectPreset1x1 = 'r1_1';
   static const _mergeMemoryPressureWindow = Duration(seconds: 30);
   static const int _mergeMemoryPressureGuardClipLimit1080p = 12;
   static const int _mergeMemoryPressureGuardClipLimit4k = 8;
@@ -92,8 +101,11 @@ class VideoManager extends ChangeNotifier {
   bool _importCancelRequested = false;
   bool _clipSaveCancelRequested = false;
   bool _clipSaveWorkerRunning = false;
+  bool _recordedClipSaveWorkerRunning = false;
+  bool _recordedClipSaveJobsLoaded = false;
   int _clipSaveWorkerConcurrency = clipSaveSerialConcurrency;
   Completer<void>? _clipSaveDrainCompleter;
+  final List<RecordedClipSaveJob> _recordedClipSaveJobs = [];
   ImportState _importQueueState = ImportState.initial();
   ClipSaveJobState _clipSaveQueueState = ClipSaveJobState.initial();
   final ValueNotifier<ImportState> importQueueStateNotifier = ValueNotifier(
@@ -1253,7 +1265,17 @@ class VideoManager extends ChangeNotifier {
 
   static const platform = MethodChannel('com.dk.three_sec/video_engine');
   static const int _targetRecordingDurationMs = kTargetClipMs;
+  static const int _targetCaptureDurationMs = kTargetCaptureMs;
+  static const int _targetCaptureMinimumMs = kTargetCaptureMinMs;
+  static const int _nearTargetRecordingMinMs = kNearTargetClipMinMs;
+  static const int _targetRecordingToleranceMs = kTargetClipMetadataToleranceMs;
+  static const String _recordingFallbackPolicyName =
+      'target_2100ms_save_gate_gt_2000ms';
   static const String _recordingTrimMode = 'center';
+
+  // Keeps the strict tolerance constant referenced in this manager so drift is
+  // visible in analyzer/compiler checks if the shared policy changes.
+  int get recordingDurationToleranceMs => _targetRecordingToleranceMs;
 
   void _logChannelGuardFail({
     required String step,
@@ -2663,6 +2685,7 @@ class VideoManager extends ChangeNotifier {
     await _loadCloudSyncedPaths();
     await _loadClipDurationMetadata();
     await _loadClipOwnershipMetadata();
+    await restoreRecordedClipSaveQueueFromStore();
 
     // ✅ 2. 독립 휴지통 생성
     // 라이브러리 시스템 폴더
@@ -2945,63 +2968,468 @@ class VideoManager extends ChangeNotifier {
     await _updateAlbumClipCounts();
   }
 
-  Future<void> saveRecordedVideo(XFile video) async {
+  String _normalizeRecordedAspectPreset(String? aspectPreset) {
+    switch (aspectPreset) {
+      case recordedAspectPreset1x1:
+        return recordedAspectPreset1x1;
+      case recordedAspectPreset3x4:
+        return recordedAspectPreset3x4;
+      case recordedAspectPreset9x16:
+      default:
+        return recordedAspectPreset9x16;
+    }
+  }
+
+  Future<void> saveRecordedVideo(
+    XFile video, {
+    String aspectPreset = recordedAspectPreset9x16,
+  }) async {
     final albumDir = await _rawAlbumDir(currentAlbum);
     final savePath = p.join(
       albumDir.path,
       "clip_${DateTime.now().millisecondsSinceEpoch}.mp4",
     );
-    final currentPath = savePath;
+    await _processRecordedVideoSave(
+      sourcePath: video.path,
+      outputPath: savePath,
+      albumName: currentAlbum,
+      aspectPreset: aspectPreset,
+    );
+  }
+
+  Future<void> enqueueRecordedVideoSave(
+    XFile video, {
+    String aspectPreset = recordedAspectPreset9x16,
+  }) async {
+    final normalizedAspectPreset = _normalizeRecordedAspectPreset(aspectPreset);
+    if (!useAsyncRecordedClipSaveQueue) {
+      await saveRecordedVideo(video, aspectPreset: normalizedAspectPreset);
+      return;
+    }
+
+    await _ensureRecordedClipSaveJobsLoaded();
+    final stagingDir = await _recordedClipStagingDir();
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final jobId = 'recorded_$nowMs';
+    final stagingPath = await _buildUniqueFilePath(
+      stagingDir.path,
+      '${jobId}_${p.basename(video.path)}',
+    );
+
+    try {
+      await File(video.path).rename(stagingPath);
+    } catch (_) {
+      await File(video.path).copy(stagingPath);
+      try {
+        await File(video.path).delete();
+      } catch (_) {
+        // 원본 삭제 실패는 스테이징 enqueue 성공 여부에 영향 없음.
+      }
+    }
+
+    final job = RecordedClipSaveJob.queued(
+      jobId: jobId,
+      sourceStagingPath: stagingPath,
+      albumName: currentAlbum,
+      aspectPreset: normalizedAspectPreset,
+      createdAtMs: nowMs,
+    );
+    _upsertRecordedClipSaveJob(job);
+    await _persistRecordedClipSaveJobs();
+    debugPrint(
+      '[VideoManager][RecordedClipQueue] enqueue '
+      'jobId=${job.jobId} album=${job.albumName} aspect=${job.aspectPreset} source=${job.sourceStagingPath}',
+    );
+    unawaited(startRecordedClipSaveQueueWorker());
+  }
+
+  Future<void> restoreRecordedClipSaveQueueFromStore() async {
+    await _ensureRecordedClipSaveJobsLoaded();
+    var changed = false;
+    for (var i = 0; i < _recordedClipSaveJobs.length; i++) {
+      final job = _recordedClipSaveJobs[i];
+      if (job.status == RecordedClipSaveJobStatus.running) {
+        _recordedClipSaveJobs[i] = job.copyWith(
+          status: RecordedClipSaveJobStatus.queued,
+          lastErrorCode: 'stale_running_recovered',
+          lastErrorMessage: '앱 재시작으로 실행 중 작업을 대기 상태로 복구했습니다.',
+        );
+        changed = true;
+      }
+    }
+    if (changed) {
+      await _persistRecordedClipSaveJobs();
+    }
+    debugPrint(
+      '[VideoManager][RecordedClipQueue] restore '
+      'pending=${_recordedClipSaveJobs.where((job) => job.status == RecordedClipSaveJobStatus.queued).length}',
+    );
+    unawaited(startRecordedClipSaveQueueWorker());
+  }
+
+  Future<void> startRecordedClipSaveQueueWorker() async {
+    if (!useAsyncRecordedClipSaveQueue) return;
+    await _ensureRecordedClipSaveJobsLoaded();
+    if (_recordedClipSaveWorkerRunning) return;
+
+    _recordedClipSaveWorkerRunning = true;
+    debugPrint('[VideoManager][RecordedClipQueue] worker_start');
+    try {
+      while (true) {
+        final job = _nextQueuedRecordedClipSaveJob();
+        if (job == null) break;
+        await _runRecordedClipSaveJob(job);
+      }
+    } finally {
+      _recordedClipSaveWorkerRunning = false;
+      debugPrint('[VideoManager][RecordedClipQueue] worker_end');
+    }
+  }
+
+  RecordedClipSaveJob? _nextQueuedRecordedClipSaveJob() {
+    final queued =
+        _recordedClipSaveJobs
+            .where((job) => job.status == RecordedClipSaveJobStatus.queued)
+            .toList()
+          ..sort((a, b) => a.createdAtMs.compareTo(b.createdAtMs));
+    return queued.isEmpty ? null : queued.first;
+  }
+
+  Future<void> _runRecordedClipSaveJob(RecordedClipSaveJob job) async {
+    await _markRecordedClipSaveJob(
+      job.jobId,
+      status: RecordedClipSaveJobStatus.running,
+      clearError: true,
+    );
+    debugPrint(
+      '[VideoManager][RecordedClipQueue] job_start '
+      'jobId=${job.jobId} source=${job.sourceStagingPath} album=${job.albumName} aspect=${job.aspectPreset}',
+    );
+
+    try {
+      final sourceFile = File(job.sourceStagingPath);
+      if (!await sourceFile.exists()) {
+        await _markRecordedClipSaveJob(
+          job.jobId,
+          status: RecordedClipSaveJobStatus.failed,
+          lastErrorCode: 'input_missing',
+          lastErrorMessage: 'source staging file missing',
+          incrementRetry: true,
+        );
+        debugPrint(
+          '[VideoManager][RecordedClipQueue] job_failed '
+          'jobId=${job.jobId} reason=input_missing',
+        );
+        return;
+      }
+
+      final albumDir = await _rawAlbumDir(job.albumName);
+      final outputPath = await _buildUniqueFilePath(
+        albumDir.path,
+        'clip_${DateTime.now().millisecondsSinceEpoch}.mp4',
+      );
+      await _processRecordedVideoSave(
+        sourcePath: job.sourceStagingPath,
+        outputPath: outputPath,
+        albumName: job.albumName,
+        aspectPreset: job.aspectPreset,
+      );
+      await _markRecordedClipSaveJob(
+        job.jobId,
+        status: RecordedClipSaveJobStatus.saved,
+        clearError: true,
+      );
+      try {
+        if (await sourceFile.exists()) await sourceFile.delete();
+      } catch (_) {
+        // 스테이징 정리 실패는 저장 성공을 되돌리지 않음.
+      }
+      debugPrint(
+        '[VideoManager][RecordedClipQueue] job_success '
+        'jobId=${job.jobId} output=$outputPath',
+      );
+    } catch (e) {
+      await _markRecordedClipSaveJob(
+        job.jobId,
+        status: RecordedClipSaveJobStatus.failed,
+        lastErrorCode: _recordedClipSaveErrorCode(e),
+        lastErrorMessage: '$e',
+        incrementRetry: true,
+      );
+      debugPrint(
+        '[VideoManager][RecordedClipQueue] job_failed '
+        'jobId=${job.jobId} reason=${_recordedClipSaveErrorCode(e)} error=$e',
+      );
+    }
+  }
+
+  String _recordedClipSaveErrorCode(Object error) {
+    final lowered = '$error'.toLowerCase();
+    if (lowered.contains('no such file') || lowered.contains('not found')) {
+      return 'input_missing';
+    }
+    if (lowered.contains('permission') || lowered.contains('denied')) {
+      return 'permission';
+    }
+    if (lowered.contains('duration') || lowered.contains('2000ms')) {
+      return 'duration_gate_failed';
+    }
+    if (lowered.contains('codec') || lowered.contains('ffmpeg')) {
+      return 'codec';
+    }
+    return 'unknown';
+  }
+
+  Future<Directory> _recordedClipStagingDir() async {
+    final dir = Directory(
+      p.join((await _docDir()).path, _recordedClipStagingBaseName),
+    );
+    if (!await dir.exists()) await dir.create(recursive: true);
+    return dir;
+  }
+
+  Future<void> _ensureRecordedClipSaveJobsLoaded() async {
+    if (_recordedClipSaveJobsLoaded) return;
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_recordedClipSaveJobsKey);
+    _recordedClipSaveJobs.clear();
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is List) {
+          for (final item in decoded) {
+            if (item is Map<String, dynamic>) {
+              final job = RecordedClipSaveJob.fromJson(item);
+              if (job.jobId.isNotEmpty && job.sourceStagingPath.isNotEmpty) {
+                _recordedClipSaveJobs.add(job);
+              }
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('[VideoManager][RecordedClipQueue] load_failed error=$e');
+      }
+    }
+    for (var i = 0; i < _recordedClipSaveJobs.length; i++) {
+      final job = _recordedClipSaveJobs[i];
+      if (job.status == RecordedClipSaveJobStatus.running) {
+        _recordedClipSaveJobs[i] = job.copyWith(
+          status: RecordedClipSaveJobStatus.queued,
+          lastErrorCode: 'stale_running_recovered',
+        );
+      }
+    }
+    _recordedClipSaveJobsLoaded = true;
+  }
+
+  void _upsertRecordedClipSaveJob(RecordedClipSaveJob job) {
+    final duplicateSourceIndex = _recordedClipSaveJobs.indexWhere(
+      (item) => item.sourceStagingPath == job.sourceStagingPath,
+    );
+    if (duplicateSourceIndex != -1) {
+      _recordedClipSaveJobs[duplicateSourceIndex] = job;
+      return;
+    }
+    final index = _recordedClipSaveJobs.indexWhere(
+      (item) => item.jobId == job.jobId,
+    );
+    if (index == -1) {
+      _recordedClipSaveJobs.add(job);
+    } else {
+      _recordedClipSaveJobs[index] = job;
+    }
+  }
+
+  Future<void> _markRecordedClipSaveJob(
+    String jobId, {
+    required RecordedClipSaveJobStatus status,
+    String? lastErrorCode,
+    String? lastErrorMessage,
+    bool incrementRetry = false,
+    bool clearError = false,
+  }) async {
+    final index = _recordedClipSaveJobs.indexWhere((job) => job.jobId == jobId);
+    if (index == -1) return;
+    final current = _recordedClipSaveJobs[index];
+    _recordedClipSaveJobs[index] = current.copyWith(
+      status: status,
+      retryCount: incrementRetry ? current.retryCount + 1 : current.retryCount,
+      lastErrorCode: lastErrorCode,
+      lastErrorMessage: lastErrorMessage,
+      clearError: clearError,
+    );
+    await _persistRecordedClipSaveJobs();
+  }
+
+  Future<void> _persistRecordedClipSaveJobs() async {
+    final prefs = await SharedPreferences.getInstance();
+    final keep = _recordedClipSaveJobs
+        .where((job) {
+          if (job.status == RecordedClipSaveJobStatus.saved) return false;
+          return true;
+        })
+        .toList(growable: false);
+    _recordedClipSaveJobs
+      ..clear()
+      ..addAll(keep);
+    await prefs.setString(
+      _recordedClipSaveJobsKey,
+      jsonEncode(keep.map((job) => job.toJson()).toList(growable: false)),
+    );
+  }
+
+  Future<void> _processRecordedVideoSave({
+    required String sourcePath,
+    required String outputPath,
+    required String albumName,
+    required String aspectPreset,
+  }) async {
+    final currentPath = outputPath;
+    final normalizedAspectPreset = _normalizeRecordedAspectPreset(aspectPreset);
 
     debugPrint(
       '[VideoManager] saveRecordedVideo_paths '
-      'sourcePath=${video.path} '
+      'sourcePath=$sourcePath '
       'outputPath=$currentPath '
+      'album=$albumName '
+      'aspectPreset=$normalizedAspectPreset '
       'targetDurationMs=$_targetRecordingDurationMs '
+      'targetCaptureMs=$_targetCaptureDurationMs '
+      'targetCaptureMinMs=$_targetCaptureMinimumMs '
       'trimMode=$_recordingTrimMode',
     );
 
-    final sourceDurationMs = await _getVideoDurationMsNative(video.path);
-    if (sourceDurationMs != null && sourceDurationMs < _targetRecordingDurationMs) {
+    final sourceDurationMs = await _getVideoDurationMsNative(sourcePath);
+    if (sourceDurationMs != null &&
+        sourceDurationMs < _targetCaptureMinimumMs) {
       debugPrint(
-        '[VideoManager][Warn] source shorter than trim target '
-        'sourceDurationMs=$sourceDurationMs targetDurationMs=$_targetRecordingDurationMs',
+        '[VideoManager] saveRecordedVideo_short_source '
+        'sourceDurationMs=$sourceDurationMs '
+        'targetCaptureMinMs=$_targetCaptureMinimumMs '
+        'nearTargetMinMs=$_nearTargetRecordingMinMs '
+        'action=${sourceDurationMs >= _nearTargetRecordingMinMs ? 'pad_to_target' : 'preserve_source'}',
       );
     }
-    final expectedClipMs = sourceDurationMs != null
-        ? (sourceDurationMs < _targetRecordingDurationMs
-              ? sourceDurationMs
-              : _targetRecordingDurationMs)
-        : _targetRecordingDurationMs;
+    final expectedClipMs = _targetRecordingDurationMs;
     debugPrint(
       '[VideoManager] saveRecordedVideo '
       'sourceDurationMs=$sourceDurationMs '
       'targetDurationMs=$_targetRecordingDurationMs '
+      'targetCaptureMs=$_targetCaptureDurationMs '
+      'captureSafetyMs=$kTargetCaptureSafetyMs '
       'expectedClipMs=$expectedClipMs '
+      'sourceMinusTargetMs=${sourceDurationMs == null ? null : sourceDurationMs - _targetRecordingDurationMs} '
       'trimMode=$_recordingTrimMode '
+      'aspectPreset=$normalizedAspectPreset '
       'normalize=always',
     );
 
-    final normalized = await _normalizeRecordedVideo(video.path, currentPath);
+    var retryNormalizeCount = 0;
+    var padAppliedMs = 0;
+    final normalized = await _normalizeRecordedVideo(
+      sourcePath,
+      currentPath,
+      aspectPreset: normalizedAspectPreset,
+    );
     if (!normalized) {
-      try {
-        await File(video.path).copy(currentPath);
-        debugPrint(
-          '[VideoManager] normalize fallback(copy) source=${video.path.split('/').last} '
-          'target=${currentPath.split('/').last}',
+      final fallbackSaved = await _saveRecordedVideoFallback(
+        sourcePath: sourcePath,
+        outputPath: currentPath,
+        sourceDurationMs: sourceDurationMs,
+        reason: 'normalize_failed',
+        retryNormalizeCount: retryNormalizeCount,
+        padAppliedMs: padAppliedMs,
+      );
+      if (!fallbackSaved) {
+        _logRecordedVideoFinalDecision(
+          sourceDurationMs: sourceDurationMs,
+          normalizedDurationMs: null,
+          postVerifyDurationMs: null,
+          retryNormalizeCount: retryNormalizeCount,
+          padAppliedMs: padAppliedMs,
+          finalDecision: 'fail',
+          reason: 'normalize_failed_save_gate_rejected',
         );
-      } catch (e) {
-        debugPrint('[VideoManager] Copy fallback failed: $e');
-        return;
+        throw StateError('영상 길이 정규화에 실패했고 저장 허용 기준(2000ms 초과)을 통과하지 못했습니다.');
+      }
+      return;
+    }
+
+    var normalizedDurationMs = await _getVideoDurationMsNative(currentPath);
+    var postVerifyDurationMs = normalizedDurationMs;
+    debugPrint(
+      '[VideoManager] saveRecordedVideo_post_verify '
+      'sourceDurationMs=$sourceDurationMs '
+      'normalizedDurationMs=$normalizedDurationMs '
+      'postVerifyDurationMs=$postVerifyDurationMs '
+      'targetDurationMs=$_targetRecordingDurationMs '
+      'strictMinMs=$kTargetClipMinAcceptableMs '
+      'strictMaxMs=$kTargetClipMaxAcceptableMs '
+      'saveGateMinExclusiveMs=$kClipSaveMinExclusiveMs '
+      'saveGatePass=${_isAcceptableNormalizedDuration(postVerifyDurationMs)} '
+      'strictQualityPass=${_isWithinTargetQualityRange(postVerifyDurationMs)} '
+      'retryNormalizeCount=$retryNormalizeCount '
+      'padAppliedMs=$padAppliedMs '
+      'fallbackPolicyName=$_recordingFallbackPolicyName',
+    );
+
+    if (!_isWithinTargetQualityRange(postVerifyDurationMs)) {
+      final retryResult = await _retryNormalizeWithPadding(
+        currentPath,
+        sourceDurationMs: sourceDurationMs,
+        normalizedDurationMs: normalizedDurationMs,
+        aspectPreset: normalizedAspectPreset,
+      );
+      retryNormalizeCount = retryResult.retryNormalizeCount;
+      padAppliedMs = retryResult.padAppliedMs;
+      postVerifyDurationMs = retryResult.postVerifyDurationMs;
+      if (!_isAcceptableNormalizedDuration(postVerifyDurationMs) &&
+          _isAcceptableNormalizedDuration(normalizedDurationMs)) {
+        postVerifyDurationMs = normalizedDurationMs;
       }
     }
 
-    final normalizedDurationMs = await _getVideoDurationMsNative(currentPath);
+    if (!_isAcceptableNormalizedDuration(postVerifyDurationMs)) {
+      final failureReason = _clipDurationFailureReason(postVerifyDurationMs);
+      final fallbackSaved = await _saveRecordedVideoFallback(
+        sourcePath: sourcePath,
+        outputPath: currentPath,
+        sourceDurationMs: sourceDurationMs,
+        reason: failureReason,
+        normalizedDurationMs: normalizedDurationMs,
+        postVerifyDurationMs: postVerifyDurationMs,
+        retryNormalizeCount: retryNormalizeCount,
+        padAppliedMs: padAppliedMs,
+      );
+      if (!fallbackSaved) {
+        _logRecordedVideoFinalDecision(
+          sourceDurationMs: sourceDurationMs,
+          normalizedDurationMs: normalizedDurationMs,
+          postVerifyDurationMs: postVerifyDurationMs,
+          retryNormalizeCount: retryNormalizeCount,
+          padAppliedMs: padAppliedMs,
+          finalDecision: 'fail',
+          reason: failureReason,
+        );
+        throw StateError(
+          '정규화 결과 길이가 ${postVerifyDurationMs ?? -1}ms라 저장 허용 기준(2000ms 초과)을 통과하지 못했습니다.',
+        );
+      }
+      return;
+    }
     debugPrint(
       '[VideoManager] saveRecordedVideo_result '
       'sourceDurationMs=$sourceDurationMs '
       'targetDurationMs=$_targetRecordingDurationMs '
       'normalizedDurationMs=$normalizedDurationMs '
+      'postVerifyDurationMs=$postVerifyDurationMs '
+      'saveGateMinExclusiveMs=$kClipSaveMinExclusiveMs '
+      'saveGatePass=${_isAcceptableNormalizedDuration(postVerifyDurationMs)} '
+      'strictQualityPass=${_isWithinTargetQualityRange(postVerifyDurationMs)} '
+      'retryNormalizeCount=$retryNormalizeCount '
+      'padAppliedMs=$padAppliedMs '
+      'fallbackPolicyName=$_recordingFallbackPolicyName '
+      'finalDecision=success '
       'normalizeSuccess=$normalized',
     );
 
@@ -3012,8 +3440,238 @@ class VideoManager extends ChangeNotifier {
     await _upsertLocalIndexClip(currentPath);
 
     await _removeDurationCacheForPath(currentPath);
-    await loadClipsFromCurrentAlbum();
+    await _setDurationCacheForPath(
+      currentPath,
+      Duration(
+        milliseconds: postVerifyDurationMs ?? _targetRecordingDurationMs,
+      ),
+    );
+    if (currentAlbum == albumName) {
+      await loadClipsFromCurrentAlbum();
+    }
     await _updateAlbumClipCounts();
+  }
+
+  bool _isAcceptableNormalizedDuration(int? durationMs) {
+    return isClipDurationAcceptableForSave(durationMs);
+  }
+
+  bool _isWithinTargetQualityRange(int? durationMs) {
+    return isClipDurationWithinTargetContract(durationMs);
+  }
+
+  String _clipDurationFailureReason(int? durationMs) {
+    if (durationMs == null) return 'duration_probe_failed';
+    if (durationMs <= kClipSaveMinExclusiveMs) {
+      return 'duration_not_over_2000ms';
+    }
+    if (durationMs > kTargetClipMaxAcceptableMs) {
+      return 'container_rounding_over_tolerance';
+    }
+    if (durationMs < kTargetClipMinAcceptableMs) {
+      return 'under_target_but_save_allowed';
+    }
+    return 'normalized_duration_out_of_range';
+  }
+
+  void _logRecordedVideoFinalDecision({
+    required int? sourceDurationMs,
+    required int? normalizedDurationMs,
+    required int? postVerifyDurationMs,
+    required int retryNormalizeCount,
+    required int padAppliedMs,
+    required String finalDecision,
+    required String reason,
+  }) {
+    debugPrint(
+      '[VideoManager] saveRecordedVideo_final_decision '
+      'sourceDurationMs=$sourceDurationMs '
+      'normalizedDurationMs=$normalizedDurationMs '
+      'postVerifyDurationMs=$postVerifyDurationMs '
+      'targetDurationMs=$_targetRecordingDurationMs '
+      'strictMinMs=$kTargetClipMinAcceptableMs '
+      'strictMaxMs=$kTargetClipMaxAcceptableMs '
+      'saveGateMinExclusiveMs=$kClipSaveMinExclusiveMs '
+      'saveGatePass=${_isAcceptableNormalizedDuration(postVerifyDurationMs)} '
+      'strictQualityPass=${_isWithinTargetQualityRange(postVerifyDurationMs)} '
+      'retryNormalizeCount=$retryNormalizeCount '
+      'padAppliedMs=$padAppliedMs '
+      'fallbackPolicyName=$_recordingFallbackPolicyName '
+      'finalDecision=$finalDecision '
+      'reason=$reason',
+    );
+  }
+
+  Future<_RecordingRetryResult> _retryNormalizeWithPadding(
+    String currentPath, {
+    required int? sourceDurationMs,
+    required int? normalizedDurationMs,
+    required String aspectPreset,
+  }) async {
+    final int padAppliedMs = normalizedDurationMs == null
+        ? 0
+        : (_targetRecordingDurationMs - normalizedDurationMs).clamp(
+            0,
+            _targetRecordingDurationMs,
+          );
+    final String retryPath = p.join(
+      p.dirname(currentPath),
+      '${p.basenameWithoutExtension(currentPath)}_retry_pad${p.extension(currentPath)}',
+    );
+
+    debugPrint(
+      '[VideoManager] saveRecordedVideo_retry_normalize_start '
+      'sourceDurationMs=$sourceDurationMs '
+      'normalizedDurationMs=$normalizedDurationMs '
+      'postVerifyDurationMs=$normalizedDurationMs '
+      'targetDurationMs=$_targetRecordingDurationMs '
+      'retryNormalizeCount=1 '
+      'padAppliedMs=$padAppliedMs '
+      'fallbackPolicyName=$_recordingFallbackPolicyName '
+      'padToTarget=true',
+    );
+
+    final retryOk = await _normalizeRecordedVideo(
+      currentPath,
+      retryPath,
+      targetDurationMs: _targetRecordingDurationMs,
+      aspectPreset: aspectPreset,
+    );
+    int? postVerifyDurationMs;
+    if (retryOk) {
+      postVerifyDurationMs = await _getVideoDurationMsNative(retryPath);
+      if (_isAcceptableNormalizedDuration(postVerifyDurationMs)) {
+        final outputFile = File(currentPath);
+        if (await outputFile.exists()) {
+          await outputFile.delete();
+        }
+        await File(retryPath).rename(currentPath);
+      }
+    }
+
+    if (await File(retryPath).exists()) {
+      try {
+        await File(retryPath).delete();
+      } catch (_) {}
+    }
+
+    final reason = _isAcceptableNormalizedDuration(postVerifyDurationMs)
+        ? (_isWithinTargetQualityRange(postVerifyDurationMs)
+              ? 'retry_pad_strict_quality_satisfied'
+              : 'retry_pad_save_gate_satisfied')
+        : _clipDurationFailureReason(postVerifyDurationMs);
+    debugPrint(
+      '[VideoManager] saveRecordedVideo_retry_normalize_done '
+      'sourceDurationMs=$sourceDurationMs '
+      'normalizedDurationMs=$normalizedDurationMs '
+      'postVerifyDurationMs=$postVerifyDurationMs '
+      'targetDurationMs=$_targetRecordingDurationMs '
+      'strictMinMs=$kTargetClipMinAcceptableMs '
+      'strictMaxMs=$kTargetClipMaxAcceptableMs '
+      'saveGateMinExclusiveMs=$kClipSaveMinExclusiveMs '
+      'saveGatePass=${_isAcceptableNormalizedDuration(postVerifyDurationMs)} '
+      'strictQualityPass=${_isWithinTargetQualityRange(postVerifyDurationMs)} '
+      'retryNormalizeCount=1 '
+      'padAppliedMs=$padAppliedMs '
+      'fallbackPolicyName=$_recordingFallbackPolicyName '
+      'padToTarget=true '
+      'finalDecision=${_isAcceptableNormalizedDuration(postVerifyDurationMs) ? 'success' : 'fail'} '
+      'reason=$reason',
+    );
+
+    return _RecordingRetryResult(
+      retryNormalizeCount: 1,
+      padAppliedMs: padAppliedMs,
+      postVerifyDurationMs: postVerifyDurationMs,
+    );
+  }
+
+  Future<bool> _saveRecordedVideoFallback({
+    required String sourcePath,
+    required String outputPath,
+    required int? sourceDurationMs,
+    required String reason,
+    int? normalizedDurationMs,
+    int? postVerifyDurationMs,
+    int retryNormalizeCount = 0,
+    int padAppliedMs = 0,
+  }) async {
+    try {
+      final sourceFile = File(sourcePath);
+      if (!await sourceFile.exists()) return false;
+
+      final effectiveSourceDurationMs =
+          sourceDurationMs ?? await _getVideoDurationMsNative(sourcePath);
+      if (!_isAcceptableNormalizedDuration(effectiveSourceDurationMs)) {
+        _logRecordedVideoFinalDecision(
+          sourceDurationMs: effectiveSourceDurationMs,
+          normalizedDurationMs: normalizedDurationMs,
+          postVerifyDurationMs: postVerifyDurationMs,
+          retryNormalizeCount: retryNormalizeCount,
+          padAppliedMs: padAppliedMs,
+          finalDecision: 'fail',
+          reason: reason,
+        );
+        debugPrint(
+          '[VideoManager] saveRecordedVideo_fallback_rejected '
+          'reason=$reason sourceDurationMs=$effectiveSourceDurationMs '
+          'normalizedDurationMs=$normalizedDurationMs '
+          'postVerifyDurationMs=$postVerifyDurationMs '
+          'saveGateMinExclusiveMs=$kClipSaveMinExclusiveMs '
+          'saveGatePass=${_isAcceptableNormalizedDuration(effectiveSourceDurationMs)} '
+          'strictQualityPass=${_isWithinTargetQualityRange(effectiveSourceDurationMs)} '
+          'retryNormalizeCount=$retryNormalizeCount '
+          'padAppliedMs=$padAppliedMs '
+          'fallbackPolicyName=$_recordingFallbackPolicyName '
+          'finalDecision=fail',
+        );
+        return false;
+      }
+
+      final outputFile = File(outputPath);
+      if (await outputFile.exists()) {
+        await outputFile.delete();
+      }
+      await sourceFile.copy(outputPath);
+
+      final fallbackDurationMs = effectiveSourceDurationMs;
+      debugPrint(
+        '[VideoManager] saveRecordedVideo_fallback_saved '
+        'reason=$reason sourceDurationMs=$effectiveSourceDurationMs '
+        'normalizedDurationMs=$normalizedDurationMs '
+        'postVerifyDurationMs=$postVerifyDurationMs '
+        'fallbackDurationMs=$fallbackDurationMs '
+        'saveGateMinExclusiveMs=$kClipSaveMinExclusiveMs '
+        'saveGatePass=${_isAcceptableNormalizedDuration(fallbackDurationMs)} '
+        'strictQualityPass=${_isWithinTargetQualityRange(fallbackDurationMs)} '
+        'retryNormalizeCount=$retryNormalizeCount '
+        'padAppliedMs=$padAppliedMs '
+        'fallbackPolicyName=$_recordingFallbackPolicyName '
+        'finalDecision=success '
+        'outputPath=$outputPath',
+      );
+
+      await _setClipOwnership(
+        outputPath,
+        ownerAccountId: UserStatusManager().userId,
+      );
+      await _removeDurationCacheForPath(outputPath);
+      if (fallbackDurationMs != null && fallbackDurationMs > 0) {
+        await _setDurationCacheForPath(
+          outputPath,
+          Duration(milliseconds: fallbackDurationMs),
+        );
+      }
+      await _upsertLocalIndexClip(outputPath);
+      await loadClipsFromCurrentAlbum();
+      await _updateAlbumClipCounts();
+      return true;
+    } catch (e) {
+      debugPrint(
+        '[VideoManager] saveRecordedVideo_fallback_failed reason=$reason error=$e',
+      );
+      return false;
+    }
   }
 
   Future<int?> _getVideoDurationMsNative(String inputPath) async {
@@ -3050,6 +3708,7 @@ class VideoManager extends ChangeNotifier {
     String sourcePath,
     String outputPath, {
     int? targetDurationMs,
+    String aspectPreset = recordedAspectPreset9x16,
   }) async {
     try {
       final effectiveTargetDurationMs =
@@ -3067,6 +3726,8 @@ class VideoManager extends ChangeNotifier {
         'sourcePath=$sourcePath '
         'outputPath=$outputPath '
         'targetDurationMs=$effectiveTargetDurationMs '
+        'aspectPreset=${_normalizeRecordedAspectPreset(aspectPreset)} '
+        'padToTarget=true '
         'trimMode=$_recordingTrimMode',
       );
 
@@ -3074,7 +3735,9 @@ class VideoManager extends ChangeNotifier {
         'inputPath': sourcePath,
         'outputPath': outputPath,
         'targetDurationMs': effectiveTargetDurationMs,
+        'padToTarget': true,
         'trimMode': _recordingTrimMode,
+        'aspectPreset': _normalizeRecordedAspectPreset(aspectPreset),
       });
 
       debugPrint(
@@ -3814,6 +4477,18 @@ class VideoManager extends ChangeNotifier {
     if (duration == null) return;
     await _setDurationCacheForPath(targetPath, duration);
   }
+}
+
+class _RecordingRetryResult {
+  final int retryNormalizeCount;
+  final int padAppliedMs;
+  final int? postVerifyDurationMs;
+
+  const _RecordingRetryResult({
+    required this.retryNormalizeCount,
+    required this.padAppliedMs,
+    required this.postVerifyDurationMs,
+  });
 }
 
 final VideoManager videoManager = VideoManager();

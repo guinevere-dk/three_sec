@@ -14,6 +14,7 @@ import '../models/edit_command.dart';
 import '../managers/user_status_manager.dart';
 import '../models/vlog_project.dart';
 import '../constants/clip_policy.dart';
+import '../utils/clip_duration_label.dart';
 import '../utils/quality_policy.dart';
 
 // 자막 데이터 모델
@@ -4223,8 +4224,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           }
 
                           if (durationToDisplay != Duration.zero) {
-                            final totalMs = durationToDisplay.inMilliseconds;
-                            durationSec = (totalMs ~/ 1000).clamp(0, 999999);
+                            durationSec = clipDurationBadgeSeconds(
+                              durationToDisplay,
+                            );
                           } else {
                             durationSec = -1; // Not yet loaded
                           }

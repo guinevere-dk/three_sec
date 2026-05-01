@@ -56,6 +56,8 @@ import android.media.MediaFormat
 
 class MainActivity: FlutterFragmentActivity() {
     private val CHANNEL = "com.dk.three_sec/video_engine"
+    private val NEAR_TARGET_DURATION_MS = 2030L
+    private val SAVE_GATE_MIN_EXCLUSIVE_MS = 2000L
     @Volatile
     private var activeMergeSessionId: String? = null
     @Volatile
@@ -358,8 +360,8 @@ class MainActivity: FlutterFragmentActivity() {
 
     // 🎛️ [디자인 컨트롤 타워] 여기서 수치만 바꾸면 즉시 반영됩니다.
     companion object {
-        private const val DEFAULT_EDIT_TARGET_DURATION_MS = 2000L
-        private const val DEFAULT_SAVE_TARGET_DURATION_MS = 2034L
+        private const val DEFAULT_EDIT_TARGET_DURATION_MS = 2100L
+        private const val DEFAULT_SAVE_TARGET_DURATION_MS = 2100L
         // 워터마크 설정
         private const val WATERMARK_ALPHA = 160
         private const val WATERMARK_SCALE_X = 0.35f
@@ -570,6 +572,8 @@ class MainActivity: FlutterFragmentActivity() {
                     val args = call.arguments as? Map<*, *>
                     val rawTargetDuration = args?.get("targetDurationMs")
                     val rawTrimMode = args?.get("trimMode")
+                    val rawPadToTarget = args?.get("padToTarget")
+                    val rawAspectPreset = args?.get("aspectPreset")
                     val targetDurationMs = when (rawTargetDuration) {
                         is Long -> rawTargetDuration
                         is Int -> rawTargetDuration.toLong()
@@ -580,10 +584,12 @@ class MainActivity: FlutterFragmentActivity() {
                         else -> DEFAULT_SAVE_TARGET_DURATION_MS
                     }
                     val trimMode = (rawTrimMode as? String)?.lowercase() ?: "start"
+                    val padToTarget = rawPadToTarget as? Boolean ?: true
+                    val aspectPreset = (rawAspectPreset as? String)?.lowercase() ?: "r9_16"
 
                     Log.d(
                         "3S_NORMALIZE",
-                        "normalizeVideoDuration argType=${rawTargetDuration?.javaClass?.name} value=$rawTargetDuration parsedMs=$targetDurationMs trimMode=$trimMode"
+                        "normalizeVideoDuration argType=${rawTargetDuration?.javaClass?.name} value=$rawTargetDuration parsedMs=$targetDurationMs trimMode=$trimMode padToTarget=$padToTarget aspectPreset=$aspectPreset"
                     )
 
                     if (inputPath != null && outputPath != null) {
@@ -592,6 +598,8 @@ class MainActivity: FlutterFragmentActivity() {
                             outputPath = outputPath,
                             targetDurationMs = targetDurationMs,
                             trimMode = trimMode,
+                            padToTarget = padToTarget,
+                            aspectPreset = aspectPreset,
                             result = result
                         )
                     } else {
@@ -674,6 +682,8 @@ class MainActivity: FlutterFragmentActivity() {
         outputPath: String,
         targetDurationMs: Long,
         trimMode: String,
+        padToTarget: Boolean,
+        aspectPreset: String,
         result: MethodChannel.Result
     ) {
         try {
@@ -701,6 +711,9 @@ class MainActivity: FlutterFragmentActivity() {
             val retriever = MediaMetadataRetriever()
             retriever.setDataSource(this, sourceUri)
             val sourceDurationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            val sourceWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+            val sourceHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+            val sourceRotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
             retriever.release()
 
             if (sourceDurationMs <= 0L) {
@@ -718,17 +731,22 @@ class MainActivity: FlutterFragmentActivity() {
                 outputFile.delete()
             }
 
-            val clipMs = kotlin.math.min(sourceDurationMs, targetDurationMs)
+            val shouldPadToTarget = padToTarget && sourceDurationMs < targetDurationMs
+            val clipMs = if (shouldPadToTarget) targetDurationMs else kotlin.math.min(sourceDurationMs, targetDurationMs)
+            val requestedEndMs = if (shouldPadToTarget) sourceDurationMs else clipMs
             val effectiveTrimMode = if (trimMode == "center") "center" else "start"
-            val startMs = if (effectiveTrimMode == "center" && sourceDurationMs > clipMs) {
-                (sourceDurationMs - clipMs) / 2L
+            val startMs = if (effectiveTrimMode == "center" && sourceDurationMs > requestedEndMs) {
+                (sourceDurationMs - requestedEndMs) / 2L
             } else {
                 0L
             }
-            val endMs = startMs + clipMs
+            val endMs = startMs + requestedEndMs
+            val normalizedAspectPreset = normalizeCaptureAspectPreset(aspectPreset)
+            val targetAspect = captureAspectRatio(normalizedAspectPreset)
+            val sourceAspect = sourceDisplayAspectRatio(sourceWidth, sourceHeight, sourceRotation)
             Log.d(
                 "3S_NORMALIZE",
-                "normalizeVideoDuration sourceDurationMs=$sourceDurationMs targetDurationMs=$targetDurationMs clipMs=$clipMs trimMode=$effectiveTrimMode startMs=$startMs endMs=$endMs"
+                "normalizeVideoDuration sourceDurationMs=$sourceDurationMs targetDurationMs=$targetDurationMs clipMs=$clipMs trimMode=$effectiveTrimMode startMs=$startMs endMs=$endMs padArg=$padToTarget padApplied=$shouldPadToTarget aspectPreset=$normalizedAspectPreset sourceWidth=$sourceWidth sourceHeight=$sourceHeight sourceRotation=$sourceRotation sourceAspect=$sourceAspect targetAspect=$targetAspect nearTargetWindow=$NEAR_TARGET_DURATION_MS"
             )
 
             val clippingConfig = MediaItem.ClippingConfiguration.Builder()
@@ -742,9 +760,17 @@ class MainActivity: FlutterFragmentActivity() {
                 .setClippingConfiguration(clippingConfig)
                 .build()
 
-            val editedItems = arrayListOf(
-                EditedMediaItem.Builder(clippedItem).build()
-            )
+            val videoEffects = mutableListOf<androidx.media3.common.Effect>()
+            if (normalizedAspectPreset != "r9_16") {
+                videoEffects.add(Presentation.createForAspectRatio(targetAspect, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP))
+            }
+            val itemEffects = Effects(listOf<AudioProcessor>(), videoEffects)
+
+            val clippedEditedItem = EditedMediaItem.Builder(clippedItem)
+                .setDurationUs(clipMs * 1000L)
+                .setEffects(itemEffects)
+                .build()
+            val editedItems = arrayListOf(clippedEditedItem)
 
             val sequence = EditedMediaItemSequence(editedItems)
             val composition = Composition.Builder(listOf(sequence))
@@ -764,7 +790,9 @@ class MainActivity: FlutterFragmentActivity() {
                                     "sourceDurationMs=$sourceDurationMs " +
                                     "targetDurationMs=$targetDurationMs " +
                                     "normalizedDurationMs=${exportResult.durationMs} " +
-                                    "clipMs=$clipMs startMs=$startMs endMs=$endMs trimMode=$effectiveTrimMode"
+                                    "clipMs=$clipMs startMs=$startMs endMs=$endMs trimMode=$effectiveTrimMode padToTarget=$shouldPadToTarget aspectPreset=$normalizedAspectPreset sourceAspect=$sourceAspect targetAspect=$targetAspect " +
+                                    "saveGateMinExclusiveMs=$SAVE_GATE_MIN_EXCLUSIVE_MS " +
+                                    "saveGatePass=${exportResult.durationMs > SAVE_GATE_MIN_EXCLUSIVE_MS}"
                             )
                             result.success("SUCCESS")
                         }
@@ -798,6 +826,30 @@ class MainActivity: FlutterFragmentActivity() {
                 result = result
             )
         }
+    }
+
+    private fun normalizeCaptureAspectPreset(aspectPreset: String): String {
+        return when (aspectPreset.lowercase()) {
+            "r1_1", "1:1", "1x1" -> "r1_1"
+            "r3_4", "3:4", "3x4" -> "r3_4"
+            else -> "r9_16"
+        }
+    }
+
+    private fun captureAspectRatio(aspectPreset: String): Float {
+        return when (normalizeCaptureAspectPreset(aspectPreset)) {
+            "r1_1" -> 1f
+            "r3_4" -> 3f / 4f
+            else -> 9f / 16f
+        }
+    }
+
+    private fun sourceDisplayAspectRatio(width: Int, height: Int, rotation: Int): Float {
+        if (width <= 0 || height <= 0) return 0f
+        val displayWidth = if (rotation == 90 || rotation == 270) height else width
+        val displayHeight = if (rotation == 90 || rotation == 270) width else height
+        if (displayHeight <= 0) return 0f
+        return displayWidth.toFloat() / displayHeight.toFloat()
     }
 
     private fun convertImageToVideo(
