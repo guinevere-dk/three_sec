@@ -252,9 +252,7 @@ class _LoginScreenState extends State<LoginScreen> {
         // 로그인 성공 시 AuthGate가 자동으로 메인 화면으로 이동
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(
-          const SnackBar(content: Text('Welcome to One Second Vlog!')),
-        );
+        ).showSnackBar(const SnackBar(content: Text('Welcome to MOA!')));
       }
     } catch (e) {
       if (mounted) {
@@ -275,9 +273,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (userCredential != null && mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(
-          const SnackBar(content: Text('Welcome to One Second Vlog!')),
-        );
+        ).showSnackBar(const SnackBar(content: Text('Welcome to MOA!')));
       }
     } catch (e) {
       if (mounted) {
@@ -298,9 +294,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (userCredential != null && mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(
-          const SnackBar(content: Text('Welcome to One Second Vlog!')),
-        );
+        ).showSnackBar(const SnackBar(content: Text('Welcome to MOA!')));
       }
     } on AuthServiceException catch (e) {
       if (mounted) {
@@ -356,9 +350,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (userCredential != null && mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(
-          const SnackBar(content: Text('Welcome to One Second Vlog!')),
-        );
+        ).showSnackBar(const SnackBar(content: Text('Welcome to MOA!')));
       }
     } on AuthServiceException catch (e) {
       if (mounted) {

@@ -7,11 +7,8 @@ class AnnouncementsScreen extends StatelessWidget {
     _AnnouncementItem(
       date: '2026.03.15',
       version: 'v1.2.0',
-      title: '원세컨 브이로그 출시',
-      bullets: [
-        '원세컨 브이로그 앱이 출시되었습니다.',
-        '1초 영상만으로 나만의 영상 앨범을 만들어보세요.',
-      ],
+      title: 'MOA 출시',
+      bullets: ['MOA 앱이 출시되었습니다.', '2초 촬영으로 나만의 Vlog 앨범을 만들어보세요.'],
     ),
   ];
 
@@ -101,4 +98,3 @@ class _AnnouncementItem {
     required this.bullets,
   });
 }
-

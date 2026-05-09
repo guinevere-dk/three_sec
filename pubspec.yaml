@@ -1,5 +1,5 @@
 name: three_s
-description: "3-second video fragment recorder and automatic vlog merger."
+description: "MOA: 2-second clip capture and automatic Vlog album creation."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev

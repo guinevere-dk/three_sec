@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>3초 브이로그 카메라 화질 개선 인터랙티브 리서치 v1</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07080d;
+      --bg-2: #11131d;
+      --card: rgba(255, 255, 255, 0.08);
+      --card-strong: rgba(255, 255, 255, 0.13);
+      --line: rgba(255, 255, 255, 0.16);
+      --text: #f7f1e8;
+      --muted: rgba(247, 241, 232, 0.72);
+      --subtle: rgba(247, 241, 232, 0.54);
+      --gold: #ffd28a;
+      --amber: #ff9f6e;
+      --rose: #ff7fad;
+      --cyan: #7de7ff;
+      --mint: #9dffd2;
+      --violet: #b8a2ff;
+      --danger: #ff8f8f;
+      --shadow: 0 28px 90px rgba(0, 0, 0, 0.55);
+      --radius-lg: 30px;
+      --radius-md: 22px;
+      --radius-sm: 14px;
+      --focus: 0 0 0 3px rgba(125, 231, 255, 0.28), 0 0 0 1px rgba(125, 231, 255, 0.9) inset;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 18% 5%, rgba(255, 127, 173, 0.22), transparent 30rem),
+        radial-gradient(circle at 78% 0%, rgba(125, 231, 255, 0.18), transparent 28rem),
+        radial-gradient(circle at 52% 42%, rgba(255, 210, 138, 0.11), transparent 34rem),
+        linear-gradient(140deg, #05050a 0%, #10111b 47%, #08090f 100%);
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.17;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.07) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.055) 1px, transparent 1px);
+      background-size: 54px 54px;
+      mask-image: radial-gradient(circle at center, black, transparent 75%);
+      z-index: 0;
+    }
+
+    a { color: inherit; }
+    .shell { position: relative; z-index: 1; width: min(1180px, calc(100% - 36px)); margin: 0 auto; }
+    .skip-link { position: absolute; left: 16px; top: -80px; z-index: 10; padding: 10px 14px; border-radius: 12px; background: #fff; color: #111; transition: top .2s ease; }
+    .skip-link:focus { top: 16px; }
+
+    header.hero { padding: 56px 0 30px; }
+    .hero-card {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background:
+        linear-gradient(135deg, rgba(255,255,255,0.14), rgba(255,255,255,0.055)),
+        radial-gradient(circle at 85% 15%, rgba(255, 210, 138, 0.22), transparent 18rem),
+        rgba(255,255,255,0.06);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(22px) saturate(142%);
+      padding: clamp(28px, 5vw, 58px);
+    }
+    .hero-card::after {
+      content: "";
+      position: absolute;
+      width: 360px;
+      height: 360px;
+      right: -120px;
+      bottom: -170px;
+      border-radius: 999px;
+      background: conic-gradient(from 110deg, rgba(255, 210, 138, 0.4), rgba(255,127,173,0.16), rgba(125,231,255,0.22), rgba(255,210,138,0.4));
+      filter: blur(16px);
+      opacity: .8;
+    }
+    .eyebrow { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid rgba(255,210,138,.35); border-radius: 999px; color: var(--gold); background: rgba(255,210,138,.08); font-size: 13px; letter-spacing: .03em; }
+    h1 { max-width: 850px; margin: 22px 0 16px; font-size: clamp(36px, 7vw, 76px); line-height: .96; letter-spacing: -0.07em; }
+    .hero-lead { max-width: 770px; margin: 0; color: var(--muted); font-size: clamp(17px, 2.4vw, 22px); line-height: 1.7; }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
+    .btn, button {
+      appearance: none;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 12px 16px;
+      color: var(--text);
+      background: rgba(255,255,255,.08);
+      cursor: pointer;
+      font: inherit;
+      transition: transform .18s ease, border-color .18s ease, background .18s ease, box-shadow .18s ease;
+    }
+    .btn.primary, button.primary { border-color: rgba(255,210,138,.48); background: linear-gradient(135deg, rgba(255,210,138,.28), rgba(255,127,173,.14)); }
+    .btn:hover, button:hover { transform: translateY(-2px); background: rgba(255,255,255,.13); }
+    .btn:focus-visible, button:focus-visible, summary:focus-visible { outline: none; box-shadow: var(--focus); }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 34px; }
+    .stat { padding: 16px; border: 1px solid var(--line); border-radius: 18px; background: rgba(0,0,0,.18); }
+    .stat strong { display: block; font-size: 24px; color: var(--gold); }
+    .stat span { color: var(--subtle); font-size: 13px; }
+
+    nav.quick { position: sticky; top: 10px; z-index: 5; margin: 12px auto 22px; padding: 10px; border: 1px solid var(--line); border-radius: 999px; background: rgba(7,8,13,.72); backdrop-filter: blur(18px); display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; }
+    nav.quick::-webkit-scrollbar { display: none; }
+    nav.quick a { white-space: nowrap; text-decoration: none; padding: 10px 13px; border-radius: 999px; color: var(--muted); }
+    nav.quick a:hover { background: rgba(255,255,255,.09); color: var(--text); }
+
+    section { padding: 34px 0; }
+    .section-title { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    h2 { margin: 0; font-size: clamp(26px, 4vw, 42px); letter-spacing: -0.05em; }
+    .section-title p { max-width: 560px; margin: 0; color: var(--muted); line-height: 1.7; }
+    .grid { display: grid; gap: 16px; }
+    .grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+    .grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
+    .glass { border: 1px solid var(--line); border-radius: var(--radius-md); background: linear-gradient(145deg, rgba(255,255,255,.105), rgba(255,255,255,.045)); box-shadow: 0 18px 55px rgba(0,0,0,.28); backdrop-filter: blur(18px) saturate(130%); }
+    .card { padding: 22px; }
+    .tag { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; background: rgba(255,255,255,.08); color: var(--muted); border: 1px solid rgba(255,255,255,.11); font-size: 12px; }
+    .priority { position: relative; overflow: hidden; min-height: 242px; }
+    .priority::before { content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 90% 5%, var(--accent, rgba(255,210,138,.2)), transparent 14rem); opacity: .7; pointer-events: none; }
+    .priority > * { position: relative; }
+    .priority h3, .card h3 { margin: 16px 0 10px; font-size: 21px; letter-spacing: -0.03em; }
+    .priority p, .card p, .card li { color: var(--muted); line-height: 1.65; }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+    .meter { height: 8px; border-radius: 99px; background: rgba(255,255,255,.09); overflow: hidden; margin-top: 14px; }
+    .meter i { display: block; height: 100%; width: var(--w, 50%); background: linear-gradient(90deg, var(--gold), var(--rose)); border-radius: inherit; }
+
+    .filter-bar, .tabs { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+    .filter-btn[aria-pressed="true"], .tab-btn[aria-selected="true"] { color: #11131d; background: linear-gradient(135deg, var(--gold), #fff0c4); border-color: transparent; box-shadow: 0 12px 32px rgba(255,210,138,.18); }
+    .hidden { display: none !important; }
+
+    details.cause { overflow: hidden; }
+    details.cause summary { list-style: none; cursor: pointer; padding: 20px 22px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    details.cause summary::-webkit-details-marker { display: none; }
+    .cause-title { display: flex; align-items: center; gap: 12px; font-weight: 800; }
+    .cause-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 14px; background: rgba(255,210,138,.12); color: var(--gold); }
+    .chev { transition: transform .2s ease; color: var(--muted); }
+    details[open] .chev { transform: rotate(180deg); }
+    .cause-body { padding: 0 22px 22px 70px; color: var(--muted); line-height: 1.7; }
+
+    .tab-panel { padding: 24px; }
+    .tab-panel[hidden] { display: none; }
+    .panel-layout { display: grid; grid-template-columns: 1.1fr .9fr; gap: 18px; align-items: start; }
+    .pipeline { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 10px; }
+    .pipeline li { padding: 12px 14px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(0,0,0,.18); }
+    .look-chip { display: inline-flex; margin: 5px 5px 0 0; padding: 8px 10px; border-radius: 999px; color: #12131a; background: linear-gradient(135deg, var(--gold), var(--mint)); font-size: 13px; font-weight: 800; }
+
+    .table-wrap { overflow-x: auto; border-radius: var(--radius-md); border: 1px solid var(--line); }
+    table { width: 100%; min-width: 760px; border-collapse: collapse; background: rgba(255,255,255,.045); }
+    th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid rgba(255,255,255,.105); vertical-align: top; }
+    th { color: var(--gold); font-size: 13px; letter-spacing: .02em; background: rgba(255,255,255,.06); }
+    td { color: var(--muted); }
+    tr:last-child td { border-bottom: 0; }
+    .rank { color: var(--text); font-weight: 900; }
+    .pill { display: inline-flex; padding: 5px 9px; border-radius: 999px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.1); color: var(--text); font-size: 12px; }
+
+    .checklist { display: grid; gap: 10px; }
+    .check-item { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start; padding: 15px; border: 1px solid var(--line); border-radius: 18px; background: rgba(255,255,255,.055); }
+    .check-item input { width: 20px; height: 20px; accent-color: #ffd28a; margin-top: 2px; }
+    .check-item label { cursor: pointer; color: var(--muted); line-height: 1.6; }
+    .check-item input:checked + label { color: var(--text); text-decoration: line-through; text-decoration-color: rgba(255,210,138,.7); }
+    .progress { margin: 16px 0 0; padding: 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-radius: 18px; background: rgba(255,210,138,.08); border: 1px solid rgba(255,210,138,.18); }
+    .progress-bar { flex: 1; height: 10px; border-radius: 99px; background: rgba(255,255,255,.1); overflow: hidden; }
+    .progress-bar i { display: block; width: 0%; height: 100%; background: linear-gradient(90deg, var(--gold), var(--rose)); transition: width .2s ease; }
+
+    footer { padding: 34px 0 58px; color: var(--subtle); text-align: center; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+    @media (max-width: 900px) {
+      .stats, .grid.cols-3, .grid.cols-2, .panel-layout { grid-template-columns: 1fr; }
+      .section-title { align-items: start; flex-direction: column; }
+      nav.quick { border-radius: 20px; }
+      .cause-body { padding-left: 22px; }
+    }
+    @media (max-width: 560px) {
+      .shell { width: min(100% - 24px, 1180px); }
+      header.hero { padding-top: 28px; }
+      .hero-card { border-radius: 24px; padding: 24px; }
+      .hero-actions .btn { width: 100%; text-align: center; }
+      .stats { gap: 10px; }
+      .stat strong { font-size: 20px; }
+      section { padding: 26px 0; }
+      .card, .tab-panel { padding: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">본문으로 건너뛰기</a>
+  <header class="hero shell" aria-labelledby="hero-title">
+    <div class="hero-card">
+      <span class="eyebrow">Premium Camera Research · 3S Vlog</span>
+      <h1 id="hero-title">예쁜 1080p로 시작하는 아이폰 감성 카메라 품질 전략</h1>
+      <p class="hero-lead">핵심은 4K 기본화가 아니라, 3초 클립에 맞춘 고비트레이트 저장, 노출·화이트밸런스 안정화, Daily Life 룩, 짧은 후처리 파이프라인의 조합입니다.</p>
+      <div class="hero-actions" aria-label="주요 섹션 이동">
+        <a class="btn primary" href="#roadmap">우선순위 로드맵 보기</a>
+        <a class="btn" href="#causes">우글우글함 원인 보기</a>
+        <a class="btn" href="#checklist">실행 체크리스트</a>
+      </div>
+      <div class="stats" aria-label="핵심 수치 요약">
+        <div class="stat"><strong>8~12Mbps</strong><span>권장 1080p 기본 비트레이트</span></div>
+        <div class="stat"><strong>30fps</strong><span>촬영·정규화·내보내기 기준</span></div>
+        <div class="stat"><strong>P0~P1</strong><span>즉시 체감 가능한 우선순위</span></div>
+        <div class="stat"><strong>Daily Life</strong><span>기본 브랜드 룩 프리셋</span></div>
+      </div>
+    </div>
+  </header>
+
+  <nav class="quick shell" aria-label="문서 섹션 빠른 이동">
+    <a href="#roadmap">로드맵</a>
+    <a href="#causes">우글우글 원인</a>
+    <a href="#domains">개선 영역</a>
+    <a href="#compare">비교표</a>
+    <a href="#filters">기간 필터</a>
+    <a href="#checklist">체크리스트</a>
+  </nav>
+
+  <main id="main" class="shell">
+    <section id="roadmap" aria-labelledby="roadmap-title">
+      <div class="section-title">
+        <h2 id="roadmap-title">우선순위 로드맵 카드</h2>
+        <p>현재 구조를 크게 뒤엎지 않으면서 체감 품질을 빠르게 올리는 순서입니다. 해상도보다 안정적인 소스와 룩 패키징이 먼저입니다.</p>
+      </div>
+      <div class="grid cols-3">
+        <article class="glass card priority" style="--accent: rgba(255,210,138,.36)">
+          <span class="tag">P0 · 즉시</span>
+          <h3>예쁜 1080p 기본 품질</h3>
+          <p>1080p 기본값을 유지하되 최종 정규화/내보내기 비트레이트를 8~12Mbps 이상으로 올리고, 30fps 일관성을 점검합니다.</p>
+          <div class="meter" aria-label="체감 효과 높음"><i style="--w:92%"></i></div>
+          <div class="meta"><span class="pill">효과 높음</span><span class="pill">난이도 낮음</span><span class="pill">파일 크기 리스크</span></div>
+        </article>
+        <article class="glass card priority" style="--accent: rgba(125,231,255,.28)">
+          <span class="tag">P0 · 단기</span>
+          <h3>AE/AWB/AF 안정화</h3>
+          <p>녹화 직전 노출·화이트밸런스·포커스 수렴을 유도하고 3초 녹화 중 급격한 밝기/색 흔들림을 제한합니다.</p>
+          <div class="meter" aria-label="체감 효과 높음"><i style="--w:88%"></i></div>
+          <div class="meta"><span class="pill">깜빡임 감소</span><span class="pill">난이도 중간</span><span class="pill">플러그인 한계</span></div>
+        </article>
+        <article class="glass card priority" style="--accent: rgba(255,127,173,.28)">
+          <span class="tag">P1 · 단기~중기</span>
+          <h3>Daily Life 기본 룩</h3>
+          <p>따뜻한 화이트, 부드러운 S-curve, 하이라이트 롤오프, 피부톤 보호를 하나의 기본 프리셋으로 패키징합니다.</p>
+          <div class="meter" aria-label="체감 효과 매우 높음"><i style="--w:96%"></i></div>
+          <div class="meta"><span class="pill">아이폰 감성</span><span class="pill">취향 편차</span><span class="pill">A/B 필요</span></div>
+        </article>
+        <article class="glass card priority" style="--accent: rgba(157,255,210,.24)">
+          <span class="tag">P1 · 단기</span>
+          <h3>3초 클립 후처리</h3>
+          <p>가벼운 디노이즈, 디밴딩/디블록킹, 약한 샤프닝, 고비트레이트 인코딩으로 우글우글함을 줄입니다.</p>
+          <div class="meter" aria-label="체감 효과 높음"><i style="--w:84%"></i></div>
+          <div class="meta"><span class="pill">짧은 처리</span><span class="pill">발열 주의</span><span class="pill">품질 로그</span></div>
+        </article>
+        <article class="glass card priority" style="--accent: rgba(184,162,255,.26)">
+          <span class="tag">P2 · 중기</span>
+          <h3>네이티브 카메라 제어</h3>
+          <p>Android CameraX/Camera2, iOS AVFoundation으로 비트레이트, 안정화, HDR, 노출 제어를 고도화합니다.</p>
+          <div class="meter" aria-label="체감 효과 매우 높음"><i style="--w:90%"></i></div>
+          <div class="meta"><span class="pill">난이도 높음</span><span class="pill">호환성</span><span class="pill">PoC 선행</span></div>
+        </article>
+        <article class="glass card priority" style="--accent: rgba(255,159,110,.24)">
+          <span class="tag">P3 · 장기</span>
+          <h3>ML 컴퓨테이셔널 비디오</h3>
+          <p>저조도 temporal denoise, 얼굴 기반 피부톤 보호, Super Resolution, 인물/배경 분리 룩을 장기 차별화로 추진합니다.</p>
+          <div class="meter" aria-label="체감 효과 높지만 난이도 매우 높음"><i style="--w:78%"></i></div>
+          <div class="meta"><span class="pill">프리미엄</span><span class="pill">모델 용량</span><span class="pill">성능 리스크</span></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="causes" aria-labelledby="causes-title">
+      <div class="section-title">
+        <h2 id="causes-title">‘우글우글함’ 원인 토글 카드</h2>
+        <p>사용자가 느끼는 우글우글함은 하나의 문제가 아니라 촬영, 프리뷰, 인코딩, 후처리 단계가 겹친 체감 품질 저하입니다.</p>
+      </div>
+      <div class="grid cols-2">
+        <details class="glass cause" open>
+          <summary><span class="cause-title"><span class="cause-icon">01</span>저비트레이트와 인코딩 아티팩트</span><span class="chev">⌄</span></summary>
+          <div class="cause-body">잔디, 머리카락, 벽지, 야간 노이즈처럼 고주파 디테일이 많은 영역에서 블록/모기 노이즈가 생깁니다. 1080p는 8~12Mbps, 움직임·야간은 12~16Mbps 후보를 검토합니다.</div>
+        </details>
+        <details class="glass cause">
+          <summary><span class="cause-title"><span class="cause-icon">02</span>센서 노이즈와 노이즈 리덕션 실패</span><span class="chev">⌄</span></summary>
+          <div class="cause-body">저조도에서 노이즈가 늘고, 강한 NR은 디테일을 뭉개며 약한 NR은 압축기가 노이즈에 비트를 낭비합니다. 약한 denoise 후 edge-aware sharpening이 적합합니다.</div>
+        </details>
+        <details class="glass cause">
+          <summary><span class="cause-title"><span class="cause-icon">03</span>샤프닝과 디노이즈 균형 실패</span><span class="chev">⌄</span></summary>
+          <div class="cause-body">과한 샤프닝은 링잉과 모기 노이즈를 키우고, 디노이즈만 강하면 플라스틱처럼 보입니다. 디노이즈 → 디밴딩/디블록킹 → 약한 샤프닝 순서가 안전합니다.</div>
+        </details>
+        <details class="glass cause">
+          <summary><span class="cause-title"><span class="cause-icon">04</span>롤링셔터와 안정화 부산물</span><span class="chev">⌄</span></summary>
+          <div class="cause-body">걷기, 빠른 팬, 손떨림에서 화면이 젤리처럼 출렁이거나 EIS 워핑 흔적이 생길 수 있습니다. 3초 클립은 과한 안정화보다 자연스러운 일관성이 중요합니다.</div>
+        </details>
+        <details class="glass cause">
+          <summary><span class="cause-title"><span class="cause-icon">05</span>프레임레이트 불일치</span><span class="chev">⌄</span></summary>
+          <div class="cause-body">촬영, 편집 타임라인, export fps가 어긋나면 judder와 중복 프레임이 발생합니다. 촬영·정규화·내보내기를 30fps 중심으로 고정합니다.</div>
+        </details>
+        <details class="glass cause">
+          <summary><span class="cause-title"><span class="cause-icon">06</span>색공간·톤매핑·감마 문제</span><span class="chev">⌄</span></summary>
+          <div class="cause-body">HDR 소스가 SDR로 잘못 변환되면 하이라이트가 날아가고 피부톤이 틀어집니다. v1은 SDR Rec.709 기준으로 안정화하고 HDR은 실험 플래그가 안전합니다.</div>
+        </details>
+      </div>
+    </section>
+
+    <section id="domains" aria-labelledby="domains-title">
+      <div class="section-title">
+        <h2 id="domains-title">개선 영역 탭</h2>
+        <p>촬영 시점, 실시간 룩, 후처리, 네이티브 카메라, 장기 ML을 전환하며 볼 수 있습니다.</p>
+      </div>
+      <div class="tabs" role="tablist" aria-label="카메라 품질 개선 영역">
+        <button class="tab-btn" id="tab-capture" role="tab" aria-selected="true" aria-controls="panel-capture" data-tab="capture">촬영 시점 개선</button>
+        <button class="tab-btn" id="tab-look" role="tab" aria-selected="false" aria-controls="panel-look" data-tab="look">실시간 룩</button>
+        <button class="tab-btn" id="tab-post" role="tab" aria-selected="false" aria-controls="panel-post" data-tab="post">후처리</button>
+        <button class="tab-btn" id="tab-native" role="tab" aria-selected="false" aria-controls="panel-native" data-tab="native">네이티브 카메라</button>
+        <button class="tab-btn" id="tab-ml" role="tab" aria-selected="false" aria-controls="panel-ml" data-tab="ml">장기 ML</button>
+      </div>
+      <div class="glass tab-panel" id="panel-capture" role="tabpanel" aria-labelledby="tab-capture">
+        <div class="panel-layout"><div><span class="tag">소스 품질 안정화</span><h3>후처리보다 먼저 촬영 원본을 안정화</h3><p>기본은 1080p·30fps·H.264로 두고, 비트레이트와 AE/AWB/AF 안정화에 투자합니다. 3초 안에서 밝기와 색이 흔들리면 바로 거슬리므로 녹화 직전 수렴과 녹화 중 완만 추적이 중요합니다.</p></div><ul class="pipeline"><li>1080p 8~12Mbps, 장면별 12~16Mbps 후보</li><li>녹화 직전 중앙/탭 지점 기준 포커스·노출 수렴</li><li>전면 카메라는 피부톤·노출 안정 우선</li><li>HDR/10-bit는 v1 이후 실험 플래그</li></ul></div>
+      </div>
+      <div class="glass tab-panel" id="panel-look" role="tabpanel" aria-labelledby="tab-look" hidden>
+        <div class="panel-layout"><div><span class="tag">프리셋 제품화</span><h3>기술 옵션을 감성 언어로 패키징</h3><p>사용자에게 LUT, 톤커브, 색공간을 설명하지 않고 Daily Life, Warm Film, Clean Night, Fresh Skin 같은 룩으로 제공합니다. 기본값은 Daily Life가 적합합니다.</p><span class="look-chip">Daily Life</span><span class="look-chip">Warm Film</span><span class="look-chip">Clean Night</span><span class="look-chip">Fresh Skin</span><span class="look-chip">Crisp Day</span></div><ul class="pipeline"><li>하이라이트 roll-off와 부드러운 S-curve</li><li>섀도우 lift, 미드톤 피부 밝기 보정</li><li>피부톤 영역 채도·샤프닝·그레인 완화</li><li>비네팅과 그레인은 매우 약하게</li></ul></div>
+      </div>
+      <div class="glass tab-panel" id="panel-post" role="tabpanel" aria-labelledby="tab-post" hidden>
+        <div class="panel-layout"><div><span class="tag">3초 클립 최적화</span><h3>짧은 대기 시간 안에서 품질을 회복</h3><p>3초 클립은 파일 길이가 짧아 후처리 대기와 파일 크기 부담이 낮습니다. 정규화 단계에 가벼운 디노이즈와 고비트레이트 인코딩을 결합하는 것이 현실적입니다.</p></div><ul class="pipeline"><li>원본 3초 클립</li><li>프레임레이트·길이 정규화</li><li>가벼운 디노이즈</li><li>디밴딩·디블록킹</li><li>톤커브·LUT·피부톤 보호</li><li>약한 샤프닝 후 고비트레이트 인코딩</li></ul></div>
+      </div>
+      <div class="glass tab-panel" id="panel-native" role="tabpanel" aria-labelledby="tab-native" hidden>
+        <div class="panel-layout"><div><span class="tag">P2 구조 전환</span><h3>Flutter camera 한계를 넘는 직접 제어</h3><p>현재 플러그인은 빠른 구현에는 좋지만 비트레이트, HDR, 안정화, 색 처리의 세부 제어가 제한적입니다. Android는 CameraX/Camera2, iOS는 AVFoundation PoC가 다음 단계입니다.</p></div><ul class="pipeline"><li>CameraX VideoCapture + QualitySelector</li><li>Camera2 interop AE/AWB/AF lock·stabilization</li><li>AVFoundation activeFormat·white balance·focus lock</li><li>HEVC/HDR/10-bit capability matrix 수집</li><li>단말별 fallback 정책 설계</li></ul></div>
+      </div>
+      <div class="glass tab-panel" id="panel-ml" role="tabpanel" aria-labelledby="tab-ml" hidden>
+        <div class="panel-layout"><div><span class="tag">장기 차별화</span><h3>기본 품질 안정 이후의 프리미엄 레이어</h3><p>저조도, 피부톤, Super Resolution, 인물 분리 룩은 강력하지만 성능·모델 용량·발열 리스크가 큽니다. MVP 이후 단계적으로 검증합니다.</p></div><ul class="pipeline"><li>색상 범위 기반 피부톤 보호</li><li>ML Kit 얼굴 위치 기반 노출·피부톤 보정</li><li>MediaPipe 인물/배경 분리 룩</li><li>온디바이스 저조도 denoise·Super Resolution</li><li>단말 성능 기반 품질 스케줄러</li></ul></div>
+      </div>
+    </section>
+
+    <section id="compare" aria-labelledby="compare-title">
+      <div class="section-title">
+        <h2 id="compare-title">우선순위·효과·난이도·리스크 비교표</h2>
+        <p>의사결정에 바로 쓰기 좋은 핵심 후보 비교입니다.</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>후보</th><th>우선순위</th><th>체감 효과</th><th>구현 난이도</th><th>주요 리스크</th><th>추천</th></tr></thead>
+          <tbody>
+            <tr><td class="rank">1080p 비트레이트 상향</td><td>P0</td><td>높음</td><td>낮음</td><td>파일 크기 증가</td><td><span class="pill">즉시 추진</span></td></tr>
+            <tr><td class="rank">AE/AWB/AF 락</td><td>P0</td><td>높음</td><td>중간</td><td>플러그인 한계</td><td><span class="pill">우선 추진</span></td></tr>
+            <tr><td class="rank">LUT/톤커브</td><td>P1</td><td>매우 높음</td><td>중간</td><td>과보정·취향 편차</td><td><span class="pill">우선 추진</span></td></tr>
+            <tr><td class="rank">약한 디노이즈</td><td>P1</td><td>높음</td><td>중간</td><td>처리 시간·발열</td><td><span class="pill">단기 추진</span></td></tr>
+            <tr><td class="rank">CameraX/AVFoundation 전환</td><td>P2</td><td>매우 높음</td><td>높음</td><td>단말 호환성</td><td><span class="pill">중기 이후</span></td></tr>
+            <tr><td class="rank">HDR/10-bit</td><td>P2~P3</td><td>중간~높음</td><td>높음</td><td>톤매핑 오류</td><td><span class="pill">실험 플래그</span></td></tr>
+            <tr><td class="rank">ML 보정</td><td>P3</td><td>매우 높음</td><td>매우 높음</td><td>성능·모델 용량</td><td><span class="pill">장기 추진</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="filters" aria-labelledby="filters-title">
+      <div class="section-title">
+        <h2 id="filters-title">기간별 필터</h2>
+        <p>실행 아이템을 즉시 적용, 단기, 중기, 장기로 필터링합니다.</p>
+      </div>
+      <div class="filter-bar" aria-label="기간 필터 버튼">
+        <button class="filter-btn" data-filter="all" aria-pressed="true">전체</button>
+        <button class="filter-btn" data-filter="now" aria-pressed="false">즉시 적용</button>
+        <button class="filter-btn" data-filter="short" aria-pressed="false">단기</button>
+        <button class="filter-btn" data-filter="mid" aria-pressed="false">중기</button>
+        <button class="filter-btn" data-filter="long" aria-pressed="false">장기</button>
+      </div>
+      <div class="grid cols-2" id="filterCards" aria-live="polite">
+        <article class="glass card filter-card" data-stage="now"><span class="tag">즉시 적용</span><h3>메타데이터 로그 수집</h3><p>실제 촬영/정규화/내보내기 결과의 bitrate, fps, codec, color metadata를 수집해 기준선을 만듭니다.</p></article>
+        <article class="glass card filter-card" data-stage="now"><span class="tag">즉시 적용</span><h3>1080p 비트레이트 샘플 비교</h3><p>8Mbps, 12Mbps, 16Mbps 샘플로 우글우글함과 파일 크기를 A/B 비교합니다.</p></article>
+        <article class="glass card filter-card" data-stage="short"><span class="tag">단기</span><h3>AE/AWB/AF 안정화 검증</h3><p>Flutter camera 플러그인 범위에서 녹화 직전 수렴 및 lock 가능 범위를 확인합니다.</p></article>
+        <article class="glass card filter-card" data-stage="short"><span class="tag">단기</span><h3>Media3·Core Image 후처리 PoC</h3><p>Android tone/color effect와 iOS CIColorCube/CIToneCurve 후보를 빠르게 프로토타입합니다.</p></article>
+        <article class="glass card filter-card" data-stage="mid"><span class="tag">중기</span><h3>LUT 프리셋 제품화</h3><p>Daily Life를 기본값으로 출시하고 Warm Film, Clean Night, Fresh Skin을 확장합니다.</p></article>
+        <article class="glass card filter-card" data-stage="mid"><span class="tag">중기</span><h3>네이티브 카메라 PoC</h3><p>CameraX/Camera2와 AVFoundation의 최소 촬영 경로를 만들고 capability matrix를 수집합니다.</p></article>
+        <article class="glass card filter-card" data-stage="long"><span class="tag">장기</span><h3>ML 저조도·피부톤·SR</h3><p>얼굴 기반 노출, temporal denoise, Super Resolution, 인물/배경 분리 룩을 단계적으로 검증합니다.</p></article>
+      </div>
+    </section>
+
+    <section id="checklist" aria-labelledby="checklist-title">
+      <div class="section-title">
+        <h2 id="checklist-title">체크리스트 실행 계획</h2>
+        <p>문서의 실행 Todo를 인터랙티브 체크리스트로 옮겼습니다. 체크 상태는 현재 브라우저 세션에서만 유지됩니다.</p>
+      </div>
+      <div class="glass card">
+        <div class="checklist" id="todoList">
+          <div class="check-item"><input id="todo-1" type="checkbox"><label for="todo-1">현재 촬영/정규화/내보내기 결과 파일의 실제 bitrate, fps, codec, color metadata를 로그로 수집한다.</label></div>
+          <div class="check-item"><input id="todo-2" type="checkbox"><label for="todo-2">1080p 8Mbps, 12Mbps, 16Mbps 샘플을 만들어 우글우글함과 파일 크기를 비교한다.</label></div>
+          <div class="check-item"><input id="todo-3" type="checkbox"><label for="todo-3">녹화 시작 직전 AE/AWB/AF 안정화 및 lock 가능 범위를 Flutter camera 플러그인에서 검증한다.</label></div>
+          <div class="check-item"><input id="todo-4" type="checkbox"><label for="todo-4">Android Media3 Transformer에서 tone/color effect와 encoder bitrate 제어 가능성을 프로토타입한다.</label></div>
+          <div class="check-item"><input id="todo-5" type="checkbox"><label for="todo-5">iOS Core Image 기반 CIColorCube/CIToneCurve 후처리 프로토타입을 만든다.</label></div>
+          <div class="check-item"><input id="todo-6" type="checkbox"><label for="todo-6">Daily Life 기본 룩의 LUT/톤커브 파라미터를 정의하고 QA 샘플 세트로 A/B 테스트한다.</label></div>
+          <div class="check-item"><input id="todo-7" type="checkbox"><label for="todo-7">저조도용 Clean Night 후처리 강도와 처리 시간을 측정한다.</label></div>
+          <div class="check-item"><input id="todo-8" type="checkbox"><label for="todo-8">CameraX/AVFoundation 네이티브 카메라 전환의 최소 PoC 범위를 별도 계획으로 분리한다.</label></div>
+        </div>
+        <div class="progress" aria-live="polite">
+          <strong id="progressText">0 / 8 완료</strong>
+          <div class="progress-bar" aria-hidden="true"><i id="progressBar"></i></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="shell">
+    원본 리서치 핵심 판단: “원본 그대로 저장”에서 “짧은 클립에 최적화된 계산 사진/비디오 파이프라인”으로 전환한다.
+  </footer>
+
+  <script>
+    (function () {
+      const tabButtons = Array.from(document.querySelectorAll('.tab-btn'));
+      const tabPanels = Array.from(document.querySelectorAll('[role="tabpanel"]'));
+
+      function activateTab(button, shouldFocus) {
+        tabButtons.forEach((btn) => {
+          const selected = btn === button;
+          btn.setAttribute('aria-selected', String(selected));
+          btn.tabIndex = selected ? 0 : -1;
+        });
+        tabPanels.forEach((panel) => {
+          panel.hidden = panel.id !== button.getAttribute('aria-controls');
+        });
+        if (shouldFocus) button.focus();
+      }
+
+      tabButtons.forEach((button, index) => {
+        button.tabIndex = button.getAttribute('aria-selected') === 'true' ? 0 : -1;
+        button.addEventListener('click', () => activateTab(button, false));
+        button.addEventListener('keydown', (event) => {
+          let nextIndex = null;
+          if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabButtons.length;
+          if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabButtons.length) % tabButtons.length;
+          if (event.key === 'Home') nextIndex = 0;
+          if (event.key === 'End') nextIndex = tabButtons.length - 1;
+          if (nextIndex !== null) {
+            event.preventDefault();
+            activateTab(tabButtons[nextIndex], true);
+          }
+        });
+      });
+
+      const filterButtons = Array.from(document.querySelectorAll('.filter-btn'));
+      const filterCards = Array.from(document.querySelectorAll('.filter-card'));
+      filterButtons.forEach((button) => {
+        button.addEventListener('click', () => {
+          const filter = button.dataset.filter;
+          filterButtons.forEach((btn) => btn.setAttribute('aria-pressed', String(btn === button)));
+          filterCards.forEach((card) => {
+            const visible = filter === 'all' || card.dataset.stage === filter;
+            card.classList.toggle('hidden', !visible);
+          });
+        });
+      });
+
+      const todoInputs = Array.from(document.querySelectorAll('#todoList input[type="checkbox"]'));
+      const progressText = document.getElementById('progressText');
+      const progressBar = document.getElementById('progressBar');
+      function updateProgress() {
+        const done = todoInputs.filter((input) => input.checked).length;
+        const total = todoInputs.length;
+        progressText.textContent = done + ' / ' + total + ' 완료';
+        progressBar.style.width = Math.round((done / total) * 100) + '%';
+      }
+      todoInputs.forEach((input) => input.addEventListener('change', updateProgress));
+      updateProgress();
+    })();
+  </script>
+</body>
+</html>

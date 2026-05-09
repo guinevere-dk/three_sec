@@ -149,7 +149,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
       if (!mounted) return;
       _notifyAlbumDetailVisibilityIfNeeded();
       _notifyCreateProjectButtonVisibilityIfNeeded();
-      widget.onSelectedClipPathsChanged?.call(List<String>.from(_selectedClipPaths));
+      widget.onSelectedClipPathsChanged?.call(
+        List<String>.from(_selectedClipPaths),
+      );
     });
 
     return PopScope(
@@ -200,8 +202,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   void _traceDetailRender(List<String> visibleClipPaths) {
-    final firstPath = visibleClipPaths.isNotEmpty ? visibleClipPaths.first : 'none';
-    final lastPath = visibleClipPaths.isNotEmpty ? visibleClipPaths.last : 'none';
+    final firstPath = visibleClipPaths.isNotEmpty
+        ? visibleClipPaths.first
+        : 'none';
+    final lastPath = visibleClipPaths.isNotEmpty
+        ? visibleClipPaths.last
+        : 'none';
     final signature = [
       videoManager.currentAlbum,
       _storageFilter,
@@ -225,6 +231,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
         '$_traceTag thumbnail_request album=${videoManager.currentAlbum} '
         'index=$index path=$path',
       );
+      debugPrint(
+        '[thumbnailLog] {"event":"ui_request","operation":"LibraryScreen.getThumbnail",'
+        '"status":"request","album":"${videoManager.currentAlbum}",'
+        '"index":$index,"videoPath":"$path"}',
+      );
     }
     try {
       final thumbnail = await videoManager.getThumbnail(path);
@@ -232,13 +243,23 @@ class _LibraryScreenState extends State<LibraryScreen> {
         if (_thumbnailLoggedErrorPaths.add('null:$path')) {
           debugPrint(
             '$_traceTag thumbnail_null album=${videoManager.currentAlbum} '
-            'index=$index path=$path',
+            'index=$index path=$path fallback=empty_or_plugin_unavailable',
+          );
+          debugPrint(
+            '[thumbnailLog] {"event":"ui_null","operation":"LibraryScreen.getThumbnail",'
+            '"status":"null","fallback":"empty_or_plugin_unavailable",'
+            '"album":"${videoManager.currentAlbum}","index":$index,"videoPath":"$path"}',
           );
         }
       } else if (_thumbnailLoggedReadyPaths.add(path)) {
         debugPrint(
           '$_traceTag thumbnail_ready album=${videoManager.currentAlbum} '
           'index=$index bytes=${thumbnail.length} path=$path',
+        );
+        debugPrint(
+          '[thumbnailLog] {"event":"ui_ready","operation":"LibraryScreen.getThumbnail",'
+          '"status":"ready","album":"${videoManager.currentAlbum}",'
+          '"index":$index,"bytes":${thumbnail.length},"videoPath":"$path"}',
         );
       }
       return thumbnail;
@@ -247,6 +268,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
         debugPrint(
           '$_traceTag thumbnail_error album=${videoManager.currentAlbum} '
           'index=$index path=$path error=$error\n$stackTrace',
+        );
+        debugPrint(
+          '[thumbnailLog] {"event":"ui_fallback","operation":"LibraryScreen.getThumbnail",'
+          '"status":"fallback","reason":"exception",'
+          '"album":"${videoManager.currentAlbum}","index":$index,'
+          '"videoPath":"$path","error":"${error.runtimeType}"}',
         );
       }
       rethrow;
@@ -623,7 +650,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         });
                         hapticFeedback();
                       },
-                      getThumbnail: (path) => _traceThumbnailRequest(path, index),
+                      getThumbnail: (path) =>
+                          _traceThumbnailRequest(path, index),
                     );
 
                     if (index == 0) {

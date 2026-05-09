@@ -239,7 +239,7 @@ class MyApp extends StatelessWidget {
         Provider(create: (_) => IAPService()),
       ],
       child: MaterialApp(
-        title: 'One Second Vlog 2.6.0 Native',
+        title: 'MOA',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
           brightness: Brightness.light,
@@ -456,32 +456,25 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       }
     });
 
-    _onMessageOpenedAppSubscription = FirebaseMessaging.onMessageOpenedApp.listen((
-      message,
-    ) {
-      final title = message.notification?.title ?? "알림을 열었습니다.";
-      if (mounted) {
-        Fluttertoast.showToast(
-          msg: title,
-          backgroundColor: Colors.black87,
-          textColor: Colors.white,
-        );
-      }
-      unawaited(
-        _handleNotificationOpen(
-          message,
-          source: 'onMessageOpenedApp',
-        ),
-      );
-    });
+    _onMessageOpenedAppSubscription = FirebaseMessaging.onMessageOpenedApp
+        .listen((message) {
+          final title = message.notification?.title ?? "알림을 열었습니다.";
+          if (mounted) {
+            Fluttertoast.showToast(
+              msg: title,
+              backgroundColor: Colors.black87,
+              textColor: Colors.white,
+            );
+          }
+          unawaited(
+            _handleNotificationOpen(message, source: 'onMessageOpenedApp'),
+          );
+        });
 
     final initialMessage = await FirebaseMessaging.instance.getInitialMessage();
     if (initialMessage != null) {
       unawaited(
-        _handleNotificationOpen(
-          initialMessage,
-          source: 'getInitialMessage',
-        ),
+        _handleNotificationOpen(initialMessage, source: 'getInitialMessage'),
       );
     }
 
@@ -558,10 +551,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
           break;
         }
         final payload = _pendingNotificationRouteQueue.removeAt(0);
-        await _applyNotificationRoute(
-          payload,
-          source: 'queue_flush:$reason',
-        );
+        await _applyNotificationRoute(payload, source: 'queue_flush:$reason');
       }
     } catch (e, st) {
       debugPrint('[Main][NotificationRoute] flush exception: $e');
@@ -624,7 +614,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       if (_selectedIndex != index) {
         setState(() {
           _selectedIndex = index;
-          if (index == 0 && _didBindVideoManager && videoManager.currentAlbum == '휴지통') {
+          if (index == 0 &&
+              _didBindVideoManager &&
+              videoManager.currentAlbum == '휴지통') {
             videoManager.currentAlbum = '일상';
           }
         });
@@ -1053,7 +1045,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                   ),
                   SizedBox(height: 10),
                   Text(
-                    "원세컨 브이로그로 1초 영상앨범을 간직해보세요!",
+                    "MOA로 2초 순간을 모아 Vlog 앨범을 간직해보세요!",
                     style: TextStyle(color: Colors.white, fontSize: 16),
                   ),
                 ],
@@ -1652,8 +1644,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       return;
     }
 
-    const String appIntroText = '원세컨 브이로그와 함께 2초씩 빠르게 브이로그를 기록해보세요!';
-    const String appShareSubject = '원세컨 브이로그';
+    const String appIntroText = 'MOA와 함께 2초씩 빠르게 Vlog를 기록해보세요!';
+    const String appShareSubject = 'MOA';
     final files = <XFile>[XFile(resultPath)];
 
     await Share.shareXFiles(

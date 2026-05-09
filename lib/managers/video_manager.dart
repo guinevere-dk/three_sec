@@ -1299,6 +1299,88 @@ class VideoManager extends ChangeNotifier {
     );
   }
 
+  void _logJson(String prefix, Map<String, Object?> payload) {
+    debugPrint('$prefix ${jsonEncode(payload)}');
+  }
+
+  void _logThumbnailEvent({
+    required String event,
+    required String operation,
+    required String videoPath,
+    required String status,
+    String? reason,
+    int? bytes,
+    int? timeMs,
+    int? index,
+    Object? error,
+  }) {
+    _logJson('[thumbnailLog]', {
+      'event': event,
+      'operation': operation,
+      'videoPath': videoPath,
+      'status': status,
+      'reason': reason,
+      'bytes': bytes,
+      'timeMs': timeMs,
+      'index': index,
+      'errorType': error?.runtimeType.toString(),
+      'error': error?.toString(),
+    });
+  }
+
+  Future<Map<String, Object?>> _buildOutputMeta({
+    required String outputPath,
+    required int? durationMs,
+    required int targetBitrate,
+    required int targetFps,
+    required String codec,
+  }) async {
+    int? fileSize;
+    String? actualBitrateReason;
+    final file = File(outputPath);
+    if (await file.exists()) {
+      fileSize = await file.length();
+    } else {
+      actualBitrateReason = 'output_missing';
+    }
+
+    int? actualBitrate;
+    if (fileSize != null && durationMs != null && durationMs > 0) {
+      actualBitrate = (fileSize * 8 * 1000 / durationMs).round();
+    } else {
+      actualBitrateReason ??= durationMs == null || durationMs <= 0
+          ? 'duration_unavailable'
+          : 'file_size_unavailable';
+    }
+
+    return {
+      'durationMs': durationMs,
+      'outputPath': outputPath,
+      'fileSize': fileSize,
+      'actualBitrate': actualBitrate,
+      'actualBitrateReason': actualBitrate == null ? actualBitrateReason : null,
+      'targetBitrate': targetBitrate,
+      'targetFps': targetFps,
+      'codec': codec,
+    };
+  }
+
+  void _logThumbnailPluginFallback({
+    required String operation,
+    required String videoPath,
+    required MissingPluginException exception,
+  }) {
+    _logJson('[thumbnailLog]', {
+      'event': 'video_thumbnail_missing_plugin_fallback',
+      'operation': operation,
+      'videoPath': videoPath,
+      'status': 'fallback_null',
+      'exceptionType': exception.runtimeType.toString(),
+      'message': exception.message,
+      'plugin': 'video_thumbnail',
+    });
+  }
+
   Future<Directory> _docDir() async => await getApplicationDocumentsDirectory();
 
   Future<Directory> _rawBaseDir() async {
@@ -1381,7 +1463,23 @@ class VideoManager extends ChangeNotifier {
   }
 
   Future<Uint8List?> getThumbnail(String videoPath) async {
-    if (thumbnailCache.containsKey(videoPath)) return thumbnailCache[videoPath];
+    _logThumbnailEvent(
+      event: 'request',
+      operation: 'getThumbnail',
+      videoPath: videoPath,
+      status: 'requested',
+    );
+    if (thumbnailCache.containsKey(videoPath)) {
+      final cached = thumbnailCache[videoPath];
+      _logThumbnailEvent(
+        event: 'ready',
+        operation: 'getThumbnail',
+        videoPath: videoPath,
+        status: 'memory_cache',
+        bytes: cached?.length,
+      );
+      return cached;
+    }
 
     final docDir = await getApplicationDocumentsDirectory();
     final thumbDir = Directory(p.join(docDir.path, 'thumbnails'));
@@ -1394,23 +1492,72 @@ class VideoManager extends ChangeNotifier {
     if (await thumbFile.exists()) {
       final data = await thumbFile.readAsBytes();
       thumbnailCache[videoPath] = data;
+      _logThumbnailEvent(
+        event: 'ready',
+        operation: 'getThumbnail',
+        videoPath: videoPath,
+        status: 'disk_cache',
+        bytes: data.length,
+      );
       return data;
     }
 
     if (!await File(videoPath).exists()) {
+      _logThumbnailEvent(
+        event: 'fallback',
+        operation: 'getThumbnail',
+        videoPath: videoPath,
+        status: 'fallback_null',
+        reason: 'source_missing',
+      );
       return null;
     }
 
-    final data = await thum.VideoThumbnail.thumbnailData(
-      video: videoPath,
-      imageFormat: thum.ImageFormat.JPEG,
-      maxWidth: 400,
-      quality: 70,
-    );
+    Uint8List? data;
+    try {
+      data = await thum.VideoThumbnail.thumbnailData(
+        video: videoPath,
+        imageFormat: thum.ImageFormat.JPEG,
+        maxWidth: 400,
+        quality: 70,
+      );
+    } on MissingPluginException catch (e) {
+      _logThumbnailPluginFallback(
+        operation: 'getThumbnail',
+        videoPath: videoPath,
+        exception: e,
+      );
+      return null;
+    } catch (e) {
+      _logThumbnailEvent(
+        event: 'error',
+        operation: 'getThumbnail',
+        videoPath: videoPath,
+        status: 'error',
+        reason: 'thumbnail_data_failed',
+        error: e,
+      );
+      rethrow;
+    }
 
     if (data != null) {
       thumbnailCache[videoPath] = data;
       thumbFile.writeAsBytes(data).catchError((_) => thumbFile);
+      _logThumbnailEvent(
+        event: 'ready',
+        operation: 'getThumbnail',
+        videoPath: videoPath,
+        status: 'generated',
+        bytes: data.length,
+      );
+    } else {
+      _logThumbnailEvent(
+        event: 'fallback',
+        operation: 'getThumbnail',
+        videoPath: videoPath,
+        status: 'fallback_null',
+        reason: 'plugin_returned_null',
+      );
     }
     return data;
   }
@@ -1423,16 +1570,50 @@ class VideoManager extends ChangeNotifier {
   }
 
   Future<String?> ensureThumbnailFilePath(String videoPath) async {
+    _logThumbnailEvent(
+      event: 'request',
+      operation: 'ensureThumbnailFilePath',
+      videoPath: videoPath,
+      status: 'requested',
+    );
     final outputPath = await _thumbnailFilePathFor(videoPath);
     final outputFile = File(outputPath);
     if (await outputFile.exists()) {
+      _logThumbnailEvent(
+        event: 'ready',
+        operation: 'ensureThumbnailFilePath',
+        videoPath: videoPath,
+        status: 'disk_cache_path',
+      );
       return outputPath;
     }
 
-    await getThumbnail(videoPath);
+    try {
+      await getThumbnail(videoPath);
+    } on MissingPluginException catch (e) {
+      _logThumbnailPluginFallback(
+        operation: 'ensureThumbnailFilePath',
+        videoPath: videoPath,
+        exception: e,
+      );
+      return null;
+    }
     if (await outputFile.exists()) {
+      _logThumbnailEvent(
+        event: 'ready',
+        operation: 'ensureThumbnailFilePath',
+        videoPath: videoPath,
+        status: 'generated_path',
+      );
       return outputPath;
     }
+    _logThumbnailEvent(
+      event: 'fallback',
+      operation: 'ensureThumbnailFilePath',
+      videoPath: videoPath,
+      status: 'fallback_null',
+      reason: 'thumbnail_file_missing_after_generation',
+    );
     return null;
   }
 
@@ -1513,11 +1694,37 @@ class VideoManager extends ChangeNotifier {
     VlogClip? clip,
   }) async {
     final List<Uint8List> thumbnails = [];
-    if (durationMs <= 0 || count <= 0) return thumbnails;
+    _logThumbnailEvent(
+      event: 'request',
+      operation: 'getTimelineThumbnails',
+      videoPath: videoPath,
+      status: 'requested',
+      reason: 'durationMs=$durationMs count=$count',
+    );
+    if (durationMs <= 0 || count <= 0) {
+      _logThumbnailEvent(
+        event: 'fallback',
+        operation: 'getTimelineThumbnails',
+        videoPath: videoPath,
+        status: 'fallback_empty',
+        reason: 'invalid_duration_or_count',
+      );
+      return thumbnails;
+    }
 
     // Check memory cache
     final String cacheKey = "${videoPath}_${count}_$durationMs";
     if (_timelineCache.containsKey(cacheKey)) {
+      _logThumbnailEvent(
+        event: 'ready',
+        operation: 'getTimelineThumbnails',
+        videoPath: videoPath,
+        status: 'memory_cache',
+        bytes: _timelineCache[cacheKey]!.fold<int>(
+          0,
+          (sum, e) => sum + e.length,
+        ),
+      );
       return _timelineCache[cacheKey]!;
     }
 
@@ -1529,6 +1736,13 @@ class VideoManager extends ChangeNotifier {
       );
       if (fromMeta.length == count) {
         _timelineCache[cacheKey] = fromMeta;
+        _logThumbnailEvent(
+          event: 'ready',
+          operation: 'getTimelineThumbnails',
+          videoPath: videoPath,
+          status: 'metadata_cache',
+          bytes: fromMeta.fold<int>(0, (sum, e) => sum + e.length),
+        );
         return fromMeta;
       }
     }
@@ -1547,8 +1761,44 @@ class VideoManager extends ChangeNotifier {
         );
         if (data != null) {
           thumbnails.add(data);
+          _logThumbnailEvent(
+            event: 'ready',
+            operation: 'getTimelineThumbnails',
+            videoPath: videoPath,
+            status: 'generated_item',
+            bytes: data.length,
+            timeMs: timeMs,
+            index: i,
+          );
+        } else {
+          _logThumbnailEvent(
+            event: 'fallback',
+            operation: 'getTimelineThumbnails',
+            videoPath: videoPath,
+            status: 'fallback_null_item',
+            reason: 'plugin_returned_null',
+            timeMs: timeMs,
+            index: i,
+          );
         }
+      } on MissingPluginException catch (e) {
+        _logThumbnailPluginFallback(
+          operation: 'getTimelineThumbnails',
+          videoPath: videoPath,
+          exception: e,
+        );
+        break;
       } catch (e) {
+        _logThumbnailEvent(
+          event: 'error',
+          operation: 'getTimelineThumbnails',
+          videoPath: videoPath,
+          status: 'error_item',
+          reason: 'timeline_thumbnail_failed',
+          timeMs: timeMs,
+          index: i,
+          error: e,
+        );
         debugPrint("Error generating timeline thumb $i: $e");
       }
     }
@@ -1565,6 +1815,16 @@ class VideoManager extends ChangeNotifier {
         durationMs: durationMs,
         count: count,
         bytesList: thumbnails,
+      );
+    }
+
+    if (thumbnails.isEmpty) {
+      _logThumbnailEvent(
+        event: 'fallback',
+        operation: 'getTimelineThumbnails',
+        videoPath: videoPath,
+        status: 'fallback_empty',
+        reason: 'no_timeline_thumbnail_generated',
       );
     }
 
@@ -1818,6 +2078,7 @@ class VideoManager extends ChangeNotifier {
       rawOutPath,
       outPath,
       targetDurationMs: _targetRecordingDurationMs,
+      qualityProfile: kQualityProfile1080p,
     );
 
     if (!normalized) {
@@ -1985,6 +2246,7 @@ class VideoManager extends ChangeNotifier {
         requestedQuality: normalizeExportQuality(quality),
         tier: userTierFromKey(normalizedTier),
       );
+      final exportProfile = videoQualityProfile(clampedQuality);
       final String fallbackQuality = _downgradeQualityForRetry(clampedQuality);
 
       _warnIfRecentMemoryPressure(
@@ -1997,12 +2259,25 @@ class VideoManager extends ChangeNotifier {
         '[VideoManager][Export] args_summary '
         'clipCount=${clips.length} totalDurationMs=$totalDurationMs '
         'quality=$clampedQuality tier=$normalizedTier '
+        'targetFps=${exportProfile.targetFps} targetBitrate=${exportProfile.targetBitrate} codec=${exportProfile.videoCodec} '
         'audioConfigCount=${audioConfig.length} hasBgm=${bgmPath?.isNotEmpty == true} '
         'bgmVolume=$bgmVolume '
         'memoryPressureRecent=${hasRecentMemoryPressure} '
         'memoryPressureElapsedMs=${millisSinceLastMemoryPressure ?? -1} '
         'eventCount=${memoryPressureEventCount}',
       );
+
+      _logJson('[qualityLog]', {
+        'event': 'export_quality_profile',
+        'sessionId': resolvedMergeSessionId,
+        'traceId': mergeTraceId,
+        'requestedQuality': quality,
+        'resolvedQuality': clampedQuality,
+        'tier': normalizedTier,
+        'profile': exportProfile.toBenchmarkLogMap(),
+        'clipCount': clips.length,
+        'totalDurationMs': totalDurationMs,
+      });
 
       _logExportState(
         phase: 'preflight',
@@ -2030,7 +2305,7 @@ class VideoManager extends ChangeNotifier {
         if (androidInfo.version.sdkInt >= 33) {
           // Android 13 이상: 세분화된 미디어 권한 필요
           final videos = await Permission.videos.request();
-          final audio = await Permission.audio.request();
+          await Permission.audio.request();
           // photos 권한은 이미지/비디오 혼합 시 필요할 수 있음
           final photos = await Permission.photos.request();
 
@@ -2122,6 +2397,9 @@ class VideoManager extends ChangeNotifier {
           'bgmVolume': bgmVolume,
           'quality': qualityValue,
           'userTier': normalizedTier,
+          'targetFps': videoQualityProfile(qualityValue).targetFps,
+          'targetBitrate': videoQualityProfile(qualityValue).targetBitrate,
+          'videoCodec': videoQualityProfile(qualityValue).videoCodec,
           'attempt': attempt,
           'abGroup': abGroup,
           'retryPlan': retryPlan,
@@ -2135,6 +2413,8 @@ class VideoManager extends ChangeNotifier {
         debugPrint(
           '[VideoManager][Export] invoking_merge start clipCount=${clips.length} '
           'quality=$qualityValue tier=$normalizedTier totalDurationMs=$totalDurationMs '
+          'targetFps=${videoQualityProfile(qualityValue).targetFps} '
+          'targetBitrate=${videoQualityProfile(qualityValue).targetBitrate} '
           'attempt=$attempt retryPlan=$retryPlan audioSimplify=$audioSimplify '
           'abGroup=$abGroup qualityPreset=$qualityValue '
           'outputPath=$outputPath sessionId=$resolvedMergeSessionId traceId=$mergeTraceId '
@@ -2241,6 +2521,25 @@ class VideoManager extends ChangeNotifier {
             );
             debugPrint('[VideoManager][Export] save_gallery_failed message=$e');
           }
+
+          final resultDurationMs = await _getVideoDurationMsNative(result);
+          final resultProfile = videoQualityProfile(qualityValue);
+          _logJson('[exportComplete]', {
+            'event': 'export_complete',
+            'sessionId': resolvedMergeSessionId,
+            'traceId': mergeTraceId,
+            'attempt': attempt,
+            'retryPlan': retryPlan,
+            'quality': qualityValue,
+            'targetProfile': resultProfile.toBenchmarkLogMap(),
+            ...await _buildOutputMeta(
+              outputPath: result,
+              durationMs: resultDurationMs,
+              targetBitrate: resultProfile.targetBitrate,
+              targetFps: resultProfile.targetFps,
+              codec: resultProfile.videoCodec,
+            ),
+          });
         }
 
         return result;
@@ -2983,6 +3282,8 @@ class VideoManager extends ChangeNotifier {
   Future<void> saveRecordedVideo(
     XFile video, {
     String aspectPreset = recordedAspectPreset9x16,
+    String captureQuality = kQualityDefaultCaptureQuality,
+    String captureQualityMode = 'p1080',
   }) async {
     final albumDir = await _rawAlbumDir(currentAlbum);
     final savePath = p.join(
@@ -2994,16 +3295,27 @@ class VideoManager extends ChangeNotifier {
       outputPath: savePath,
       albumName: currentAlbum,
       aspectPreset: aspectPreset,
+      captureQuality: captureQuality,
+      captureQualityMode: captureQualityMode,
     );
   }
 
   Future<void> enqueueRecordedVideoSave(
     XFile video, {
     String aspectPreset = recordedAspectPreset9x16,
+    String captureQuality = kQualityDefaultCaptureQuality,
+    String captureQualityMode = 'p1080',
   }) async {
     final normalizedAspectPreset = _normalizeRecordedAspectPreset(aspectPreset);
+    final normalizedCaptureQuality = normalizeExportQuality(captureQuality);
+    final captureProfile = videoQualityProfile(normalizedCaptureQuality);
     if (!useAsyncRecordedClipSaveQueue) {
-      await saveRecordedVideo(video, aspectPreset: normalizedAspectPreset);
+      await saveRecordedVideo(
+        video,
+        aspectPreset: normalizedAspectPreset,
+        captureQuality: normalizedCaptureQuality,
+        captureQualityMode: captureQualityMode,
+      );
       return;
     }
 
@@ -3038,7 +3350,10 @@ class VideoManager extends ChangeNotifier {
     await _persistRecordedClipSaveJobs();
     debugPrint(
       '[VideoManager][RecordedClipQueue] enqueue '
-      'jobId=${job.jobId} album=${job.albumName} aspect=${job.aspectPreset} source=${job.sourceStagingPath}',
+      'jobId=${job.jobId} album=${job.albumName} aspect=${job.aspectPreset} '
+      'captureQuality=${captureProfile.quality} captureMode=$captureQualityMode '
+      'targetFps=${captureProfile.targetFps} targetBitrate=${captureProfile.targetBitrate} '
+      'source=${job.sourceStagingPath}',
     );
     unawaited(startRecordedClipSaveQueueWorker());
   }
@@ -3133,6 +3448,8 @@ class VideoManager extends ChangeNotifier {
         outputPath: outputPath,
         albumName: job.albumName,
         aspectPreset: job.aspectPreset,
+        captureQuality: kQualityDefaultCaptureQuality,
+        captureQualityMode: 'queued_default',
       );
       await _markRecordedClipSaveJob(
         job.jobId,
@@ -3283,9 +3600,13 @@ class VideoManager extends ChangeNotifier {
     required String outputPath,
     required String albumName,
     required String aspectPreset,
+    required String captureQuality,
+    required String captureQualityMode,
   }) async {
     final currentPath = outputPath;
     final normalizedAspectPreset = _normalizeRecordedAspectPreset(aspectPreset);
+    final captureProfile = videoQualityProfile(captureQuality);
+    final saveStartMs = DateTime.now().millisecondsSinceEpoch;
 
     debugPrint(
       '[VideoManager] saveRecordedVideo_paths '
@@ -3293,11 +3614,29 @@ class VideoManager extends ChangeNotifier {
       'outputPath=$currentPath '
       'album=$albumName '
       'aspectPreset=$normalizedAspectPreset '
+      'captureQualityMode=$captureQualityMode '
+      'quality=${captureProfile.quality} '
+      'targetFps=${captureProfile.targetFps} '
+      'targetBitrate=${captureProfile.targetBitrate} '
+      'codec=${captureProfile.videoCodec} '
       'targetDurationMs=$_targetRecordingDurationMs '
       'targetCaptureMs=$_targetCaptureDurationMs '
       'targetCaptureMinMs=$_targetCaptureMinimumMs '
       'trimMode=$_recordingTrimMode',
     );
+
+    _logJson('[qualityLog]', {
+      'event': 'recorded_save_quality_profile',
+      'album': albumName,
+      'aspectPreset': normalizedAspectPreset,
+      'captureQualityMode': captureQualityMode,
+      'targetProfile': captureProfile.toBenchmarkLogMap(),
+      'targetDurationMs': _targetRecordingDurationMs,
+      'targetCaptureMs': _targetCaptureDurationMs,
+      'trimMode': _recordingTrimMode,
+      'sourcePath': sourcePath,
+      'outputPath': currentPath,
+    });
 
     final sourceDurationMs = await _getVideoDurationMsNative(sourcePath);
     if (sourceDurationMs != null &&
@@ -3321,6 +3660,7 @@ class VideoManager extends ChangeNotifier {
       'sourceMinusTargetMs=${sourceDurationMs == null ? null : sourceDurationMs - _targetRecordingDurationMs} '
       'trimMode=$_recordingTrimMode '
       'aspectPreset=$normalizedAspectPreset '
+      'quality=${captureProfile.summaryLabel} '
       'normalize=always',
     );
 
@@ -3330,6 +3670,7 @@ class VideoManager extends ChangeNotifier {
       sourcePath,
       currentPath,
       aspectPreset: normalizedAspectPreset,
+      qualityProfile: captureProfile,
     );
     if (!normalized) {
       final fallbackSaved = await _saveRecordedVideoFallback(
@@ -3352,6 +3693,16 @@ class VideoManager extends ChangeNotifier {
         );
         throw StateError('영상 길이 정규화에 실패했고 저장 허용 기준(2000ms 초과)을 통과하지 못했습니다.');
       }
+      await _logRecordedSaveComplete(
+        event: 'recorded_save_complete',
+        outputPath: currentPath,
+        durationMs: await _getVideoDurationMsNative(currentPath),
+        qualityProfile: captureProfile,
+        saveElapsedMs: DateTime.now().millisecondsSinceEpoch - saveStartMs,
+        normalizeSuccess: false,
+        fallbackUsed: true,
+        reason: 'normalize_failed',
+      );
       return;
     }
 
@@ -3379,6 +3730,7 @@ class VideoManager extends ChangeNotifier {
         sourceDurationMs: sourceDurationMs,
         normalizedDurationMs: normalizedDurationMs,
         aspectPreset: normalizedAspectPreset,
+        qualityProfile: captureProfile,
       );
       retryNormalizeCount = retryResult.retryNormalizeCount;
       padAppliedMs = retryResult.padAppliedMs;
@@ -3415,6 +3767,16 @@ class VideoManager extends ChangeNotifier {
           '정규화 결과 길이가 ${postVerifyDurationMs ?? -1}ms라 저장 허용 기준(2000ms 초과)을 통과하지 못했습니다.',
         );
       }
+      await _logRecordedSaveComplete(
+        event: 'recorded_save_complete',
+        outputPath: currentPath,
+        durationMs: await _getVideoDurationMsNative(currentPath),
+        qualityProfile: captureProfile,
+        saveElapsedMs: DateTime.now().millisecondsSinceEpoch - saveStartMs,
+        normalizeSuccess: true,
+        fallbackUsed: true,
+        reason: failureReason,
+      );
       return;
     }
     debugPrint(
@@ -3429,6 +3791,7 @@ class VideoManager extends ChangeNotifier {
       'retryNormalizeCount=$retryNormalizeCount '
       'padAppliedMs=$padAppliedMs '
       'fallbackPolicyName=$_recordingFallbackPolicyName '
+      'quality=${captureProfile.summaryLabel} '
       'finalDecision=success '
       'normalizeSuccess=$normalized',
     );
@@ -3450,6 +3813,44 @@ class VideoManager extends ChangeNotifier {
       await loadClipsFromCurrentAlbum();
     }
     await _updateAlbumClipCounts();
+    await _logRecordedSaveComplete(
+      event: 'recorded_save_complete',
+      outputPath: currentPath,
+      durationMs: postVerifyDurationMs,
+      qualityProfile: captureProfile,
+      saveElapsedMs: DateTime.now().millisecondsSinceEpoch - saveStartMs,
+      normalizeSuccess: normalized,
+      fallbackUsed: false,
+      reason: 'success',
+    );
+  }
+
+  Future<void> _logRecordedSaveComplete({
+    required String event,
+    required String outputPath,
+    required int? durationMs,
+    required VideoQualityProfile qualityProfile,
+    required int saveElapsedMs,
+    required bool normalizeSuccess,
+    required bool fallbackUsed,
+    required String reason,
+  }) async {
+    _logJson('[saveComplete]', {
+      'event': event,
+      'durationMs': durationMs,
+      'saveElapsedMs': saveElapsedMs,
+      'normalizeSuccess': normalizeSuccess,
+      'fallbackUsed': fallbackUsed,
+      'reason': reason,
+      'targetProfile': qualityProfile.toBenchmarkLogMap(),
+      ...await _buildOutputMeta(
+        outputPath: outputPath,
+        durationMs: durationMs,
+        targetBitrate: qualityProfile.targetBitrate,
+        targetFps: qualityProfile.targetFps,
+        codec: qualityProfile.videoCodec,
+      ),
+    });
   }
 
   bool _isAcceptableNormalizedDuration(int? durationMs) {
@@ -3507,6 +3908,7 @@ class VideoManager extends ChangeNotifier {
     required int? sourceDurationMs,
     required int? normalizedDurationMs,
     required String aspectPreset,
+    required VideoQualityProfile qualityProfile,
   }) async {
     final int padAppliedMs = normalizedDurationMs == null
         ? 0
@@ -3528,6 +3930,7 @@ class VideoManager extends ChangeNotifier {
       'retryNormalizeCount=1 '
       'padAppliedMs=$padAppliedMs '
       'fallbackPolicyName=$_recordingFallbackPolicyName '
+      'quality=${qualityProfile.summaryLabel} '
       'padToTarget=true',
     );
 
@@ -3536,6 +3939,7 @@ class VideoManager extends ChangeNotifier {
       retryPath,
       targetDurationMs: _targetRecordingDurationMs,
       aspectPreset: aspectPreset,
+      qualityProfile: qualityProfile,
     );
     int? postVerifyDurationMs;
     if (retryOk) {
@@ -3574,6 +3978,7 @@ class VideoManager extends ChangeNotifier {
       'retryNormalizeCount=1 '
       'padAppliedMs=$padAppliedMs '
       'fallbackPolicyName=$_recordingFallbackPolicyName '
+      'quality=${qualityProfile.summaryLabel} '
       'padToTarget=true '
       'finalDecision=${_isAcceptableNormalizedDuration(postVerifyDurationMs) ? 'success' : 'fail'} '
       'reason=$reason',
@@ -3709,7 +4114,9 @@ class VideoManager extends ChangeNotifier {
     String outputPath, {
     int? targetDurationMs,
     String aspectPreset = recordedAspectPreset9x16,
+    VideoQualityProfile qualityProfile = kQualityProfile1080p,
   }) async {
+    final normalizeStartMs = DateTime.now().millisecondsSinceEpoch;
     try {
       final effectiveTargetDurationMs =
           targetDurationMs ?? _targetRecordingDurationMs;
@@ -3727,6 +4134,10 @@ class VideoManager extends ChangeNotifier {
         'outputPath=$outputPath '
         'targetDurationMs=$effectiveTargetDurationMs '
         'aspectPreset=${_normalizeRecordedAspectPreset(aspectPreset)} '
+        'quality=${qualityProfile.quality} '
+        'targetFps=${qualityProfile.targetFps} '
+        'targetBitrate=${qualityProfile.targetBitrate} '
+        'codec=${qualityProfile.videoCodec} '
         'padToTarget=true '
         'trimMode=$_recordingTrimMode',
       );
@@ -3738,11 +4149,34 @@ class VideoManager extends ChangeNotifier {
         'padToTarget': true,
         'trimMode': _recordingTrimMode,
         'aspectPreset': _normalizeRecordedAspectPreset(aspectPreset),
+        'quality': qualityProfile.quality,
+        'targetFps': qualityProfile.targetFps,
+        'targetBitrate': qualityProfile.targetBitrate,
+        'videoCodec': qualityProfile.videoCodec,
       });
 
       debugPrint(
         '[VideoManager] normalizeRecordedVideo_response result=$result',
       );
+
+      final durationMs = await _getVideoDurationMsNative(outputPath);
+      _logJson('[normalizeComplete]', {
+        'event': 'normalize_complete',
+        'result': result,
+        'success': result == 'SUCCESS',
+        'sourcePath': sourcePath,
+        'aspectPreset': _normalizeRecordedAspectPreset(aspectPreset),
+        'targetDurationMs': effectiveTargetDurationMs,
+        'elapsedMs': DateTime.now().millisecondsSinceEpoch - normalizeStartMs,
+        'targetProfile': qualityProfile.toBenchmarkLogMap(),
+        ...await _buildOutputMeta(
+          outputPath: outputPath,
+          durationMs: durationMs,
+          targetBitrate: qualityProfile.targetBitrate,
+          targetFps: qualityProfile.targetFps,
+          codec: qualityProfile.videoCodec,
+        ),
+      });
 
       return result == 'SUCCESS';
     } on PlatformException catch (e) {

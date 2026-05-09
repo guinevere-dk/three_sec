@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -11,6 +12,7 @@ import '../constants/clip_policy.dart';
 import '../main.dart';
 import '../managers/video_manager.dart';
 import '../utils/haptics.dart';
+import '../utils/quality_policy.dart';
 
 enum _PreviewAspectPreset { ratio9x16, ratio3x4, ratio1x1 }
 
@@ -94,11 +96,23 @@ extension _CaptureQualityModeX on _CaptureQualityMode {
       case _CaptureQualityMode.auto:
         return 'Auto';
       case _CaptureQualityMode.p1080:
-        return '1080p';
+        return kQualityProfile1080p.label;
       case _CaptureQualityMode.p4k:
-        return '4K';
+        return kQualityProfile4k.label;
     }
   }
+
+  String get resolvedQuality {
+    switch (this) {
+      case _CaptureQualityMode.auto:
+      case _CaptureQualityMode.p1080:
+        return kQuality1080p;
+      case _CaptureQualityMode.p4k:
+        return kQuality4k;
+    }
+  }
+
+  VideoQualityProfile get profile => videoQualityProfile(resolvedQuality);
 }
 
 class CaptureScreen extends StatefulWidget {
@@ -111,7 +125,7 @@ class CaptureScreen extends StatefulWidget {
 }
 
 class _CaptureScreenState extends State<CaptureScreen>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   static final Map<String, ResolutionPreset> _lastSuccessfulPresetByLens =
       <String, ResolutionPreset>{};
   static final Map<String, bool> _probe4kSupportByLens = <String, bool>{};
@@ -184,6 +198,19 @@ class _CaptureScreenState extends State<CaptureScreen>
 
   bool get _canStopRecording => _flowState == _CaptureFlowState.recording;
 
+  void _logCameraLifecycle({
+    required String event,
+    required String state,
+    required String intent,
+    String? result,
+    String? reason,
+    Object? error,
+  }) {
+    debugPrint(
+      '[cameraLifecycle] ${jsonEncode({'event': event, 'state': state, 'intent': intent, 'result': result, 'reason': reason, 'flowState': _flowState.name, 'initialized': _hasInitializedController, 'recording': _controller?.value.isRecordingVideo, 'cameraIndex': _cameraIndex, 'locked': _isCameraLocked, 'errorType': error?.runtimeType.toString(), 'error': error?.toString()})}',
+    );
+  }
+
   double _toPortraitAspect(double rawAspect) {
     return rawAspect > 1 ? 1 / rawAspect : rawAspect;
   }
@@ -234,6 +261,19 @@ class _CaptureScreenState extends State<CaptureScreen>
     );
   }
 
+  void _logCamera3a({
+    required String event,
+    required String target,
+    required String status,
+    String? reason,
+    Offset? point,
+    String? awbFallback,
+  }) {
+    debugPrint(
+      '[camera3A] ${jsonEncode({'event': event, 'target': target, 'status': status, 'reason': reason, 'awbFallback': awbFallback, 'x': point?.dx, 'y': point?.dy, 'locked': _isCameraLocked, 'recording': _controller?.value.isRecordingVideo})}',
+    );
+  }
+
   Future<void> _toggleFlash() async {
     if (!_hasInitializedController ||
         _isCameraLocked ||
@@ -256,6 +296,13 @@ class _CaptureScreenState extends State<CaptureScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _logCameraLifecycle(
+      event: 'widget_init',
+      state: 'initState',
+      intent: 'initialize_camera_flow',
+      result: 'scheduled',
+    );
     _focusAnimController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 400),
@@ -271,6 +318,129 @@ class _CaptureScreenState extends State<CaptureScreen>
 
   void _initCamera() {
     unawaited(_initializeCameraFlow());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _logCameraLifecycle(
+      event: 'app_lifecycle_change',
+      state: state.name,
+      intent: _shouldReleaseCameraForLifecycle(state)
+          ? 'stop_recording_then_dispose_controller'
+          : 'no_release',
+      result: 'received',
+    );
+    if (_shouldReleaseCameraForLifecycle(state)) {
+      unawaited(_releaseCameraForLifecycle(state));
+    } else if (state == AppLifecycleState.resumed &&
+        _controller == null &&
+        _hasGrantedCameraPermission &&
+        mounted) {
+      _logCameraLifecycle(
+        event: 'app_lifecycle_resume',
+        state: state.name,
+        intent: 'reinitialize_camera_after_release',
+        result: 'scheduled',
+      );
+      _initCamera();
+    }
+  }
+
+  bool _shouldReleaseCameraForLifecycle(AppLifecycleState state) {
+    return state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached;
+  }
+
+  Future<void> _releaseCameraForLifecycle(AppLifecycleState state) async {
+    _logCameraLifecycle(
+      event: 'release_start',
+      state: state.name,
+      intent: 'cancel_timer_stop_recording_dispose_controller',
+      result: 'started',
+    );
+    _cancelRecordingTimer();
+
+    final controller = _controller;
+    if (controller == null) {
+      _logCameraLifecycle(
+        event: 'release_end',
+        state: state.name,
+        intent: 'camera_resource_release',
+        result: 'skipped_no_controller',
+      );
+      return;
+    }
+
+    _controller = null;
+    _isCameraLocked = true;
+
+    try {
+      if (controller.value.isRecordingVideo) {
+        _logCameraLifecycle(
+          event: 'recording_stop_intent',
+          state: state.name,
+          intent: 'stopVideoRecording_before_dispose',
+          result: 'started',
+        );
+        try {
+          await controller.stopVideoRecording();
+          _logCameraLifecycle(
+            event: 'recording_stop_result',
+            state: state.name,
+            intent: 'stopVideoRecording_before_dispose',
+            result: 'success_discarded_lifecycle_release',
+          );
+        } catch (e) {
+          _logCameraLifecycle(
+            event: 'recording_stop_result',
+            state: state.name,
+            intent: 'stopVideoRecording_before_dispose',
+            result: 'failed_continue_dispose',
+            error: e,
+          );
+        }
+      }
+
+      _logCameraLifecycle(
+        event: 'controller_dispose_intent',
+        state: state.name,
+        intent: 'dispose_controller_release_camera_resource',
+        result: 'started',
+      );
+      await controller.dispose();
+      _logCameraLifecycle(
+        event: 'controller_dispose_result',
+        state: state.name,
+        intent: 'dispose_controller_release_camera_resource',
+        result: 'success',
+      );
+    } catch (e) {
+      _logCameraLifecycle(
+        event: 'release_error',
+        state: state.name,
+        intent: 'camera_resource_release',
+        result: 'failed',
+        error: e,
+      );
+    } finally {
+      _isCameraLocked = false;
+      _didPrepareForRecording = false;
+      _didReportPreviewReady = false;
+      if (mounted) {
+        setState(() {
+          _flowState = _CaptureFlowState.idle;
+          _remainingTime = kTargetClipSecForDisplay;
+          _hasRecordingActuallyStarted = false;
+        });
+      }
+      _logCameraLifecycle(
+        event: 'release_end',
+        state: state.name,
+        intent: 'camera_resource_release',
+        result: 'completed',
+      );
+    }
   }
 
   Future<void> _restoreCaptureSettingsAndInitCamera() async {
@@ -311,7 +481,9 @@ class _CaptureScreenState extends State<CaptureScreen>
         _prefCaptureAspectPresetKey,
         aspectPreset.saveAspectPreset,
       );
-      debugPrint('[Capture] aspect_persisted aspect=${aspectPreset.saveAspectPreset}');
+      debugPrint(
+        '[Capture] aspect_persisted aspect=${aspectPreset.saveAspectPreset}',
+      );
     } catch (e) {
       debugPrint('[Capture] aspect_persist_failed error=$e');
     }
@@ -530,15 +702,39 @@ class _CaptureScreenState extends State<CaptureScreen>
     }
 
     try {
+      _logCamera3a(event: 'request', target: 'AF', status: 'requested');
       await controller.setFocusMode(FocusMode.auto);
+      _logCamera3a(event: 'request', target: 'AF', status: 'success');
     } catch (e) {
+      _logCamera3a(
+        event: 'request',
+        target: 'AF',
+        status: 'unsupported',
+        reason: e.toString(),
+      );
       debugPrint('[Capture] setFocusMode(auto) failed: $e');
     }
     try {
+      _logCamera3a(event: 'request', target: 'AE', status: 'requested');
       await controller.setExposureMode(ExposureMode.auto);
+      _logCamera3a(event: 'request', target: 'AE', status: 'success');
     } catch (e) {
+      _logCamera3a(
+        event: 'request',
+        target: 'AE',
+        status: 'unsupported',
+        reason: e.toString(),
+      );
       debugPrint('[Capture] setExposureMode(auto) failed: $e');
     }
+    _logCamera3a(
+      event: 'request',
+      target: 'AWB',
+      status: 'unsupported',
+      reason: 'flutter_camera_api_no_awb_lock_or_state_query',
+      awbFallback:
+          'exposureModeAuto+focusModeAuto+fixedWhiteBalanceUnavailable',
+    );
 
     try {
       final minExposure = await controller.getMinExposureOffset();
@@ -617,11 +813,13 @@ class _CaptureScreenState extends State<CaptureScreen>
         (_selectedQualityMode == _CaptureQualityMode.p4k && !_supports4kCapture)
         ? _CaptureQualityMode.p1080
         : _selectedQualityMode;
+    final effectiveProfile = effectiveMode.profile;
 
     CameraController? newController;
     logFirstCameraPreviewStage(
       'candidate_selection_start',
-      detail: 'lens=$lensKey mode=${effectiveMode.name}',
+      detail:
+          'lens=$lensKey mode=${effectiveMode.name} profile=${effectiveProfile.summaryLabel} codec=${effectiveProfile.videoCodec}',
     );
     final candidates = _orderedResolutionCandidatesForMode(
       effectiveMode,
@@ -652,7 +850,8 @@ class _CaptureScreenState extends State<CaptureScreen>
         await candidate.initialize();
         logFirstCameraPreviewStage(
           'controller_initialize_end',
-          detail: 'lens=$lensKey preset=${preset.name} success=true',
+          detail:
+              'lens=$lensKey preset=${preset.name} success=true targetFps=${effectiveProfile.targetFps} targetBitrate=${effectiveProfile.targetBitrate}',
         );
         newController = candidate;
         _lastSuccessfulPresetByLens[lensKey] = preset;
@@ -753,7 +952,19 @@ class _CaptureScreenState extends State<CaptureScreen>
         _hasRecordingActuallyStarted = false;
       });
 
+      final captureProfile = _selectedQualityMode.profile;
+      debugPrint(
+        '[Capture][Quality] recording_start_requested '
+        'mode=${_selectedQualityMode.storageKey} '
+        'resolvedQuality=${captureProfile.quality} '
+        'targetFps=${captureProfile.targetFps} '
+        'targetBitrate=${captureProfile.targetBitrate} '
+        'codec=${captureProfile.videoCodec} '
+        'aspectPreset=${_selectedAspectPreset.saveAspectPreset}',
+      );
+
       await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
+      _logCamera3a(event: 'lock', target: 'orientation', status: 'success');
 
       if (!_didPrepareForRecording) {
         try {
@@ -852,7 +1063,8 @@ class _CaptureScreenState extends State<CaptureScreen>
         'targetSaveMs=$kTargetClipSaveMs '
         'targetPolicyMs=$kTargetClipMs '
         'captureSafetyMs=$kTargetCaptureSafetyMs '
-        'targetUiSec=$kTargetClipSecForDisplay',
+        'targetUiSec=$kTargetClipSecForDisplay '
+        'quality=${_selectedQualityMode.profile.summaryLabel}',
       );
       _logCaptureRotationDiag('stop_before');
       final video = await _controller!.stopVideoRecording();
@@ -863,12 +1075,29 @@ class _CaptureScreenState extends State<CaptureScreen>
           _hasRecordingActuallyStarted = false;
         });
       }
-      await _controller!.setExposureMode(ExposureMode.auto);
+      try {
+        _logCamera3a(event: 'request', target: 'AE', status: 'requested');
+        await _controller!.setExposureMode(ExposureMode.auto);
+        _logCamera3a(event: 'request', target: 'AE', status: 'success');
+      } catch (e) {
+        _logCamera3a(
+          event: 'request',
+          target: 'AE',
+          status: 'failed',
+          reason: e.toString(),
+        );
+      }
       await videoManager.enqueueRecordedVideoSave(
         video,
         aspectPreset: _selectedAspectPreset.saveAspectPreset,
+        captureQuality: _selectedQualityMode.profile.quality,
+        captureQualityMode: _selectedQualityMode.storageKey,
       );
-      debugPrint('[Capture] recorded_clip_enqueued source=${video.path}');
+      debugPrint(
+        '[Capture] recorded_clip_enqueued source=${video.path} '
+        'quality=${_selectedQualityMode.profile.summaryLabel} '
+        'aspectPreset=${_selectedAspectPreset.saveAspectPreset}',
+      );
       if (mounted) {
         setState(() {
           _flowState = _CaptureFlowState.idle;
@@ -915,8 +1144,62 @@ class _CaptureScreenState extends State<CaptureScreen>
     final Offset localPosition = d.localPosition;
     final double x = localPosition.dx / c.maxWidth;
     final double y = localPosition.dy / c.maxHeight;
-    await _controller!.setFocusPoint(Offset(x, y));
-    await _controller!.setExposurePoint(Offset(x, y));
+    final point = Offset(x, y);
+    try {
+      _logCamera3a(
+        event: 'request',
+        target: 'AF',
+        status: 'requested',
+        point: point,
+      );
+      await _controller!.setFocusPoint(point);
+      _logCamera3a(
+        event: 'converge',
+        target: 'AF',
+        status: 'success',
+        point: point,
+      );
+    } catch (e) {
+      _logCamera3a(
+        event: 'converge',
+        target: 'AF',
+        status: 'failed',
+        reason: e.toString(),
+        point: point,
+      );
+    }
+    try {
+      _logCamera3a(
+        event: 'request',
+        target: 'AE',
+        status: 'requested',
+        point: point,
+      );
+      await _controller!.setExposurePoint(point);
+      _logCamera3a(
+        event: 'converge',
+        target: 'AE',
+        status: 'success',
+        point: point,
+      );
+    } catch (e) {
+      _logCamera3a(
+        event: 'converge',
+        target: 'AE',
+        status: 'failed',
+        reason: e.toString(),
+        point: point,
+      );
+    }
+    _logCamera3a(
+      event: 'converge',
+      target: 'AWB',
+      status: 'unsupported',
+      reason: 'flutter_camera_api_no_awb_point_or_state_query',
+      awbFallback:
+          'exposureModeAuto+focusModeAuto+fixedWhiteBalanceUnavailable',
+      point: point,
+    );
     setState(() {
       _tapPosition = localPosition;
       _showExposureSlider = true;
@@ -1181,7 +1464,9 @@ class _CaptureScreenState extends State<CaptureScreen>
                                   setState(
                                     () => _selectedAspectPreset = aspect,
                                   );
-                                  unawaited(_persistCaptureAspectPreset(aspect));
+                                  unawaited(
+                                    _persistCaptureAspectPreset(aspect),
+                                  );
                                   hapticFeedback();
                                 },
                               ),
@@ -1197,6 +1482,15 @@ class _CaptureScreenState extends State<CaptureScreen>
                         color: Colors.white70,
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '기본은 ${kQualityProfile1080p.summaryLabel} 기준으로 저장·정규화됩니다.',
+                      style: TextStyle(
+                        color: Colors.white.withAlpha(150),
+                        fontSize: 11,
+                        height: 1.35,
                       ),
                     ),
                     const SizedBox(height: 8),
@@ -1294,10 +1588,23 @@ class _CaptureScreenState extends State<CaptureScreen>
 
   @override
   void dispose() {
+    _logCameraLifecycle(
+      event: 'widget_dispose',
+      state: 'dispose',
+      intent: 'cancel_timers_dispose_controller',
+      result: 'started',
+    );
+    WidgetsBinding.instance.removeObserver(this);
     _cancelRecordingTimer();
     _exposureTimer?.cancel();
     _focusAnimController.dispose();
     _controller?.dispose();
+    _logCameraLifecycle(
+      event: 'widget_dispose',
+      state: 'dispose',
+      intent: 'cancel_timers_dispose_controller',
+      result: 'completed',
+    );
     super.dispose();
   }
 

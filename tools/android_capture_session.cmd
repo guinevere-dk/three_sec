@@ -75,17 +75,24 @@ if not "%SOCIAL_AUTH_EXCHANGE_URL%"=="" (
   set KAKAO_DART_DEFINE=%KAKAO_DART_DEFINE% --dart-define=SOCIAL_AUTH_EXCHANGE_URL=%SOCIAL_AUTH_EXCHANGE_URL%
 )
 
-echo [3/6] start app in separate terminal...
+echo [3/6] single-run session setup...
 if "%AUTO_START_APP%"=="1" (
   echo [DIAG] AUTO_START_APP=1: flutter run 실행 (앱 재설치/재기동 가능)
   echo [DIAG] flutter run command: flutter run %KAKAO_DART_DEFINE%
   start "flutter_run_session" cmd /k "flutter run %KAKAO_DART_DEFINE%"
 ) else (
-  echo [DIAG] AUTO_START_APP=0: 자동 실행 생략(현재 실행 중인 앱을 수동으로 실행)
+  echo [DIAG] AUTO_START_APP=0: 앱 교체/재설치 없이 현재 설치된 앱으로 단일 실행 세션을 수집합니다.
+  echo [DIAG] 필요 시 기기에서 앱 아이콘을 눌러 직접 실행하세요. 이 스크립트는 adb install 또는 flutter run을 수행하지 않습니다.
 )
 
 
 echo [4/6] perform test scenario on device, then return here.
+echo      Sample collection guide:
+echo        1. Open Capture settings and record at the default 1080p profile.
+echo        2. Capture at least three clips for bitrate samples: 8Mbps, 12Mbps, 16Mbps targets.
+echo        3. Keep each clip around the normal app capture duration, then export one short vlog.
+echo        4. Verify app signals include bitrateSamplePlan and sampleBitrate entries.
+echo        5. Background or close the app once to collect [cameraLifecycle] release intent/result logs.
 echo      when finished, press ENTER to dump logcat buffer.
 pause >nul
 
@@ -95,8 +102,8 @@ echo [DIAG] extract package-scoped logs for %PKG_NAME% from full log (PID 고정
 findstr /I /C:"%PKG_NAME%" "%FULL_LOG%" > "%APP_FULL_LOG%"
 
 echo [6/6] extract key signals...
-findstr /I /R /C:" [EWF] " /C:"FATAL EXCEPTION" /C:"ANR" /C:"PlatformException" /C:"Unhandled Exception" /C:"OutOfMemoryError" /C:"NoSuchMethodError" /C:"MissingPluginException" /C:"TimeoutException" "%APP_FULL_LOG%" > "%ERR_LOG%"
-findstr /I /C:"flutter :" /C:"[Capture]" /C:"[VideoManager]" /C:"[CloudService]" /C:"[IAPService]" /C:"[AuthService]" /C:"[EditScreen]" "%APP_FULL_LOG%" > "%APP_LOG%"
+findstr /I /R /C:" [EWF] " /C:"FATAL EXCEPTION" /C:"ANR" /C:"PlatformException" /C:"Unhandled Exception" /C:"OutOfMemoryError" /C:"NoSuchMethodError" /C:"MissingPluginException" /C:"TimeoutException" /C:"video_thumbnail" /C:"thumbnailLog" /C:"cameraLifecycle" /C:"awbFallback" "%APP_FULL_LOG%" > "%ERR_LOG%"
+findstr /I /C:"flutter :" /C:"[Capture]" /C:"[VideoManager]" /C:"[CloudService]" /C:"[IAPService]" /C:"[AuthService]" /C:"[EditScreen]" /C:"[qualityLog]" /C:"[camera3A]" /C:"[cameraLifecycle]" /C:"[normalizeComplete]" /C:"[saveComplete]" /C:"[exportComplete]" /C:"[thumbnailLog]" /C:"actualBitrate" /C:"targetBitrate" /C:"targetFps" /C:"codec" /C:"awbFallback" /C:"bitrateSamplePlan" /C:"sampleBitrate" "%APP_FULL_LOG%" > "%APP_LOG%"
 
 for /f %%C in ('find /C /V "" ^< "%FULL_LOG%"') do set FULL_COUNT=%%C
 for /f %%C in ('find /C /V "" ^< "%APP_FULL_LOG%"') do set APP_COUNT=%%C

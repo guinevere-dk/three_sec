@@ -28,10 +28,10 @@ class _PaywallScreenState extends State<PaywallScreen> {
   String? _catalogError;
   List<ProductDetails> _products = [];
   StreamSubscription<List<PurchaseDetails>>? _subscription;
-  
+
   // 0: Standard, 1: Premium
   int _selectedTierIndex = 1; // Default to Premium
-  
+
   // Selected Pricing Option
   // 0: Annual, 1: Monthly
   int _selectedPricingIndex = 0; // Default to Annual
@@ -45,16 +45,22 @@ class _PaywallScreenState extends State<PaywallScreen> {
 
   void _initVideoBackground() {
     // Placeholder video (Butterfly)
-    _videoController = VideoPlayerController.networkUrl(
-      Uri.parse('https://flutter.github.io/assets-for-api-docs/assets/videos/butterfly.mp4'),
-    )..initialize().then((_) {
-        setState(() {});
-        _videoController?.play();
-        _videoController?.setLooping(true);
-        _videoController?.setVolume(0); // Mute background
-      }).catchError((e) {
-        debugPrint("Video initialization failed: $e");
-      });
+    _videoController =
+        VideoPlayerController.networkUrl(
+            Uri.parse(
+              'https://flutter.github.io/assets-for-api-docs/assets/videos/butterfly.mp4',
+            ),
+          )
+          ..initialize()
+              .then((_) {
+                setState(() {});
+                _videoController?.play();
+                _videoController?.setLooping(true);
+                _videoController?.setVolume(0); // Mute background
+              })
+              .catchError((e) {
+                debugPrint("Video initialization failed: $e");
+              });
   }
 
   Future<void> _initIAP() async {
@@ -66,27 +72,32 @@ class _PaywallScreenState extends State<PaywallScreen> {
     }
 
     final initialized = await _iapService.initialize();
-    
+
     // Listen to purchase updates for UI feedback
-    final Stream<List<PurchaseDetails>> purchaseUpdated = InAppPurchase.instance.purchaseStream;
-    _subscription = purchaseUpdated.listen((purchaseDetailsList) {
-      _listenToPurchaseUpdated(purchaseDetailsList);
-    }, onDone: () {
-      _subscription?.cancel();
-    }, onError: (error) {
-      if (mounted) {
-         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $error")));
-         setState(() => _isPurchaseLoading = false);
-       }
-     });
+    final Stream<List<PurchaseDetails>> purchaseUpdated =
+        InAppPurchase.instance.purchaseStream;
+    _subscription = purchaseUpdated.listen(
+      (purchaseDetailsList) {
+        _listenToPurchaseUpdated(purchaseDetailsList);
+      },
+      onDone: () {
+        _subscription?.cancel();
+      },
+      onError: (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text("Error: $error")));
+          setState(() => _isPurchaseLoading = false);
+        }
+      },
+    );
 
     if (mounted) {
       setState(() {
         _products = _iapService.products;
         _isCatalogLoading = false;
-        _catalogError = initialized
-            ? null
-            : '스토어 연결 또는 상품 조회에 실패했습니다.';
+        _catalogError = initialized ? null : '스토어 연결 또는 상품 조회에 실패했습니다.';
       });
     }
   }
@@ -98,13 +109,17 @@ class _PaywallScreenState extends State<PaywallScreen> {
       } else {
         if (purchaseDetails.status == PurchaseStatus.error) {
           if (mounted) {
-             ScaffoldMessenger.of(context).showSnackBar(
-               SnackBar(content: Text("Purchase Failed: ${purchaseDetails.error?.message ?? 'Unknown Error'}"))
-             );
-             setState(() => _isPurchaseLoading = false);
-           }
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  "Purchase Failed: ${purchaseDetails.error?.message ?? 'Unknown Error'}",
+                ),
+              ),
+            );
+            setState(() => _isPurchaseLoading = false);
+          }
         } else if (purchaseDetails.status == PurchaseStatus.purchased ||
-                   purchaseDetails.status == PurchaseStatus.restored) {
+            purchaseDetails.status == PurchaseStatus.restored) {
           _handlePurchaseCompleted(purchaseDetails);
         } else if (purchaseDetails.status == PurchaseStatus.canceled) {
           if (mounted) setState(() => _isPurchaseLoading = false);
@@ -199,7 +214,6 @@ class _PaywallScreenState extends State<PaywallScreen> {
             )
           else
             Container(color: Colors.black), // Fallback
-
           // 2. Blur Overlay + Tone Layer
           Positioned.fill(
             child: BackdropFilter(
@@ -246,7 +260,10 @@ class _PaywallScreenState extends State<PaywallScreen> {
             child: Column(
               children: [
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -261,14 +278,17 @@ class _PaywallScreenState extends State<PaywallScreen> {
                         ),
                       ),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 18,
+                          vertical: 8,
+                        ),
                         decoration: BoxDecoration(
                           color: Colors.black.withAlpha(45),
                           borderRadius: BorderRadius.circular(999),
                           border: Border.all(color: _gold.withAlpha(110)),
                         ),
                         child: const Text(
-                          '3S PREMIUM',
+                          'MOA PREMIUM',
                           style: TextStyle(
                             color: _gold,
                             fontSize: 12,
@@ -280,7 +300,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
                     ],
                   ),
                 ),
-                
+
                 const Spacer(),
 
                 // Main Content Card
@@ -288,11 +308,13 @@ class _PaywallScreenState extends State<PaywallScreen> {
               ],
             ),
           ),
-          
+
           if (_isPurchaseLoading)
             Container(
               color: Colors.black54,
-              child: const Center(child: CircularProgressIndicator(color: Colors.white)),
+              child: const Center(
+                child: CircularProgressIndicator(color: Colors.white),
+              ),
             ),
         ],
       ),
@@ -301,143 +323,157 @@ class _PaywallScreenState extends State<PaywallScreen> {
 
   Widget _buildGlassCard() {
     return Container(
-       margin: const EdgeInsets.all(16),
-       padding: const EdgeInsets.all(24),
-       decoration: BoxDecoration(
-         color: _glassNavy,
-         borderRadius: BorderRadius.circular(32),
-         border: Border.all(color: _glassBorder),
-         gradient: LinearGradient(
-           begin: Alignment.topLeft,
-           end: Alignment.bottomRight,
-           colors: [
-             const Color(0xFF1A2432).withAlpha(230),
-             const Color(0xFF0E1826).withAlpha(230),
-           ],
-         ),
-         boxShadow: [
-           BoxShadow(
-             color: Colors.black.withAlpha(64),
-             blurRadius: 24,
-             spreadRadius: 2,
-             offset: const Offset(0, 8),
-            )
-          ]
-       ),
-       child: Column(
-         mainAxisSize: MainAxisSize.min,
-         children: [
-           const Text(
-             "Unlock Your Potential",
-             style: TextStyle( color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
-           ),
-           const SizedBox(height: 20),
-           
-           // Toggle: Standard | Premium
-           _buildTierToggle(),
-           
-           const SizedBox(height: 20),
-           
-           // Benefit List (Dynamic based on toggle)
-           _buildBenefitList(),
-           
-           const SizedBox(height: 24),
-           
-            // Pricing Cards (Both Standard & Premium)
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Expanded(
-                  flex: 2,
-                  child: _buildPricingCard(
-                    title: "Monthly",
-                    price: _getPrice(_currentMonthlyProductId),
-                    periodLabel: '/ month',
-                    isHero: false,
-                    isSelected: _selectedPricingIndex == 1,
-                    onTap: () => setState(() => _selectedPricingIndex = 1),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  flex: 3,
-                  child: _buildPricingCard(
-                    title: "Annual",
-                    price: _getPrice(_currentAnnualProductId),
-                    periodLabel: '/ year',
-                    subtitle: _selectedTierIndex == 1 ? "Save 20%" : null,
-                    isHero: true,
-                    isSelected: _selectedPricingIndex == 0,
-                    onTap: () => setState(() => _selectedPricingIndex = 0),
-                  ),
-                ),
-              ],
+      margin: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: _glassNavy,
+        borderRadius: BorderRadius.circular(32),
+        border: Border.all(color: _glassBorder),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            const Color(0xFF1A2432).withAlpha(230),
+            const Color(0xFF0E1826).withAlpha(230),
+          ],
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withAlpha(64),
+            blurRadius: 24,
+            spreadRadius: 2,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            "Unlock Your Potential",
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
             ),
+          ),
+          const SizedBox(height: 20),
 
-            if (_catalogError != null) ...[
-              const SizedBox(height: 12),
-              Text(
-                _catalogError!,
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white.withAlpha(180), fontSize: 12),
+          // Toggle: Standard | Premium
+          _buildTierToggle(),
+
+          const SizedBox(height: 20),
+
+          // Benefit List (Dynamic based on toggle)
+          _buildBenefitList(),
+
+          const SizedBox(height: 24),
+
+          // Pricing Cards (Both Standard & Premium)
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                flex: 2,
+                child: _buildPricingCard(
+                  title: "Monthly",
+                  price: _getPrice(_currentMonthlyProductId),
+                  periodLabel: '/ month',
+                  isHero: false,
+                  isSelected: _selectedPricingIndex == 1,
+                  onTap: () => setState(() => _selectedPricingIndex = 1),
+                ),
               ),
-              TextButton(
-                onPressed: _initIAP,
-                child: const Text('Retry'),
-              ),
-            ] else if (_isCatalogLoading) ...[
-              const SizedBox(height: 12),
-              Text(
-                '가격 정보를 불러오는 중...',
-                style: TextStyle(color: Colors.white.withAlpha(160), fontSize: 12),
+              const SizedBox(width: 12),
+              Expanded(
+                flex: 3,
+                child: _buildPricingCard(
+                  title: "Annual",
+                  price: _getPrice(_currentAnnualProductId),
+                  periodLabel: '/ year',
+                  subtitle: _selectedTierIndex == 1 ? "Save 20%" : null,
+                  isHero: true,
+                  isSelected: _selectedPricingIndex == 0,
+                  onTap: () => setState(() => _selectedPricingIndex = 0),
+                ),
               ),
             ],
+          ),
 
-            const SizedBox(height: 24),
-
-            SizedBox(
-              width: double.infinity,
-              height: 54,
-              child: ElevatedButton(
-                onPressed: _isPurchaseLoading
-                    ? null
-                    : () async {
-                        final selectedProductId = _selectedProductId;
-                        final ok = await _iapService.purchase(selectedProductId);
-                        if (!ok && mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('구매 요청에 실패했습니다. 다시 시도해주세요.')),
-                          );
-                        }
-                      },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _gold,
-                  foregroundColor: Colors.black,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  elevation: 0,
-                  shadowColor: _gold.withAlpha(80),
-                ),
-                child: Text(
-                  _ctaLabel,
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-                ),
-              ),
-            ),
-            const SizedBox(height: 10),
+          if (_catalogError != null) ...[
+            const SizedBox(height: 12),
             Text(
-              _planChangeHint,
+              _catalogError!,
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: Colors.white.withAlpha(170),
+                color: Colors.white.withAlpha(180),
                 fontSize: 12,
-                height: 1.35,
               ),
             ),
-            const SizedBox(height: 18),
-            _buildLegalLinks(),
-           ],
-         ),
-      );
+            TextButton(onPressed: _initIAP, child: const Text('Retry')),
+          ] else if (_isCatalogLoading) ...[
+            const SizedBox(height: 12),
+            Text(
+              '가격 정보를 불러오는 중...',
+              style: TextStyle(
+                color: Colors.white.withAlpha(160),
+                fontSize: 12,
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 24),
+
+          SizedBox(
+            width: double.infinity,
+            height: 54,
+            child: ElevatedButton(
+              onPressed: _isPurchaseLoading
+                  ? null
+                  : () async {
+                      final selectedProductId = _selectedProductId;
+                      final ok = await _iapService.purchase(selectedProductId);
+                      if (!ok && mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('구매 요청에 실패했습니다. 다시 시도해주세요.'),
+                          ),
+                        );
+                      }
+                    },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _gold,
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                elevation: 0,
+                shadowColor: _gold.withAlpha(80),
+              ),
+              child: Text(
+                _ctaLabel,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 18,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            _planChangeHint,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white.withAlpha(170),
+              fontSize: 12,
+              height: 1.35,
+            ),
+          ),
+          const SizedBox(height: 18),
+          _buildLegalLinks(),
+        ],
+      ),
+    );
   }
 
   Widget _buildTierToggle() {
@@ -482,13 +518,13 @@ class _PaywallScreenState extends State<PaywallScreen> {
           decoration: BoxDecoration(
             color: isSelected ? null : Colors.transparent,
             borderRadius: BorderRadius.circular(14),
-            gradient: isSelected
-                ? selectedBackground
-                : null,
+            gradient: isSelected ? selectedBackground : null,
             boxShadow: isSelected
                 ? [
                     BoxShadow(
-                      color: isPremium ? _gold.withAlpha(60) : Colors.white.withAlpha(45),
+                      color: isPremium
+                          ? _gold.withAlpha(60)
+                          : Colors.white.withAlpha(45),
                       blurRadius: 14,
                       offset: const Offset(0, 4),
                     ),
@@ -515,26 +551,30 @@ class _PaywallScreenState extends State<PaywallScreen> {
         : ["4K Export", "All AI Filters", "Priority Support", "No Watermark"];
 
     return Column(
-      children: benefits.map((b) => Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Row(
-          children: [
-            Icon(
-              Icons.check_circle,
-              color: _selectedTierIndex == 1 ? _gold : Colors.white54,
-              size: 20,
-            ),
-            const SizedBox(width: 8),
-            Text(
-              b,
-              style: TextStyle(
-                color: Colors.white.withAlpha(235),
-                fontWeight: FontWeight.w500,
+      children: benefits
+          .map(
+            (b) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.check_circle,
+                    color: _selectedTierIndex == 1 ? _gold : Colors.white54,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    b,
+                    style: TextStyle(
+                      color: Colors.white.withAlpha(235),
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
               ),
             ),
-          ],
-        ),
-      )).toList(),
+          )
+          .toList(),
     );
   }
 
@@ -563,26 +603,28 @@ class _PaywallScreenState extends State<PaywallScreen> {
             width: isSelected ? 2 : 1,
           ),
           boxShadow: isSelected
-              ? [
-                  BoxShadow(
-                    color: _gold.withAlpha(35),
-                    blurRadius: 16,
-                  ),
-                ]
+              ? [BoxShadow(color: _gold.withAlpha(35), blurRadius: 16)]
               : null,
         ),
         child: Column(
           children: [
             if (isHero) ...[
-               Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: _gold,
-                    borderRadius: BorderRadius.circular(999),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: _gold,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: const Text(
+                  "BEST VALUE",
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black,
                   ),
-                  child: const Text("BEST VALUE", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black)),
-               ),
-               const SizedBox(height: 8),
+                ),
+              ),
+              const SizedBox(height: 8),
             ],
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -596,7 +638,9 @@ class _PaywallScreenState extends State<PaywallScreen> {
                   ),
                 ),
                 Icon(
-                  isSelected ? Icons.check_circle : Icons.radio_button_unchecked,
+                  isSelected
+                      ? Icons.check_circle
+                      : Icons.radio_button_unchecked,
                   size: 20,
                   color: isSelected ? _gold : Colors.white24,
                 ),
@@ -629,7 +673,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
                   fontWeight: FontWeight.w700,
                 ),
               ),
-            ]
+            ],
           ],
         ),
       ),
@@ -662,9 +706,9 @@ class _PaywallScreenState extends State<PaywallScreen> {
         }
 
         if (label == 'TERMS') {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('이용약관이 준비되지 않았습니다.')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('이용약관이 준비되지 않았습니다.')));
           return;
         }
 
@@ -675,9 +719,9 @@ class _PaywallScreenState extends State<PaywallScreen> {
           return;
         }
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('준비되지 않은 링크입니다.')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('준비되지 않은 링크입니다.')));
       },
       borderRadius: BorderRadius.circular(8),
       child: Padding(
@@ -743,4 +787,3 @@ class _PaywallScreenState extends State<PaywallScreen> {
     return '업그레이드는 즉시 적용되며, 남은 기간 금액은 스토어 정책에 따라 비례 정산됩니다.';
   }
 }
-

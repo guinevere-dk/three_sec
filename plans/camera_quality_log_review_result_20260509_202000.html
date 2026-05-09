@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>카메라 화질 로그 검토 결과 · 2026-05-09 20:20</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07080d;
+      --card: rgba(255, 255, 255, 0.08);
+      --card-strong: rgba(255, 255, 255, 0.14);
+      --line: rgba(255, 255, 255, 0.16);
+      --text: #f8f1e7;
+      --muted: rgba(248, 241, 231, 0.73);
+      --subtle: rgba(248, 241, 231, 0.54);
+      --gold: #ffd28a;
+      --amber: #ffad76;
+      --rose: #ff7fad;
+      --cyan: #7de7ff;
+      --mint: #9dffd2;
+      --violet: #b8a2ff;
+      --danger: #ff8f8f;
+      --ok: #9dffd2;
+      --bad: #ff8f8f;
+      --partial: #ffd28a;
+      --shadow: 0 28px 90px rgba(0, 0, 0, 0.56);
+      --radius-lg: 30px;
+      --radius-md: 22px;
+      --radius-sm: 14px;
+      --focus: 0 0 0 3px rgba(125, 231, 255, 0.28), 0 0 0 1px rgba(125, 231, 255, 0.92) inset;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 16% 4%, rgba(255, 127, 173, 0.22), transparent 30rem),
+        radial-gradient(circle at 82% 0%, rgba(125, 231, 255, 0.18), transparent 30rem),
+        radial-gradient(circle at 48% 40%, rgba(255, 210, 138, 0.12), transparent 35rem),
+        linear-gradient(140deg, #05050a 0%, #10111b 47%, #08090f 100%);
+      overflow-x: hidden;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      opacity: .16;
+      background-image:
+        linear-gradient(rgba(255,255,255,.07) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.055) 1px, transparent 1px);
+      background-size: 54px 54px;
+      mask-image: radial-gradient(circle at center, black, transparent 76%);
+    }
+    a { color: inherit; }
+    .shell { position: relative; z-index: 1; width: min(1180px, calc(100% - 36px)); margin: 0 auto; }
+    .skip-link { position: absolute; left: 16px; top: -80px; z-index: 20; padding: 10px 14px; border-radius: 12px; background: #fff; color: #111; transition: top .2s ease; }
+    .skip-link:focus { top: 16px; }
+
+    header.hero { padding: 56px 0 30px; }
+    .hero-card {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background:
+        linear-gradient(135deg, rgba(255,255,255,.145), rgba(255,255,255,.055)),
+        radial-gradient(circle at 86% 16%, rgba(255, 210, 138, .24), transparent 18rem),
+        rgba(255,255,255,.06);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(22px) saturate(142%);
+      padding: clamp(28px, 5vw, 58px);
+    }
+    .hero-card::after {
+      content: "";
+      position: absolute;
+      width: 380px;
+      height: 380px;
+      right: -130px;
+      bottom: -178px;
+      border-radius: 999px;
+      background: conic-gradient(from 110deg, rgba(255,210,138,.42), rgba(255,127,173,.16), rgba(125,231,255,.22), rgba(255,210,138,.42));
+      filter: blur(16px);
+      opacity: .82;
+    }
+    .hero-card > * { position: relative; z-index: 1; }
+    .eyebrow { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid rgba(255,210,138,.36); border-radius: 999px; color: var(--gold); background: rgba(255,210,138,.08); font-size: 13px; letter-spacing: .03em; }
+    h1 { max-width: 900px; margin: 22px 0 16px; font-size: clamp(36px, 7vw, 74px); line-height: .98; letter-spacing: -0.07em; }
+    .hero-lead { max-width: 840px; margin: 0; color: var(--muted); font-size: clamp(17px, 2.4vw, 22px); line-height: 1.72; }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
+    .btn, button {
+      appearance: none;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 12px 16px;
+      color: var(--text);
+      background: rgba(255,255,255,.08);
+      cursor: pointer;
+      font: inherit;
+      text-decoration: none;
+      transition: transform .18s ease, border-color .18s ease, background .18s ease, box-shadow .18s ease;
+    }
+    .btn.primary, button.primary { border-color: rgba(255,210,138,.5); background: linear-gradient(135deg, rgba(255,210,138,.28), rgba(255,127,173,.14)); }
+    .btn:hover, button:hover { transform: translateY(-2px); background: rgba(255,255,255,.13); }
+    .btn:focus-visible, button:focus-visible, summary:focus-visible, input:focus-visible { outline: none; box-shadow: var(--focus); }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 34px; }
+    .stat { padding: 16px; border: 1px solid var(--line); border-radius: 18px; background: rgba(0,0,0,.18); }
+    .stat strong { display: block; font-size: 24px; color: var(--gold); }
+    .stat span { color: var(--subtle); font-size: 13px; line-height: 1.5; }
+
+    nav.quick { position: sticky; top: 10px; z-index: 5; margin: 12px auto 22px; padding: 10px; border: 1px solid var(--line); border-radius: 999px; background: rgba(7,8,13,.72); backdrop-filter: blur(18px); display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; }
+    nav.quick::-webkit-scrollbar { display: none; }
+    nav.quick a { white-space: nowrap; text-decoration: none; padding: 10px 13px; border-radius: 999px; color: var(--muted); }
+    nav.quick a:hover { background: rgba(255,255,255,.09); color: var(--text); }
+
+    section { padding: 34px 0; }
+    .section-title { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    h2 { margin: 0; font-size: clamp(26px, 4vw, 42px); letter-spacing: -0.05em; }
+    h3 { margin: 14px 0 10px; font-size: 21px; letter-spacing: -0.03em; }
+    p, li, td { color: var(--muted); line-height: 1.68; }
+    .section-title p { max-width: 620px; margin: 0; }
+    .grid { display: grid; gap: 16px; }
+    .grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+    .grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
+    .glass { border: 1px solid var(--line); border-radius: var(--radius-md); background: linear-gradient(145deg, rgba(255,255,255,.105), rgba(255,255,255,.045)); box-shadow: 0 18px 55px rgba(0,0,0,.28); backdrop-filter: blur(18px) saturate(130%); }
+    .card { padding: 22px; }
+    .tag { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; background: rgba(255,255,255,.08); color: var(--muted); border: 1px solid rgba(255,255,255,.11); font-size: 12px; }
+    .tag.ok { color: var(--ok); border-color: rgba(157,255,210,.35); background: rgba(157,255,210,.08); }
+    .tag.partial { color: var(--partial); border-color: rgba(255,210,138,.35); background: rgba(255,210,138,.08); }
+    .tag.bad, .tag.risk { color: var(--danger); border-color: rgba(255,143,143,.35); background: rgba(255,143,143,.08); }
+    .verdict { display: grid; grid-template-columns: 1fr .72fr; gap: 16px; align-items: stretch; }
+    .verdict-main { padding: 26px; border-color: rgba(255,210,138,.34); background: radial-gradient(circle at 90% 0%, rgba(255,210,138,.22), transparent 18rem), linear-gradient(145deg, rgba(255,255,255,.12), rgba(255,255,255,.045)); }
+    .verdict-badge { display: inline-flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 999px; color: #12131a; background: linear-gradient(135deg, var(--gold), #fff0c4); font-weight: 900; }
+    .verdict-main strong.big { display: block; margin-top: 18px; font-size: clamp(34px, 6vw, 62px); letter-spacing: -0.06em; }
+    .quote { margin: 14px 0 0; padding: 14px 16px; border-left: 3px solid var(--gold); border-radius: 14px; background: rgba(0,0,0,.18); }
+    .source-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+    .source-list a { display: block; padding: 11px 13px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(0,0,0,.16); color: var(--muted); text-decoration: none; }
+    .source-list a:hover { color: var(--text); background: rgba(255,255,255,.09); }
+    .summary-card { position: relative; overflow: hidden; min-height: 220px; }
+    .summary-card::before { content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 90% 6%, var(--accent, rgba(255,210,138,.23)), transparent 14rem); opacity: .72; pointer-events: none; }
+    .summary-card > * { position: relative; }
+    .summary-card ul { margin: 12px 0 0; padding-left: 18px; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 999px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.1); color: var(--text); font-size: 12px; }
+    .pill a { color: inherit; }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+
+    .filter-bar, .tabs { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+    .filter-btn[aria-pressed="true"], .tab-btn[aria-selected="true"] { color: #11131d; background: linear-gradient(135deg, var(--gold), #fff0c4); border-color: transparent; box-shadow: 0 12px 32px rgba(255,210,138,.18); }
+    .hidden { display: none !important; }
+    .table-wrap { overflow-x: auto; border-radius: var(--radius-md); border: 1px solid var(--line); }
+    table { width: 100%; min-width: 840px; border-collapse: collapse; background: rgba(255,255,255,.045); }
+    th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid rgba(255,255,255,.105); vertical-align: top; }
+    th { color: var(--gold); font-size: 13px; letter-spacing: .02em; background: rgba(255,255,255,.06); }
+    tr:last-child td { border-bottom: 0; }
+    .rank { color: var(--text); font-weight: 900; }
+    .status { font-weight: 900; white-space: nowrap; }
+    .status.ok { color: var(--ok); }
+    .status.partial { color: var(--partial); }
+    .status.bad { color: var(--bad); }
+    .status.risk { color: var(--danger); }
+
+    .tab-panel { padding: 24px; }
+    .tab-panel[hidden] { display: none; }
+    .panel-layout { display: grid; grid-template-columns: 1.05fr .95fr; gap: 18px; align-items: start; }
+    .log-lines { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 10px; }
+    .log-lines li { padding: 12px 14px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(0,0,0,.18); }
+    code { color: var(--gold); background: rgba(0,0,0,.22); border: 1px solid rgba(255,255,255,.1); border-radius: 8px; padding: 1px 6px; }
+    details.log-detail { overflow: hidden; margin-top: 12px; }
+    details.log-detail summary { list-style: none; cursor: pointer; padding: 15px 17px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    details.log-detail summary::-webkit-details-marker { display: none; }
+    details.log-detail .body { padding: 0 18px 18px; color: var(--muted); }
+    .chev { color: var(--muted); transition: transform .2s ease; }
+    details[open] .chev { transform: rotate(180deg); }
+
+    .checklist { display: grid; gap: 10px; }
+    .check-item { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start; padding: 15px; border: 1px solid var(--line); border-radius: 18px; background: rgba(255,255,255,.055); }
+    .check-item input { width: 20px; height: 20px; accent-color: #ffd28a; margin-top: 2px; }
+    .check-item label { cursor: pointer; color: var(--muted); line-height: 1.6; }
+    .check-item input:checked + label { color: var(--text); text-decoration: line-through; text-decoration-color: rgba(255,210,138,.7); }
+    .progress { margin: 16px 0 0; padding: 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-radius: 18px; background: rgba(255,210,138,.08); border: 1px solid rgba(255,210,138,.18); }
+    .progress-bar { flex: 1; height: 10px; border-radius: 99px; background: rgba(255,255,255,.1); overflow: hidden; }
+    .progress-bar i { display: block; width: 0%; height: 100%; background: linear-gradient(90deg, var(--gold), var(--rose)); transition: width .2s ease; }
+    footer { padding: 34px 0 58px; color: var(--subtle); text-align: center; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+    @media (max-width: 900px) {
+      .stats, .grid.cols-3, .grid.cols-2, .verdict, .panel-layout { grid-template-columns: 1fr; }
+      .section-title { align-items: start; flex-direction: column; }
+      nav.quick { border-radius: 20px; }
+    }
+    @media (max-width: 560px) {
+      .shell { width: min(100% - 24px, 1180px); }
+      header.hero { padding-top: 28px; }
+      .hero-card { border-radius: 24px; padding: 24px; }
+      .hero-actions .btn { width: 100%; text-align: center; }
+      .stats { gap: 10px; }
+      .stat strong { font-size: 20px; }
+      section { padding: 26px 0; }
+      .card, .tab-panel { padding: 18px; }
+      .progress { align-items: stretch; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">본문으로 건너뛰기</a>
+  <header class="hero shell" aria-labelledby="hero-title">
+    <div class="hero-card">
+      <span class="eyebrow">Camera Quality Log Review · 2026-05-09 20:20</span>
+      <h1 id="hero-title">카메라 화질 개선 로그 검토 결과</h1>
+      <p class="hero-lead">원본 리서치 문서의 실행 체크리스트를 기준으로 5개 로그를 대조했습니다. 목표 파라미터는 확인되었지만 비교 실험, 색 메타데이터, 락 검증, 후처리 PoC 증거가 부족하여 최종 판정은 <strong>부분 만족</strong>입니다.</p>
+      <div class="hero-actions" aria-label="주요 섹션 이동">
+        <a class="btn primary" href="#verdict">최종 판정</a>
+        <a class="btn" href="#check-table">충족 여부 표</a>
+        <a class="btn" href="#logs">로그별 발견사항</a>
+        <a class="btn" href="#actions">후속 조치</a>
+      </div>
+      <div class="stats" aria-label="핵심 수치 요약">
+        <div class="stat"><strong>부분 만족</strong><span>최종 판정</span></div>
+        <div class="stat"><strong>1080p · 30fps</strong><span>촬영/정규화 목표 확인</span></div>
+        <div class="stat"><strong>12Mbps · H.264</strong><span>targetBitrate와 codec 확인</span></div>
+        <div class="stat"><strong>5 logs</strong><span>full/errors/appsignals/appfull/diagnostics</span></div>
+      </div>
+    </div>
+  </header>
+
+  <nav class="quick shell" aria-label="문서 섹션 빠른 이동">
+    <a href="#verdict">판정</a>
+    <a href="#summary">요약 카드</a>
+    <a href="#check-table">충족표</a>
+    <a href="#filters">판정 필터</a>
+    <a href="#logs">로그 탭</a>
+    <a href="#actions">후속 조치</a>
+  </nav>
+
+  <main id="main" class="shell">
+    <section id="verdict" aria-labelledby="verdict-title">
+      <div class="section-title">
+        <h2 id="verdict-title">최종 판정</h2>
+        <p>검토 대상 문서의 실험 목표와 실제 로그 증거를 대조한 결론입니다.</p>
+      </div>
+      <div class="verdict">
+        <article class="glass verdict-main">
+          <span class="verdict-badge" aria-label="최종 판정 부분 만족">● 부분 만족</span>
+          <strong class="big">목표 파라미터는 확인, 품질 검증 증거는 부족</strong>
+          <p class="quote">1080p, 30fps, 12Mbps, H.264 목표값은 큐/저장/정규화 로그에서 반복 확인됩니다. 그러나 8/16Mbps 비교, color metadata, 파일 크기, 처리시간, AE/AWB/AF lock, LUT/후처리 PoC는 확인되지 않았습니다.</p>
+          <div class="meta" aria-label="판정 근거 태그">
+            <span class="pill">확인됨: targetFps=30</span>
+            <span class="pill">확인됨: targetBitrate=12000000</span>
+            <span class="pill">확인됨: codec=h264</span>
+            <span class="pill">위험: app died</span>
+          </div>
+        </article>
+        <aside class="glass card" aria-labelledby="sources-title">
+          <h3 id="sources-title">검토 입력 근거</h3>
+          <ul class="source-list">
+            <li><a href="camera_beautiful_video_quality_interactive_v1.html">원본 품질 리서치 문서</a></li>
+            <li><a href="../logs/session_20260509_202000_full.log">session_20260509_202000_full.log</a></li>
+            <li><a href="../logs/session_20260509_202000_errors.log">session_20260509_202000_errors.log</a></li>
+            <li><a href="../logs/session_20260509_202000_appsignals.log">session_20260509_202000_appsignals.log</a></li>
+            <li><a href="../logs/session_20260509_202000_appfull.log">session_20260509_202000_appfull.log</a></li>
+            <li><a href="../logs/session_20260509_202000_diagnostics.log">session_20260509_202000_diagnostics.log</a></li>
+          </ul>
+        </aside>
+      </div>
+    </section>
+
+    <section id="summary" aria-labelledby="summary-title">
+      <div class="section-title">
+        <h2 id="summary-title">요약 카드</h2>
+        <p>로그에서 확인된 항목, 미확인 항목, 실행 안정성 위험을 분리했습니다.</p>
+      </div>
+      <div class="grid cols-3">
+        <article class="glass card summary-card" style="--accent: rgba(157,255,210,.25)">
+          <span class="tag ok">확인됨</span>
+          <h3>목표 파라미터</h3>
+          <ul>
+            <li>1080p 캡처 품질과 <code>captureMode=p1080</code></li>
+            <li>30fps 목표와 <code>targetFps=30</code></li>
+            <li>12Mbps 목표와 <code>targetBitrate=12000000</code></li>
+            <li>H.264 인코딩 목표와 <code>codec=h264</code></li>
+          </ul>
+        </article>
+        <article class="glass card summary-card" style="--accent: rgba(255,210,138,.28)">
+          <span class="tag partial">미확인</span>
+          <h3>품질 실험 증거</h3>
+          <ul>
+            <li>8/16Mbps 비교 샘플 및 8/12/16Mbps A/B 결과</li>
+            <li>color metadata, 파일 크기, 처리시간</li>
+            <li>AE/AWB/AF 수렴 및 lock 검증</li>
+            <li>LUT/톤커브/후처리 PoC 결과</li>
+          </ul>
+        </article>
+        <article class="glass card summary-card" style="--accent: rgba(255,143,143,.26)">
+          <span class="tag risk">위험</span>
+          <h3>런타임 및 플랫폼 이상</h3>
+          <ul>
+            <li><a href="../logs/session_20260509_202000_errors.log">video_thumbnail MissingPluginException</a></li>
+            <li><code>app died, no saved state</code></li>
+            <li><code>destroySurfaces: appStopped=true</code></li>
+            <li><code>AppOps Operation not started: CAMERA</code> 실패</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section id="check-table" aria-labelledby="check-table-title">
+      <div class="section-title">
+        <h2 id="check-table-title">체크리스트 충족 여부 표</h2>
+        <p>원본 문서의 실행 체크리스트를 로그 증거 기준으로 판정했습니다.</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>검토 항목</th><th>판정</th><th>근거</th><th>결론</th></tr>
+          </thead>
+          <tbody>
+            <tr class="review-row" data-status="partial"><td class="rank">bitrate/fps/codec/color metadata 수집</td><td><span class="status partial">부분 만족</span></td><td>1080p, 30fps, 12Mbps, H.264는 반복 확인. color metadata는 없음.</td><td>메타데이터 범위가 불완전합니다.</td></tr>
+            <tr class="review-row" data-status="bad"><td class="rank">1080p 8/12/16Mbps 샘플 비교</td><td><span class="status bad">불만족</span></td><td>12Mbps만 확인되며 8Mbps/16Mbps 샘플 로그가 없습니다.</td><td>비교 실험 재수집 필요.</td></tr>
+            <tr class="review-row" data-status="bad"><td class="rank">AE/AWB/AF 안정화 및 lock 검증</td><td><span class="status bad">불만족</span></td><td>카메라 상태 OPEN/ACTIVE/IDLE은 있으나 수렴/락 결과 로그가 없습니다.</td><td>명시 로깅 추가 필요.</td></tr>
+            <tr class="review-row" data-status="bad"><td class="rank">Android Media3 tone/color effect 및 bitrate 제어 PoC</td><td><span class="status bad">불만족</span></td><td>Media3 Transformer, tone/color effect, encoder 제어 PoC 로그가 없습니다.</td><td>Android 후처리 PoC 미검증.</td></tr>
+            <tr class="review-row" data-status="bad"><td class="rank">iOS Core Image CIColorCube/CIToneCurve PoC</td><td><span class="status bad">불만족</span></td><td>이번 세션은 Android 로그 중심이며 iOS Core Image 증거가 없습니다.</td><td>iOS 별도 세션 필요.</td></tr>
+            <tr class="review-row" data-status="bad"><td class="rank">Daily Life LUT/톤커브 A/B 테스트</td><td><span class="status bad">불만족</span></td><td>LUT, tone curve, preset A/B 결과가 없습니다.</td><td>룩 품질 판단 불가.</td></tr>
+            <tr class="review-row" data-status="bad"><td class="rank">Clean Night 처리시간 측정</td><td><span class="status bad">불만족</span></td><td>처리시간, export 완료 시각, preset별 elapsed 측정이 없습니다.</td><td>저조도 후처리 성능 미확인.</td></tr>
+            <tr class="review-row" data-status="bad"><td class="rank">CameraX/AVFoundation PoC 분리</td><td><span class="status bad">불만족</span></td><td>CameraX/AVFoundation 최소 PoC 분리 근거가 로그에 없습니다.</td><td>구조 전환 검토 미착수.</td></tr>
+            <tr class="review-row" data-status="risk"><td class="rank">런타임 안정성 위험</td><td><span class="status risk">위험</span></td><td>MissingPluginException, app died, destroySurfaces, CAMERA AppOps 실패가 확인됩니다.</td><td>품질 실험보다 안정성 정리 우선.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="filters" aria-labelledby="filters-title">
+      <div class="section-title">
+        <h2 id="filters-title">판정 필터</h2>
+        <p>아래 버튼으로 충족 여부 행을 전체/만족/부분/불만족/위험 기준으로 필터링합니다.</p>
+      </div>
+      <div class="filter-bar" aria-label="판정 필터 버튼">
+        <button class="filter-btn" data-filter="all" aria-pressed="true">전체</button>
+        <button class="filter-btn" data-filter="ok" aria-pressed="false">만족</button>
+        <button class="filter-btn" data-filter="partial" aria-pressed="false">부분</button>
+        <button class="filter-btn" data-filter="bad" aria-pressed="false">불만족</button>
+        <button class="filter-btn" data-filter="risk" aria-pressed="false">위험</button>
+      </div>
+      <p class="glass card" id="filterStatus" aria-live="polite">전체 판정 행 9개를 표시 중입니다.</p>
+    </section>
+
+    <section id="logs" aria-labelledby="logs-title">
+      <div class="section-title">
+        <h2 id="logs-title">로그 파일별 발견사항</h2>
+        <p>탭 UI로 각 로그의 핵심 발견사항과 보완 포인트를 확인할 수 있습니다. 화살표/Home/End 키로 탭 전환이 가능합니다.</p>
+      </div>
+      <div class="tabs" role="tablist" aria-label="로그 파일별 발견사항 탭">
+        <button class="tab-btn" id="tab-full" role="tab" aria-selected="true" aria-controls="panel-full" data-tab="full">full.log</button>
+        <button class="tab-btn" id="tab-errors" role="tab" aria-selected="false" aria-controls="panel-errors" data-tab="errors">errors.log</button>
+        <button class="tab-btn" id="tab-appsignals" role="tab" aria-selected="false" aria-controls="panel-appsignals" data-tab="appsignals">appsignals.log</button>
+        <button class="tab-btn" id="tab-appfull" role="tab" aria-selected="false" aria-controls="panel-appfull" data-tab="appfull">appfull.log</button>
+        <button class="tab-btn" id="tab-diagnostics" role="tab" aria-selected="false" aria-controls="panel-diagnostics" data-tab="diagnostics">diagnostics.log</button>
+      </div>
+
+      <div class="glass tab-panel" id="panel-full" role="tabpanel" aria-labelledby="tab-full">
+        <div class="panel-layout">
+          <div><span class="tag partial">부분 만족 근거</span><h3>전체 세션 로그</h3><p><a href="../logs/session_20260509_202000_full.log">full.log</a>는 앱 실행, 카메라 상태, 저장/정규화 요청, 런타임 종료 이벤트를 폭넓게 포함합니다. 목표 파라미터와 위험 이벤트가 함께 확인됩니다.</p></div>
+          <ul class="log-lines">
+            <li><code>targetFps=30</code>, <code>targetBitrate=12000000</code>, <code>codec=h264</code> 반복 확인</li>
+            <li><code>normalizeVideoDuration complete</code> 및 <code>saveGatePass=true</code> 확인</li>
+            <li><code>sourceDurationMs</code>, <code>normalizedDurationMs</code>는 있으나 실제 처리시간과 파일 크기는 없음</li>
+          </ul>
+        </div>
+        <details class="glass log-detail"><summary><strong>추가 해석</strong><span class="chev">⌄</span></summary><div class="body">정규화 완료 자체는 확인되지만 실제 export complete, outputPath별 fileSize, actualBitrate, color metadata가 없으므로 품질 개선 검증으로 보기에는 부족합니다.</div></details>
+      </div>
+
+      <div class="glass tab-panel" id="panel-errors" role="tabpanel" aria-labelledby="tab-errors" hidden>
+        <div class="panel-layout">
+          <div><span class="tag risk">위험</span><h3>에러 로그</h3><p><a href="../logs/session_20260509_202000_errors.log">errors.log</a>에서 썸네일 플러그인 채널 오류, 앱 사망, Surface 정리, CAMERA AppOps 실패가 확인됩니다.</p></div>
+          <ul class="log-lines">
+            <li><a href="../logs/session_20260509_202000_errors.log"><code>MissingPluginException(No implementation found for method data on channel plugins.justsoft.xyz/video_thumbnail)</code></a></li>
+            <li><code>Force removing ActivityRecord... app died, no saved state</code></li>
+            <li><code>destroySurfaces: appStopped=true</code>, <code>Operation not started... op=CAMERA</code></li>
+          </ul>
+        </div>
+        <details class="glass log-detail" open><summary><strong>위험 영향</strong><span class="chev">⌄</span></summary><div class="body">앱이 죽거나 재설치/패키지 제거 이벤트가 섞이면 단일 실행 세션의 품질 측정 신뢰도가 떨어집니다. 플러그인 등록 문제는 라이브러리/썸네일 화면 안정성에도 영향을 줄 수 있습니다.</div></details>
+      </div>
+
+      <div class="glass tab-panel" id="panel-appsignals" role="tabpanel" aria-labelledby="tab-appsignals" hidden>
+        <div class="panel-layout">
+          <div><span class="tag partial">확인 + 미확인</span><h3>앱 신호 로그</h3><p><a href="../logs/session_20260509_202000_appsignals.log">appsignals.log</a>는 Flutter 앱 레벨 이벤트가 압축되어 있어 목표 파라미터 확인에 가장 직접적입니다.</p></div>
+          <ul class="log-lines">
+            <li><code>recorded_clip_enqueued ... quality=1080p · 30fps · 12Mbps</code></li>
+            <li><code>saveRecordedVideo_paths ... quality=1080p targetFps=30 targetBitrate=12000000 codec=h264</code></li>
+            <li><code>thumbnail_error</code>가 동일 세션에 발생</li>
+          </ul>
+        </div>
+        <details class="glass log-detail"><summary><strong>미확인 항목</strong><span class="chev">⌄</span></summary><div class="body">color metadata, actualBitrate, 파일 크기, 처리시간, 8/16Mbps 대조군, AE/AWB/AF lock 상태는 앱 신호 로그에서 확인되지 않습니다.</div></details>
+      </div>
+
+      <div class="glass tab-panel" id="panel-appfull" role="tabpanel" aria-labelledby="tab-appfull" hidden>
+        <div class="panel-layout">
+          <div><span class="tag risk">시스템 상태</span><h3>앱 전체 로그</h3><p><a href="../logs/session_20260509_202000_appfull.log">appfull.log</a>는 CameraService, WindowManager, SurfaceFlinger, AppOps 등 플랫폼 이벤트를 포함합니다.</p></div>
+          <ul class="log-lines">
+            <li>카메라 <code>OPENING</code> → <code>OPEN</code> → <code>ACTIVE</code> → <code>IDLE</code> → <code>CLOSED</code> 전이가 확인됨</li>
+            <li><code>minFPS = 30.000002, maxFPS = 60.0</code> 범위 등록 확인</li>
+            <li>앱 종료 시 <code>app died</code>, <code>CAMERA AppOps</code> 실패가 뒤따름</li>
+          </ul>
+        </div>
+        <details class="glass log-detail"><summary><strong>품질 검증 관점</strong><span class="chev">⌄</span></summary><div class="body">플랫폼 카메라 활성화는 확인되지만, 노출/화이트밸런스/포커스 수렴값이나 lock 성공 여부는 앱 레벨 별도 로그 없이는 판정할 수 없습니다.</div></details>
+      </div>
+
+      <div class="glass tab-panel" id="panel-diagnostics" role="tabpanel" aria-labelledby="tab-diagnostics" hidden>
+        <div class="panel-layout">
+          <div><span class="tag partial">보조 근거</span><h3>진단 로그</h3><p><a href="../logs/session_20260509_202000_diagnostics.log">diagnostics.log</a>는 세션 재현과 환경 확인을 위한 보조 자료입니다. 본 검토에서는 핵심 품질 실험 결과보다 안정성/수집 완전성 판단에 사용했습니다.</p></div>
+          <ul class="log-lines">
+            <li>단일 실행 세션의 연속성이 중요하므로 앱 교체/재설치 이벤트 혼입 여부 확인 필요</li>
+            <li>품질 산출물의 JSON 스키마 로그가 별도 보강되어야 함</li>
+            <li>진단 로그만으로 LUT/후처리 PoC나 bitrate 비교를 만족 처리할 수 없음</li>
+          </ul>
+        </div>
+        <details class="glass log-detail"><summary><strong>다음 수집 조건</strong><span class="chev">⌄</span></summary><div class="body">동일 앱 설치 상태에서 녹화 → 정규화 → 썸네일 → 라이브러리 렌더 → 종료까지 단일 세션으로 수집하고, 각 샘플별 JSON 결과를 남기는 것이 필요합니다.</div></details>
+      </div>
+    </section>
+
+    <section id="actions" aria-labelledby="actions-title">
+      <div class="section-title">
+        <h2 id="actions-title">후속 조치 우선순위 5개</h2>
+        <p>체크하면 진행률 바가 갱신됩니다. 체크 상태는 현재 브라우저 세션에서만 유지됩니다.</p>
+      </div>
+      <div class="glass card">
+        <div class="checklist" id="todoList">
+          <div class="check-item"><input id="todo-1" type="checkbox"><label for="todo-1">재설치/앱 교체 없는 단일 실행 세션 재수집</label></div>
+          <div class="check-item"><input id="todo-2" type="checkbox"><label for="todo-2"><a href="../logs/session_20260509_202000_errors.log">video_thumbnail</a> 플러그인 채널 등록 문제 해결</label></div>
+          <div class="check-item"><input id="todo-3" type="checkbox"><label for="todo-3">8/12/16Mbps 샘플별 JSON 스키마 로그 수집</label></div>
+          <div class="check-item"><input id="todo-4" type="checkbox"><label for="todo-4">AE/AWB/AF 수렴 및 lock 결과 명시 로깅</label></div>
+          <div class="check-item"><input id="todo-5" type="checkbox"><label for="todo-5">normalize/export complete, duration, outputPath, fileSize, actualBitrate 로깅 보강</label></div>
+        </div>
+        <div class="progress" aria-live="polite">
+          <strong id="progressText">0 / 5 완료</strong>
+          <div class="progress-bar" aria-hidden="true"><i id="progressBar"></i></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="shell">
+    결론: 이번 세션은 목표 인코딩 파라미터 확인에는 유효하지만, 카메라 화질 개선 체크리스트 전체를 충족하기에는 실험 대조군과 산출물 메타데이터가 부족합니다.
+  </footer>
+
+  <script>
+    (function () {
+      const tabButtons = Array.from(document.querySelectorAll('.tab-btn'));
+      const tabPanels = Array.from(document.querySelectorAll('[role="tabpanel"]'));
+
+      function activateTab(button, shouldFocus) {
+        tabButtons.forEach((btn) => {
+          const selected = btn === button;
+          btn.setAttribute('aria-selected', String(selected));
+          btn.tabIndex = selected ? 0 : -1;
+        });
+        tabPanels.forEach((panel) => {
+          panel.hidden = panel.id !== button.getAttribute('aria-controls');
+        });
+        if (shouldFocus) button.focus();
+      }
+
+      tabButtons.forEach((button, index) => {
+        button.tabIndex = button.getAttribute('aria-selected') === 'true' ? 0 : -1;
+        button.addEventListener('click', () => activateTab(button, false));
+        button.addEventListener('keydown', (event) => {
+          let nextIndex = null;
+          if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabButtons.length;
+          if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabButtons.length) % tabButtons.length;
+          if (event.key === 'Home') nextIndex = 0;
+          if (event.key === 'End') nextIndex = tabButtons.length - 1;
+          if (nextIndex !== null) {
+            event.preventDefault();
+            activateTab(tabButtons[nextIndex], true);
+          }
+        });
+      });
+
+      const filterButtons = Array.from(document.querySelectorAll('.filter-btn'));
+      const reviewRows = Array.from(document.querySelectorAll('.review-row'));
+      const filterStatus = document.getElementById('filterStatus');
+      const labelMap = { all: '전체', ok: '만족', partial: '부분', bad: '불만족', risk: '위험' };
+      filterButtons.forEach((button) => {
+        button.addEventListener('click', () => {
+          const filter = button.dataset.filter;
+          filterButtons.forEach((btn) => btn.setAttribute('aria-pressed', String(btn === button)));
+          let visibleCount = 0;
+          reviewRows.forEach((row) => {
+            const visible = filter === 'all' || row.dataset.status === filter;
+            row.classList.toggle('hidden', !visible);
+            if (visible) visibleCount += 1;
+          });
+          filterStatus.textContent = labelMap[filter] + ' 판정 행 ' + visibleCount + '개를 표시 중입니다.';
+        });
+      });
+
+      const todoInputs = Array.from(document.querySelectorAll('#todoList input[type="checkbox"]'));
+      const progressText = document.getElementById('progressText');
+      const progressBar = document.getElementById('progressBar');
+      function updateProgress() {
+        const done = todoInputs.filter((input) => input.checked).length;
+        const total = todoInputs.length;
+        progressText.textContent = done + ' / ' + total + ' 완료';
+        progressBar.style.width = Math.round((done / total) * 100) + '%';
+      }
+      todoInputs.forEach((input) => input.addEventListener('change', updateProgress));
+      updateProgress();
+    })();
+  </script>
+</body>
+</html>

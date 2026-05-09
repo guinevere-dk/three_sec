@@ -389,12 +389,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _shareApp() async {
-    await Share.share('원세컨 브이로그와 함께 짧고 빠르게 브이로그를 기록해보세요!');
+    await Share.share('MOA와 함께 2초씩 빠르게 Vlog를 기록해보세요!');
   }
 
   Future<void> _openHelp() async {
     final supportEmail = Uri.parse(
-      'mailto:dongkwon81@gmail.com?subject=One%20Second%20Vlog%20Support',
+      'mailto:dongkwon81@gmail.com?subject=MOA%20Support',
     );
     final ok = await launchUrl(supportEmail);
     if (!ok && mounted) {
@@ -406,7 +406,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _confirmSignOut() async {
     if (_authService.isGuest) {
-      print('[ProfileScreen] guest_action_blocked: sign_out blocked by guest_mode');
+      print(
+        '[ProfileScreen] guest_action_blocked: sign_out blocked by guest_mode',
+      );
       await _showGuestActionUnavailableDialog(
         title: '게스트 모드 전용 안내',
         message:
@@ -448,7 +450,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _confirmDeleteAccount() async {
     if (_authService.isGuest) {
-      print('[ProfileScreen] guest_action_blocked: delete_account blocked by guest_mode');
+      print(
+        '[ProfileScreen] guest_action_blocked: delete_account blocked by guest_mode',
+      );
       await _showGuestActionUnavailableDialog(
         title: '게스트 모드 전용 안내',
         message: '계정 삭제는 정식 로그인 계정에서만 가능합니다.',

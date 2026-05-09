@@ -373,7 +373,9 @@ class MainActivity: FlutterFragmentActivity() {
         private const val RESOLUTION_4K_WIDTH = 3840
         private const val RESOLUTION_4K_HEIGHT = 2160
         private const val BITRATE_4K_MAX = 20_000_000  // 20Mbps
-        private const val BITRATE_1080P_MAX = 5_000_000 // 5Mbps (Standardized for Gallery)
+        private const val BITRATE_1080P_MAX = 12_000_000 // 12Mbps (P0 beautiful 1080p baseline)
+        private const val BITRATE_720P_MAX = 5_000_000
+        private const val TARGET_EXPORT_FPS = 30
         
         // 🎨 GPU 필터 프리셋
         private const val GRAYSCALE_SATURATION = 0.0f
@@ -574,6 +576,9 @@ class MainActivity: FlutterFragmentActivity() {
                     val rawTrimMode = args?.get("trimMode")
                     val rawPadToTarget = args?.get("padToTarget")
                     val rawAspectPreset = args?.get("aspectPreset")
+                    val rawQuality = args?.get("quality")
+                    val rawTargetFps = args?.get("targetFps")
+                    val rawTargetBitrate = args?.get("targetBitrate")
                     val targetDurationMs = when (rawTargetDuration) {
                         is Long -> rawTargetDuration
                         is Int -> rawTargetDuration.toLong()
@@ -586,10 +591,13 @@ class MainActivity: FlutterFragmentActivity() {
                     val trimMode = (rawTrimMode as? String)?.lowercase() ?: "start"
                     val padToTarget = rawPadToTarget as? Boolean ?: true
                     val aspectPreset = (rawAspectPreset as? String)?.lowercase() ?: "r9_16"
+                    val normalizeQuality = (rawQuality as? String)?.lowercase() ?: "1080p"
+                    val normalizeTargetFps = (rawTargetFps as? Number)?.toInt() ?: TARGET_EXPORT_FPS
+                    val normalizeTargetBitrate = (rawTargetBitrate as? Number)?.toInt() ?: bitrateForQuality(normalizeQuality)
 
                     Log.d(
                         "3S_NORMALIZE",
-                        "normalizeVideoDuration argType=${rawTargetDuration?.javaClass?.name} value=$rawTargetDuration parsedMs=$targetDurationMs trimMode=$trimMode padToTarget=$padToTarget aspectPreset=$aspectPreset"
+                        "normalizeVideoDuration argType=${rawTargetDuration?.javaClass?.name} value=$rawTargetDuration parsedMs=$targetDurationMs trimMode=$trimMode padToTarget=$padToTarget aspectPreset=$aspectPreset quality=$normalizeQuality targetFps=$normalizeTargetFps targetBitrate=$normalizeTargetBitrate"
                     )
 
                     if (inputPath != null && outputPath != null) {
@@ -600,6 +608,9 @@ class MainActivity: FlutterFragmentActivity() {
                             trimMode = trimMode,
                             padToTarget = padToTarget,
                             aspectPreset = aspectPreset,
+                            quality = normalizeQuality,
+                            targetFps = normalizeTargetFps,
+                            targetBitrate = normalizeTargetBitrate,
                             result = result
                         )
                     } else {
@@ -684,6 +695,9 @@ class MainActivity: FlutterFragmentActivity() {
         trimMode: String,
         padToTarget: Boolean,
         aspectPreset: String,
+        quality: String,
+        targetFps: Int,
+        targetBitrate: Int,
         result: MethodChannel.Result
     ) {
         try {
@@ -746,7 +760,7 @@ class MainActivity: FlutterFragmentActivity() {
             val sourceAspect = sourceDisplayAspectRatio(sourceWidth, sourceHeight, sourceRotation)
             Log.d(
                 "3S_NORMALIZE",
-                "normalizeVideoDuration sourceDurationMs=$sourceDurationMs targetDurationMs=$targetDurationMs clipMs=$clipMs trimMode=$effectiveTrimMode startMs=$startMs endMs=$endMs padArg=$padToTarget padApplied=$shouldPadToTarget aspectPreset=$normalizedAspectPreset sourceWidth=$sourceWidth sourceHeight=$sourceHeight sourceRotation=$sourceRotation sourceAspect=$sourceAspect targetAspect=$targetAspect nearTargetWindow=$NEAR_TARGET_DURATION_MS"
+                "normalizeVideoDuration sourceDurationMs=$sourceDurationMs targetDurationMs=$targetDurationMs clipMs=$clipMs trimMode=$effectiveTrimMode startMs=$startMs endMs=$endMs padArg=$padToTarget padApplied=$shouldPadToTarget aspectPreset=$normalizedAspectPreset quality=$quality targetFps=$targetFps targetBitrate=$targetBitrate sourceWidth=$sourceWidth sourceHeight=$sourceHeight sourceRotation=$sourceRotation sourceAspect=$sourceAspect targetAspect=$targetAspect nearTargetWindow=$NEAR_TARGET_DURATION_MS"
             )
 
             val clippingConfig = MediaItem.ClippingConfiguration.Builder()
@@ -781,6 +795,7 @@ class MainActivity: FlutterFragmentActivity() {
             val transformer = Transformer.Builder(this)
                 .setVideoMimeType(MimeTypes.VIDEO_H264)
                 .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                .setEncoderFactory(createQualityEncoderFactory(quality, "standard", targetBitrate))
                 .addListener(object : Transformer.Listener {
                     override fun onCompleted(composition: Composition, exportResult: ExportResult) {
                         Handler(Looper.getMainLooper()).post {
@@ -790,7 +805,7 @@ class MainActivity: FlutterFragmentActivity() {
                                     "sourceDurationMs=$sourceDurationMs " +
                                     "targetDurationMs=$targetDurationMs " +
                                     "normalizedDurationMs=${exportResult.durationMs} " +
-                                    "clipMs=$clipMs startMs=$startMs endMs=$endMs trimMode=$effectiveTrimMode padToTarget=$shouldPadToTarget aspectPreset=$normalizedAspectPreset sourceAspect=$sourceAspect targetAspect=$targetAspect " +
+                                    "clipMs=$clipMs startMs=$startMs endMs=$endMs trimMode=$effectiveTrimMode padToTarget=$shouldPadToTarget aspectPreset=$normalizedAspectPreset quality=$quality targetFps=$targetFps targetBitrate=$targetBitrate sourceAspect=$sourceAspect targetAspect=$targetAspect " +
                                     "saveGateMinExclusiveMs=$SAVE_GATE_MIN_EXCLUSIVE_MS " +
                                     "saveGatePass=${exportResult.durationMs > SAVE_GATE_MIN_EXCLUSIVE_MS}"
                             )
@@ -1262,7 +1277,7 @@ class MainActivity: FlutterFragmentActivity() {
 
         fun startMergeAttempt(attemptIndex: Int) {
             val attemptQuality = attemptQualities[attemptIndex]
-            val encoderFactory = create4KEncoderFactory(attemptQuality, userTier)
+            val encoderFactory = createQualityEncoderFactory(attemptQuality, userTier, bitrateForQuality(attemptQuality))
 
             val transformerBuilder = Transformer.Builder(this)
                 .setVideoMimeType(MimeTypes.VIDEO_H264)
@@ -1711,8 +1726,28 @@ class MainActivity: FlutterFragmentActivity() {
      * @return DefaultEncoderFactory
      */
     private fun create4KEncoderFactory(quality: String, userTier: String): DefaultEncoderFactory {
+        return createQualityEncoderFactory(quality, userTier, bitrateForQuality(quality))
+    }
+
+    private fun bitrateForQuality(quality: String): Int {
+        return when {
+            quality.equals("4K", ignoreCase = true) || quality.equals("4k", ignoreCase = true) -> BITRATE_4K_MAX
+            quality.contains("720", ignoreCase = true) -> BITRATE_720P_MAX
+            else -> BITRATE_1080P_MAX
+        }
+    }
+
+    private fun createQualityEncoderFactory(quality: String, userTier: String, targetBitrate: Int): DefaultEncoderFactory {
         val builder = DefaultEncoderFactory.Builder(applicationContext)
             .setEnableFallback(true)
+
+        val (width, height) = when {
+            quality.equals("4K", ignoreCase = true) && userTier == "premium" -> RESOLUTION_4K_WIDTH to RESOLUTION_4K_HEIGHT
+            quality.contains("720", ignoreCase = true) -> 1280 to 720
+            else -> 1920 to 1080
+        }
+        trySetRequestedEncoderParams(builder, width, height, targetBitrate)
+        Log.d("3S_QUALITY", "encoderProfile quality=$quality userTier=$userTier width=$width height=$height targetBitrate=$targetBitrate targetFps=$TARGET_EXPORT_FPS codec=h264")
         
         // 🚀 4K 모드: 하드웨어 코덱 강제 활성화
         if (quality.equals("4K", ignoreCase = true) && userTier == "premium") {
@@ -1721,12 +1756,7 @@ class MainActivity: FlutterFragmentActivity() {
             Log.d("3S_4K", "⚡ 4K 하드웨어 코덱 강제 활성화")
             Log.d("3S_4K", "  - 타겟 기기: Galaxy S23 (SM-S911N) 최적화")
             
-            // TODO: setRequestedEncoderPerformanceParameters() 사용 시
-            // builder.setRequestedEncoderPerformanceParameters(
-            //     width = RESOLUTION_4K_WIDTH,
-            //     height = RESOLUTION_4K_HEIGHT,
-            //     bitrate = BITRATE_4K_MAX
-            // )
+            // CameraX/AVFoundation 수준의 촬영 제어 전환은 별도 P2 범위로 유지합니다.
         }
         
         return builder.build()
