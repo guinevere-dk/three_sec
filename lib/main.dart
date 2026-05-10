@@ -27,6 +27,7 @@ import 'services/iap_service.dart';
 import 'services/auth_service.dart';
 import 'services/cloud_service.dart';
 import 'services/notification_settings_service.dart';
+import 'services/app_update_service.dart';
 import 'screens/login_screen.dart';
 import 'screens/profile_screen.dart';
 import 'screens/capture_screen.dart';
@@ -358,6 +359,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   static const Duration _importPreviewTimeout = Duration(seconds: 10);
   bool _didBindVideoManager = false;
   bool _didRequestTutorialCheck = false;
+  bool _didRequestStartupUpdateCheck = false;
   bool _isTutorialFlowActive = false;
   bool _isWaitingForAlbumDetailTutorial = false;
   bool _didShowSelectClipTutorial = false;
@@ -386,6 +388,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       _didRequestTutorialCheck = true;
       unawaited(_checkAndStartTutorial());
     });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _didRequestStartupUpdateCheck) return;
+      _didRequestStartupUpdateCheck = true;
+      unawaited(AppUpdateService.instance.checkAndPromptOnEntry(context));
+    });
   }
 
   @override
@@ -401,6 +408,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     if (state == AppLifecycleState.resumed) {
       unawaited(_restoreCloudUploadQueueOnResume());
       unawaited(_flushQueuedNotificationRoutes(reason: 'app_resumed'));
+      unawaited(AppUpdateService.instance.checkAndPromptOnEntry(context));
     }
   }
 

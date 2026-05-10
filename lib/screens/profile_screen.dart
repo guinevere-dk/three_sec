@@ -10,6 +10,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/auth_service.dart';
 import '../services/cloud_service.dart';
+import '../services/app_update_service.dart';
 import '../managers/user_status_manager.dart';
 import '../managers/video_manager.dart';
 import 'announcements_screen.dart';
@@ -179,6 +180,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
       context,
       MaterialPageRoute(builder: (_) => const AnnouncementsScreen()),
     );
+  }
+
+  Future<void> _checkForAppUpdate() async {
+    await AppUpdateService.instance.showManualUpdateCheck(context);
   }
 
   Future<void> _openEditProfileDialog() async {
@@ -703,6 +708,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       iconBgColor: const Color(0xFFFFF7ED),
                       iconColor: const Color(0xFFF97316),
                       onTap: _openNotifications,
+                    ),
+                    _buildMenuItem(
+                      Icons.system_update_alt,
+                      '앱 업데이트 확인',
+                      valueText: _appVersionText,
+                      valueColor: const Color(0xFF64748B),
+                      iconBgColor: const Color(0xFFEFF6FF),
+                      iconColor: _primaryBlue,
+                      onTap: _checkForAppUpdate,
                     ),
                   ],
                 ),
