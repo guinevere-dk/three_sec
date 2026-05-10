@@ -7,21 +7,25 @@ import '../widgets/media_widgets.dart';
 /// 🎬 비디오 미리보기 위젯 (Library 탭에서 사용)
 class VideoPreviewWidget extends StatefulWidget {
   final String filePath;
+  final List<String> filePaths;
   final Set<String> favorites;
   final bool isTrashMode;
   final Function(String) onToggleFav;
   final Function(String) onRestore;
   final Function(String) onDelete;
+  final ValueChanged<String>? onFilePathChanged;
   final VoidCallback onClose;
 
   const VideoPreviewWidget({
     super.key,
     required this.filePath,
+    this.filePaths = const <String>[],
     required this.favorites,
     required this.isTrashMode,
     required this.onToggleFav,
     required this.onRestore,
     required this.onDelete,
+    this.onFilePathChanged,
     required this.onClose,
   });
 
@@ -31,12 +35,26 @@ class VideoPreviewWidget extends StatefulWidget {
 
 class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
   VideoPlayerController? _vController;
+  late final PageController _pageController;
   String? _initError;
   bool _showControls = true;
+  String? _currentFilePath;
+
+  List<String> get _previewPaths => widget.filePaths.contains(widget.filePath)
+      ? widget.filePaths
+      : <String>[...widget.filePaths, widget.filePath];
+
+  int get _currentPageIndex {
+    final paths = _previewPaths;
+    final index = paths.indexOf(_currentFilePath ?? widget.filePath);
+    return index >= 0 ? index : 0;
+  }
 
   @override
   void initState() {
     super.initState();
+    _currentFilePath = widget.filePath;
+    _pageController = PageController(initialPage: _currentPageIndex);
     _initializePreviewController();
   }
 
@@ -44,13 +62,43 @@ class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
   void didUpdateWidget(covariant VideoPreviewWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.filePath != widget.filePath) {
-      _initializePreviewController();
+      final needsControllerUpdate = _currentFilePath != widget.filePath;
+      _currentFilePath = widget.filePath;
+      _jumpToCurrentPageIfNeeded();
+      if (needsControllerUpdate) {
+        _initializePreviewController();
+      }
+    } else if (oldWidget.filePaths != widget.filePaths) {
+      _jumpToCurrentPageIfNeeded();
     }
+  }
+
+  void _jumpToCurrentPageIfNeeded() {
+    if (!_pageController.hasClients) return;
+    final targetIndex = _currentPageIndex;
+    if ((_pageController.page?.round() ?? _pageController.initialPage) ==
+        targetIndex) {
+      return;
+    }
+    _pageController.jumpToPage(targetIndex);
+  }
+
+  void _handlePageChanged(int index) {
+    final paths = _previewPaths;
+    if (index < 0 || index >= paths.length) return;
+    final nextPath = paths[index];
+    if (nextPath == _currentFilePath) return;
+    setState(() {
+      _currentFilePath = nextPath;
+    });
+    widget.onFilePathChanged?.call(nextPath);
+    _initializePreviewController();
   }
 
   Future<void> _initializePreviewController() async {
     final oldController = _vController;
-    final file = File(widget.filePath);
+    final filePath = _currentFilePath ?? widget.filePath;
+    final file = File(filePath);
 
     if (!file.existsSync()) {
       if (!mounted) return;
@@ -92,18 +140,23 @@ class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
 
   @override
   void dispose() {
+    _pageController.dispose();
     _vController?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final isFav = widget.favorites.contains(widget.filePath);
+    final currentFilePath = _currentFilePath ?? widget.filePath;
+    final isFav = widget.favorites.contains(currentFilePath);
     final controller = _vController;
     final duration = controller?.value.duration ?? Duration.zero;
     final position = controller?.value.position ?? Duration.zero;
     final isInitialized = controller?.value.isInitialized ?? false;
     final isPlaying = controller?.value.isPlaying ?? false;
+    final previewPaths = _previewPaths;
+    final bool canSwipePreview = previewPaths.length > 1;
+    final int currentIndex = _currentPageIndex;
     
     return GestureDetector(
       onTap: () => setState(() => _showControls = !_showControls),
@@ -112,28 +165,20 @@ class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
           color: Colors.black,
           child: Stack(
             children: [
-              Center(
-                child: _initError != null
-                    ? Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            _initError!,
-                            style: const TextStyle(color: Colors.white70),
-                          ),
-                          const SizedBox(height: 12),
-                          TextButton(
-                            onPressed: _initializePreviewController,
-                            child: const Text('다시 시도'),
-                          ),
-                        ],
-                      )
-                    : isInitialized
-                    ? AspectRatio(
-                        aspectRatio: controller!.value.aspectRatio,
-                        child: VideoPlayer(controller),
-                      )
-                    : const CircularProgressIndicator(),
+              PageView.builder(
+                controller: _pageController,
+                itemCount: previewPaths.length,
+                onPageChanged: _handlePageChanged,
+                physics: canSwipePreview
+                    ? const PageScrollPhysics()
+                    : const NeverScrollableScrollPhysics(),
+                itemBuilder: (context, index) {
+                  return Center(
+                    child: index == currentIndex
+                        ? _buildCurrentPreview(controller, isInitialized)
+                        : const SizedBox.shrink(),
+                  );
+                },
               ),
               if (_showControls) ...[
                 Positioned(
@@ -180,24 +225,24 @@ class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
                     children: [
                       IconButton(
                         icon: Icon(
-                          widget.isTrashMode
-                              ? Icons.settings_backup_restore
-                              : (isFav ? Icons.favorite : Icons.favorite_border),
+                            widget.isTrashMode
+                                ? Icons.settings_backup_restore
+                                : (isFav ? Icons.favorite : Icons.favorite_border),
                           color: (isFav && !widget.isTrashMode) ? Colors.red : Colors.white,
                           size: 30,
                         ),
                         onPressed: () {
                           if (widget.isTrashMode) {
-                            widget.onRestore(widget.filePath);
+                            widget.onRestore(currentFilePath);
                           } else {
-                            widget.onToggleFav(widget.filePath);
+                            widget.onToggleFav(currentFilePath);
                             setState(() {});
                           }
                         },
                       ),
                       IconButton(
                         icon: const Icon(Icons.delete_outline, color: Colors.white, size: 30),
-                        onPressed: () => widget.onDelete(widget.filePath),
+                        onPressed: () => widget.onDelete(currentFilePath),
                       )
                     ],
                   ),
@@ -207,6 +252,35 @@ class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildCurrentPreview(
+    VideoPlayerController? controller,
+    bool isInitialized,
+  ) {
+    if (_initError != null) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            _initError!,
+            style: const TextStyle(color: Colors.white70),
+          ),
+          const SizedBox(height: 12),
+          TextButton(
+            onPressed: _initializePreviewController,
+            child: const Text('다시 시도'),
+          ),
+        ],
+      );
+    }
+    if (!isInitialized || controller == null) {
+      return const CircularProgressIndicator();
+    }
+    return AspectRatio(
+      aspectRatio: controller.value.aspectRatio,
+      child: VideoPlayer(controller),
     );
   }
 }

@@ -28,7 +28,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final UserStatusManager _userStatusManager = UserStatusManager();
   final CloudService _cloudService = CloudService();
   final ImagePicker _imagePicker = ImagePicker();
-  String _appVersionText = 'v- (Build -)';
+  String _appVersionText = 'v-';
   bool _isDeletingAccount = false;
 
   static const Color _bgColor = Color(0xFFF6F7F8);
@@ -77,7 +77,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final info = await PackageInfo.fromPlatform();
       if (!mounted) return;
       setState(() {
-        _appVersionText = 'v${info.version} (Build ${info.buildNumber})';
+        _appVersionText = 'v${info.version}';
       });
     } catch (_) {}
   }
@@ -711,7 +711,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                     _buildMenuItem(
                       Icons.system_update_alt,
-                      '앱 업데이트 확인',
+                      '버전 확인',
                       valueText: _appVersionText,
                       valueColor: const Color(0xFF64748B),
                       iconBgColor: const Color(0xFFEFF6FF),

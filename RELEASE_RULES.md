@@ -14,6 +14,7 @@
 - 사용자 원본 영상, 로컬 프로젝트, 클라우드 데이터 삭제 로직 변경 여부 확인.
 - 브랜드 표기는 사용자 노출에서 `MOA`, `2초 촬영 + Vlog` 기준인지 확인.
 - secrets, uid, 토큰, keystore 값이 문서/로그에 포함되지 않았는지 확인.
+- 앱 버전 bump 시 `firebase/hosting/app-update.json`의 `latestVersion`과 `minimumRequiredVersion`도 함께 올릴지 반드시 확인하고, 강제 업데이트 범위 영향도를 기록합니다.
 
 ## 3. Flutter 검증 명령
 

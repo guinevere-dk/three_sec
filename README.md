@@ -20,6 +20,7 @@ flutter analyze
 flutter test
 flutter run
 flutter build apk --release
+flutter build appbundle --release --dart-define=APP_UPDATE_CONFIG_URL=https://fir-3s-8edb9.web.app/app-update.json
 ```
 
 Firebase Functions 작업 시에는 [`functions`](functions) 디렉터리에서 아래 명령을 사용합니다.

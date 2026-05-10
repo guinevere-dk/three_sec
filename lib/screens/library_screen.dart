@@ -738,8 +738,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
               height: MediaQuery.of(context).size.height,
               child: VideoPreviewWidget(
                 filePath: _previewingPath!,
+                filePaths: visibleClipPaths,
                 favorites: videoManager.favorites,
                 isTrashMode: videoManager.currentAlbum == "휴지통",
+                onFilePathChanged: (p) => setState(() => _previewingPath = p),
                 onToggleFav: (p) {
                   if (videoManager.favorites.contains(p)) {
                     videoManager.favorites.remove(p);
