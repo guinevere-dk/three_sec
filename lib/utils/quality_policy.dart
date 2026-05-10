@@ -6,7 +6,7 @@ const String kQuality4k = '4k';
 
 const int kQualityTargetFps = 30;
 const String kQualityVideoCodecH264 = 'h264';
-const String kQualityDefaultCaptureQuality = kQuality1080p;
+const String kQualityDefaultCaptureQuality = kQuality720p;
 const int kQuality1080pTargetBitrate = 12 * 1000 * 1000;
 const int kQuality1080pMinBitrate = 8 * 1000 * 1000;
 const int kQuality1080pMaxBitrate = 16 * 1000 * 1000;
@@ -16,6 +16,8 @@ const int kQuality4kTargetBitrate = 20 * 1000 * 1000;
 const String kUserTierFree = 'free';
 const String kUserTierStandard = 'standard';
 const String kUserTierPremium = 'premium';
+
+const List<String> kFreeVisibleCaptureQualities = <String>[kQuality720p];
 
 class VideoQualityProfile {
   final String quality;
@@ -154,6 +156,12 @@ String normalizeExportQuality(String? raw) {
   if (normalized == '1080p') return kQuality1080p;
   if (normalized == '720p') return kQuality720p;
   return kQuality1080p;
+}
+
+String clampCaptureQualityForFreePolicy(String? requestedQuality) {
+  final q = normalizeExportQuality(requestedQuality);
+  if (kFreeVisibleCaptureQualities.contains(q)) return q;
+  return kQualityDefaultCaptureQuality;
 }
 
 String exportQualityLabel(String quality) {

@@ -18,7 +18,7 @@ enum _PreviewAspectPreset { ratio9x16, ratio3x4, ratio1x1 }
 
 enum _CaptureFlowState { idle, preparing, recording, stopping, saving, error }
 
-enum _CaptureQualityMode { auto, p1080, p4k }
+enum _CaptureQualityMode { p720, auto, p1080, p4k }
 
 extension _PreviewAspectPresetX on _PreviewAspectPreset {
   static _PreviewAspectPreset fromStorageKey(String? value) {
@@ -70,18 +70,23 @@ extension _PreviewAspectPresetX on _PreviewAspectPreset {
 extension _CaptureQualityModeX on _CaptureQualityMode {
   static _CaptureQualityMode fromStorageKey(String? value) {
     switch (value) {
+      case 'p720':
+        return _CaptureQualityMode.p720;
       case 'auto':
-        return _CaptureQualityMode.auto;
       case 'p4k':
-        return _CaptureQualityMode.p4k;
       case 'p1080':
+        // Legacy paid-quality settings are retained in storage but hidden under
+        // the current free-only capture policy, so they safely fall back to 720p.
+        return _CaptureQualityMode.p720;
       default:
-        return _CaptureQualityMode.p1080;
+        return _CaptureQualityMode.p720;
     }
   }
 
   String get storageKey {
     switch (this) {
+      case _CaptureQualityMode.p720:
+        return 'p720';
       case _CaptureQualityMode.auto:
         return 'auto';
       case _CaptureQualityMode.p1080:
@@ -93,6 +98,8 @@ extension _CaptureQualityModeX on _CaptureQualityMode {
 
   String get label {
     switch (this) {
+      case _CaptureQualityMode.p720:
+        return kQualityProfile720p.label;
       case _CaptureQualityMode.auto:
         return 'Auto';
       case _CaptureQualityMode.p1080:
@@ -104,6 +111,8 @@ extension _CaptureQualityModeX on _CaptureQualityMode {
 
   String get resolvedQuality {
     switch (this) {
+      case _CaptureQualityMode.p720:
+        return kQuality720p;
       case _CaptureQualityMode.auto:
       case _CaptureQualityMode.p1080:
         return kQuality1080p;
@@ -168,7 +177,7 @@ class _CaptureScreenState extends State<CaptureScreen>
   String? _cameraError;
   String? _flowError;
   double? _lockedPreviewAspect;
-  _CaptureQualityMode _selectedQualityMode = _CaptureQualityMode.p1080;
+  _CaptureQualityMode _selectedQualityMode = _CaptureQualityMode.p720;
   bool _supports4kCapture = false;
   _PreviewAspectPreset _selectedAspectPreset = _PreviewAspectPreset.ratio9x16;
   int _cameraInitSequence = 0;
@@ -619,6 +628,12 @@ class _CaptureScreenState extends State<CaptureScreen>
           ResolutionPreset.medium,
           ResolutionPreset.low,
         ];
+      case _CaptureQualityMode.p720:
+        return const <ResolutionPreset>[
+          ResolutionPreset.high,
+          ResolutionPreset.medium,
+          ResolutionPreset.low,
+        ];
       case _CaptureQualityMode.p1080:
         return const <ResolutionPreset>[
           ResolutionPreset.veryHigh,
@@ -811,7 +826,7 @@ class _CaptureScreenState extends State<CaptureScreen>
 
     final effectiveMode =
         (_selectedQualityMode == _CaptureQualityMode.p4k && !_supports4kCapture)
-        ? _CaptureQualityMode.p1080
+        ? _CaptureQualityMode.p720
         : _selectedQualityMode;
     final effectiveProfile = effectiveMode.profile;
 
@@ -1363,11 +1378,7 @@ class _CaptureScreenState extends State<CaptureScreen>
   Future<void> _openCaptureSettings() async {
     if (!_hasInitializedController) return;
 
-    final options = <_CaptureQualityMode>[
-      _CaptureQualityMode.auto,
-      _CaptureQualityMode.p1080,
-      _CaptureQualityMode.p4k,
-    ];
+    final options = <_CaptureQualityMode>[_CaptureQualityMode.p720];
 
     await showModalBottomSheet<void>(
       context: context,
@@ -1486,7 +1497,7 @@ class _CaptureScreenState extends State<CaptureScreen>
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '기본은 ${kQualityProfile1080p.summaryLabel} 기준으로 저장·정규화됩니다.',
+                      '무료 버전은 ${kQualityProfile720p.summaryLabel} 기준으로 저장·정규화됩니다.',
                       style: TextStyle(
                         color: Colors.white.withAlpha(150),
                         fontSize: 11,
@@ -1497,8 +1508,7 @@ class _CaptureScreenState extends State<CaptureScreen>
                     LayoutBuilder(
                       builder: (context, constraints) {
                         const spacing = 8.0;
-                        final itemWidth =
-                            (constraints.maxWidth - spacing * 2) / 3;
+                        final itemWidth = constraints.maxWidth;
                         return Wrap(
                           spacing: spacing,
                           runSpacing: spacing,

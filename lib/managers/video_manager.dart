@@ -2078,7 +2078,7 @@ class VideoManager extends ChangeNotifier {
       rawOutPath,
       outPath,
       targetDurationMs: _targetRecordingDurationMs,
-      qualityProfile: kQualityProfile1080p,
+      qualityProfile: kQualityProfile720p,
     );
 
     if (!normalized) {
@@ -2102,7 +2102,7 @@ class VideoManager extends ChangeNotifier {
     required Map<String, double> audioConfig,
     String? bgmPath,
     double bgmVolume = 0.5,
-    String quality = '1080p',
+    String quality = kQualityDefaultCaptureQuality,
     String userTier = 'free',
     String? mergeSessionId,
     String? debugTag,
@@ -3283,7 +3283,7 @@ class VideoManager extends ChangeNotifier {
     XFile video, {
     String aspectPreset = recordedAspectPreset9x16,
     String captureQuality = kQualityDefaultCaptureQuality,
-    String captureQualityMode = 'p1080',
+    String captureQualityMode = 'p720',
   }) async {
     final albumDir = await _rawAlbumDir(currentAlbum);
     final savePath = p.join(
@@ -3304,10 +3304,12 @@ class VideoManager extends ChangeNotifier {
     XFile video, {
     String aspectPreset = recordedAspectPreset9x16,
     String captureQuality = kQualityDefaultCaptureQuality,
-    String captureQualityMode = 'p1080',
+    String captureQualityMode = 'p720',
   }) async {
     final normalizedAspectPreset = _normalizeRecordedAspectPreset(aspectPreset);
-    final normalizedCaptureQuality = normalizeExportQuality(captureQuality);
+    final normalizedCaptureQuality = clampCaptureQualityForFreePolicy(
+      captureQuality,
+    );
     final captureProfile = videoQualityProfile(normalizedCaptureQuality);
     if (!useAsyncRecordedClipSaveQueue) {
       await saveRecordedVideo(
@@ -3449,7 +3451,7 @@ class VideoManager extends ChangeNotifier {
         albumName: job.albumName,
         aspectPreset: job.aspectPreset,
         captureQuality: kQualityDefaultCaptureQuality,
-        captureQualityMode: 'queued_default',
+        captureQualityMode: 'queued_default_p720',
       );
       await _markRecordedClipSaveJob(
         job.jobId,
