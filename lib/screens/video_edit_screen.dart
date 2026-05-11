@@ -4868,7 +4868,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     label: "720p (Basic)",
                     value: kQuality720p,
                     selected: selectedQuality == kQuality720p,
-                    enabled: true,
+                    enabled: userStatus.currentTier == UserTier.free,
                     onChanged: (val) {
                       setStateDialog(() => selectedQuality = val);
                       _updateProjectQuality(val);

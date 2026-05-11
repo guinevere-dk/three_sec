@@ -2078,7 +2078,7 @@ class VideoManager extends ChangeNotifier {
       rawOutPath,
       outPath,
       targetDurationMs: _targetRecordingDurationMs,
-      qualityProfile: kQualityProfile720p,
+      qualityProfile: kQualityProfile1080p,
     );
 
     if (!normalized) {
@@ -3283,7 +3283,7 @@ class VideoManager extends ChangeNotifier {
     XFile video, {
     String aspectPreset = recordedAspectPreset9x16,
     String captureQuality = kQualityDefaultCaptureQuality,
-    String captureQualityMode = 'p720',
+    String captureQualityMode = 'p1080',
   }) async {
     final albumDir = await _rawAlbumDir(currentAlbum);
     final savePath = p.join(
@@ -3304,7 +3304,7 @@ class VideoManager extends ChangeNotifier {
     XFile video, {
     String aspectPreset = recordedAspectPreset9x16,
     String captureQuality = kQualityDefaultCaptureQuality,
-    String captureQualityMode = 'p720',
+    String captureQualityMode = 'p1080',
   }) async {
     final normalizedAspectPreset = _normalizeRecordedAspectPreset(aspectPreset);
     final normalizedCaptureQuality = clampCaptureQualityForFreePolicy(
@@ -3451,7 +3451,7 @@ class VideoManager extends ChangeNotifier {
         albumName: job.albumName,
         aspectPreset: job.aspectPreset,
         captureQuality: kQualityDefaultCaptureQuality,
-        captureQualityMode: 'queued_default_p720',
+        captureQualityMode: 'queued_default_p1080',
       );
       await _markRecordedClipSaveJob(
         job.jobId,

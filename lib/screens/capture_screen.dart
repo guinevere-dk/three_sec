@@ -71,15 +71,13 @@ extension _CaptureQualityModeX on _CaptureQualityMode {
   static _CaptureQualityMode fromStorageKey(String? value) {
     switch (value) {
       case 'p720':
-        return _CaptureQualityMode.p720;
+        return _CaptureQualityMode.p1080;
       case 'auto':
       case 'p4k':
       case 'p1080':
-        // Legacy paid-quality settings are retained in storage but hidden under
-        // the current free-only capture policy, so they safely fall back to 720p.
-        return _CaptureQualityMode.p720;
+        return _CaptureQualityMode.p1080;
       default:
-        return _CaptureQualityMode.p720;
+        return _CaptureQualityMode.p1080;
     }
   }
 
@@ -177,7 +175,7 @@ class _CaptureScreenState extends State<CaptureScreen>
   String? _cameraError;
   String? _flowError;
   double? _lockedPreviewAspect;
-  _CaptureQualityMode _selectedQualityMode = _CaptureQualityMode.p720;
+  _CaptureQualityMode _selectedQualityMode = _CaptureQualityMode.p1080;
   bool _supports4kCapture = false;
   _PreviewAspectPreset _selectedAspectPreset = _PreviewAspectPreset.ratio9x16;
   int _cameraInitSequence = 0;
@@ -826,7 +824,7 @@ class _CaptureScreenState extends State<CaptureScreen>
 
     final effectiveMode =
         (_selectedQualityMode == _CaptureQualityMode.p4k && !_supports4kCapture)
-        ? _CaptureQualityMode.p720
+        ? _CaptureQualityMode.p1080
         : _selectedQualityMode;
     final effectiveProfile = effectiveMode.profile;
 
@@ -1378,7 +1376,7 @@ class _CaptureScreenState extends State<CaptureScreen>
   Future<void> _openCaptureSettings() async {
     if (!_hasInitializedController) return;
 
-    final options = <_CaptureQualityMode>[_CaptureQualityMode.p720];
+    final options = <_CaptureQualityMode>[_CaptureQualityMode.p1080];
 
     await showModalBottomSheet<void>(
       context: context,
@@ -1497,7 +1495,7 @@ class _CaptureScreenState extends State<CaptureScreen>
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '무료 버전은 ${kQualityProfile720p.summaryLabel} 기준으로 저장·정규화됩니다.',
+                      '촬영 원본은 ${kQualityProfile1080p.summaryLabel} 기준으로 저장·정규화됩니다.',
                       style: TextStyle(
                         color: Colors.white.withAlpha(150),
                         fontSize: 11,

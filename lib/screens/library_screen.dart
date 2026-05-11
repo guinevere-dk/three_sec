@@ -62,6 +62,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   String? _previewingPath;
   String _storageFilter = 'all';
+  bool _showFavoritesOnly = false;
 
   final GlobalKey _clipGridKey = GlobalKey(debugLabel: 'clipGrid');
   final GlobalKey _albumGridKey = GlobalKey(debugLabel: 'albumGrid');
@@ -126,6 +127,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _isZoomingLocked = false;
     _previewingPath = null;
     _storageFilter = 'all';
+    _showFavoritesOnly = false;
     _selectedClipPaths.clear();
     _selectedAlbumNames.clear();
     _lastAlbumDetailVisible = false;
@@ -211,6 +213,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     final signature = [
       videoManager.currentAlbum,
       _storageFilter,
+      _showFavoritesOnly,
       _gridColumnCount,
       visibleClipPaths.length,
       firstPath,
@@ -220,7 +223,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _lastDetailRenderSignature = signature;
     debugPrint(
       '$_traceTag clip_list_render album=${videoManager.currentAlbum} '
-      'filter=$_storageFilter count=${visibleClipPaths.length} '
+      'filter=$_storageFilter favoritesOnly=$_showFavoritesOnly '
+      'count=${visibleClipPaths.length} '
       'grid=$_gridColumnCount first=$firstPath last=$lastPath',
     );
   }
@@ -474,6 +478,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
           (path) =>
               videoManager.isClipVisibleByStorageFilter(path, _storageFilter),
         )
+        .where(
+          (path) =>
+              !_showFavoritesOnly || videoManager.favorites.contains(path),
+        )
         .toList();
     _traceDetailRender(visibleClipPaths);
 
@@ -574,6 +582,31 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   children: [
                     _buildStorageFilterChip('all', '전체'),
                     _buildStorageFilterChip('device', '기기'),
+                    FilterChip(
+                      label: const Text('하트만'),
+                      avatar: Icon(
+                        _showFavoritesOnly
+                            ? Icons.favorite
+                            : Icons.favorite_border_rounded,
+                        size: 18,
+                      ),
+                      selected: _showFavoritesOnly,
+                      selectedColor: const Color(0xFFFFE5EC),
+                      checkmarkColor: const Color(0xFFE91E63),
+                      onSelected: (selected) {
+                        setState(() {
+                          _showFavoritesOnly = selected;
+                          _selectedClipPaths.clear();
+                          _isClipSelectionMode = false;
+                          if (_previewingPath != null &&
+                              !videoManager.favorites.contains(
+                                _previewingPath,
+                              )) {
+                            _previewingPath = null;
+                          }
+                        });
+                      },
+                    ),
                   ],
                 ),
               ),
@@ -876,6 +909,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
         .where(
           (path) =>
               videoManager.isClipVisibleByStorageFilter(path, _storageFilter),
+        )
+        .where(
+          (path) =>
+              !_showFavoritesOnly || videoManager.favorites.contains(path),
         )
         .toList();
     setState(() {
