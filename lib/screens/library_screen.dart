@@ -11,8 +11,10 @@ import '../widgets/media_dialogs.dart';
 import '../utils/haptics.dart';
 import '../utils/media_selection_helper.dart';
 import '../managers/video_manager.dart';
+import '../managers/user_status_manager.dart';
 import '../services/cloud_service.dart';
 import '../services/auth_service.dart';
+import 'subscription_management_screen.dart';
 
 enum _SelectionActionState { local, cloud, mixed }
 
@@ -72,6 +74,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   late VideoManager videoManager;
   final CloudService _cloudService = CloudService();
+  final UserStatusManager _userStatusManager = UserStatusManager();
   bool _lastAlbumDetailVisible = false;
   bool _lastCreateProjectButtonVisible = false;
   String? _lastDetailRenderSignature;
@@ -104,7 +107,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       videoManager = Provider.of<VideoManager>(context, listen: false);
+      await _userStatusManager.initialize();
       await videoManager.initAlbumSystem();
+      await videoManager.syncCloudMetadataToLibrary(trigger: 'library_init');
       if (mounted) setState(() {});
     });
   }
@@ -286,6 +291,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   Widget _buildLibraryTab() {
     final allAlbums = videoManager.clipAlbums; // Vlog 제외 조건 삭제
+    final showStandardBadge = _userStatusManager.currentTier == UserTier.free;
     final selectableAlbums = allAlbums
         .where((a) => a != "일상" && a != "휴지통")
         .toList();
@@ -340,6 +346,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     onPressed: _toggleSelectAllAlbums,
                   )
                 else ...[
+                  if (showStandardBadge) _buildStandardHeaderBadge(),
                   IconButton(
                     key: widget.keyPickMedia,
                     icon: const Icon(Icons.add, color: Colors.black, size: 21),
@@ -484,6 +491,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         )
         .toList();
     _traceDetailRender(visibleClipPaths);
+    final showStandardBadge = _userStatusManager.currentTier == UserTier.free;
 
     // Determine subtitle
     final int count = visibleClipPaths.length;
@@ -550,7 +558,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 ],
               ),
               actions: [
-                if (!_isClipSelectionMode)
+                if (!_isClipSelectionMode) ...[
+                  if (showStandardBadge) _buildStandardHeaderBadge(),
                   IconButton(
                     key: widget.keyPickMedia,
                     icon: const Icon(
@@ -559,6 +568,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     ),
                     onPressed: () => widget.onPickMedia(''),
                   ),
+                ],
                 if (_isClipSelectionMode)
                   TextButton(
                     onPressed: _toggleSelectAllClips,
@@ -666,6 +676,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
                               _selectedClipPaths.add(path);
                             }
                           });
+                        } else if (videoManager.isCloudOnlyPlaceholder(path)) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'Cloud 클립은 길게 눌러 선택한 뒤 다운로드 아이콘으로 복원해 주세요.',
+                              ),
+                            ),
+                          );
                         } else {
                           setState(() => _previewingPath = path);
                         }
@@ -686,7 +704,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       getThumbnail: (path) =>
                           _traceThumbnailRequest(path, index),
                     );
-
                     if (index == 0) {
                       return KeyedSubtree(
                         key: widget.keyFirstClip,
@@ -735,7 +752,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     onTransfer: _transferHandlerForSelectionState(
                       selectionState,
                     ),
-                    showTransferButton: false,
+                    showTransferButton: _userStatusManager.isStandardOrAbove(),
                     onCreateProject: _selectedClipPaths.length < 2
                         ? null
                         : () {
@@ -800,6 +817,37 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   // --- [제스처 처리] ---
+
+  Widget _buildStandardHeaderBadge() {
+    return InkWell(
+      onTap: _openSubscriptionManagement,
+      borderRadius: BorderRadius.circular(999),
+      child: Container(
+        margin: const EdgeInsets.only(right: 2),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFF7D6),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: const Color(0xFFE7C867)),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.star_rounded, size: 16, color: Color(0xFF9A6B00)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openSubscriptionManagement() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const SubscriptionManagementScreen()),
+    );
+    await _userStatusManager.initialize();
+    if (mounted) setState(() {});
+  }
 
   void _startDragSelection(Offset position, bool isClip) {
     final targetList = isClip
@@ -947,9 +995,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
       case _SelectionActionState.local:
         return Icons.cloud_upload_rounded;
       case _SelectionActionState.cloud:
-        return Icons.download_for_offline_rounded;
+        return Icons.download_rounded;
       case _SelectionActionState.mixed:
-        return Icons.sync_disabled_rounded;
+        return Icons.download_for_offline_rounded;
     }
   }
 
@@ -962,7 +1010,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       case _SelectionActionState.local:
         return _moveSelectedLocalToCloud;
       case _SelectionActionState.cloud:
-        return _moveSelectedCloudToLocal;
+        return _removeSelectedCloudBackup;
       case _SelectionActionState.mixed:
         return null;
     }
@@ -1089,6 +1137,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
       case 'storage_limit':
       case 'quota_exceeded':
         return '저장 용량 제한으로 클라우드 이동에 실패했어요. 용량 정리 후 다시 시도해주세요.';
+      case 'subscription_expired':
+        return '구독이 만료되어 신규 Cloud 업로드/복사가 중지되었어요. 기존 Cloud 클립은 만료 후 30일 동안 복원할 수 있으며, 구독 복원 또는 재구독 후 다시 이용할 수 있어요.';
       case 'auth_required':
         return '로그인이 필요해요. 로그인 후 다시 시도해주세요.';
       default:
@@ -1117,7 +1167,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
   }
 
-  Future<void> _moveSelectedCloudToLocal() async {
+  Future<void> _removeSelectedCloudBackup() async {
     final targets = List<String>.from(_selectedClipPaths);
     if (targets.isEmpty) return;
 
@@ -1135,10 +1185,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
       videoManager.markClipTransferPendingDownload(path);
     }
 
-    unawaited(_moveSelectedCloudToLocalInBackground(targets));
+    unawaited(_removeSelectedCloudBackupInBackground(targets));
   }
 
-  Future<void> _moveSelectedCloudToLocalInBackground(
+  Future<void> _removeSelectedCloudBackupInBackground(
     List<String> targets,
   ) async {
     var success = 0;
@@ -1146,20 +1196,48 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
     for (final path in targets) {
       try {
+        if (videoManager.isCloudOnlyPlaceholder(path)) {
+          final meta = videoManager.getCloudMetadataForPath(path);
+          if (meta == null) {
+            videoManager.markClipTransferDownloadFailed(path);
+            failed++;
+            continue;
+          }
+          final albumName = meta.albumName.trim().isEmpty
+              ? videoManager.currentAlbum
+              : meta.albumName.trim();
+          final fileName = meta.fileName.trim().isEmpty
+              ? '${meta.videoId}.mp4'
+              : meta.fileName.trim();
+          final localPath = await videoManager.buildUniqueRawClipPath(
+            albumName: albumName,
+            fileName: fileName,
+          );
+          final ok = await _cloudService.downloadVideo(
+            videoId: meta.videoId,
+            localPath: localPath,
+          );
+          if (!ok || !await File(localPath).exists()) {
+            videoManager.markClipTransferDownloadFailed(path);
+            failed++;
+            continue;
+          }
+          await videoManager.registerCloudRestoredClip(
+            path: localPath,
+            albumName: albumName,
+            cloudMetadata: meta,
+          );
+          videoManager.clearClipTransferUiState(path);
+          success++;
+          continue;
+        }
+
         if (!videoManager.isClipCloudSynced(path)) {
           videoManager.markClipTransferDownloadFailed(path);
           failed++;
           continue;
         }
 
-        final ok = await _cloudService.deleteVideoByLocalPath(path);
-        if (!ok) {
-          videoManager.markClipTransferDownloadFailed(path);
-          failed++;
-          continue;
-        }
-
-        await videoManager.unmarkClipCloudSynced(path);
         videoManager.clearClipTransferUiState(path);
         success++;
       } catch (_) {
@@ -1169,8 +1247,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
 
     final text = failed == 0
-        ? '로컬로 $success개 이동 완료'
-        : '로컬 이동 완료 $success개, 실패 $failed개';
+        ? 'Cloud 클립 $success개 복원 완료'
+        : 'Cloud 클립 복원 완료 $success개, 실패 $failed개';
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
     }

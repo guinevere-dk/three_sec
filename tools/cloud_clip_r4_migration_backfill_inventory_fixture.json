@@ -1,0 +1,143 @@
+{
+  "users": [
+    {
+      "id": "user_fixture_alpha",
+      "data": {
+        "subscriptionTier": "standard",
+        "storageUsage": 4096,
+        "lastUpdated": "2026-04-01T00:00:00.000Z"
+      }
+    },
+    {
+      "id": "user_fixture_beta",
+      "data": {
+        "storageUsage": -1,
+        "lastUpdated": "not-a-date"
+      }
+    }
+  ],
+  "videos": [
+    {
+      "id": "video_complete_active",
+      "data": {
+        "uid": "user_fixture_alpha",
+        "videoId": "video_complete_active",
+        "fileName": "active.mp4",
+        "storagePath": "users/user_fixture_alpha/videos/video_complete_active/active.mp4",
+        "storageTier": "cloud",
+        "lifecycleState": "active",
+        "cloudState": "active",
+        "albumName": "일상",
+        "fileSize": 2048,
+        "uploadStatus": "completed",
+        "createdAt": "2026-04-01T00:00:00.000Z",
+        "updatedAt": "2026-04-01T00:01:00.000Z",
+        "completedAt": "2026-04-01T00:01:00.000Z"
+      }
+    },
+    {
+      "id": "video_missing_policy_fields",
+      "data": {
+        "uid": "user_fixture_alpha",
+        "videoId": "video_missing_policy_fields",
+        "fileName": "missing.mp4",
+        "storagePath": "users/user_fixture_alpha/videos/video_missing_policy_fields/missing.mp4",
+        "albumName": "일상",
+        "fileSize": 1024,
+        "uploadStatus": "completed",
+        "createdAt": "2026-04-02T00:00:00.000Z",
+        "updatedAt": "2026-04-02T00:01:00.000Z"
+      }
+    },
+    {
+      "id": "video_owner_mismatch",
+      "data": {
+        "uid": "user_fixture_beta",
+        "videoId": "video_owner_mismatch",
+        "fileName": "mismatch.mp4",
+        "storagePath": "users/user_fixture_alpha/videos/video_owner_mismatch/mismatch.mp4",
+        "storageTier": "cloud",
+        "lifecycleState": "active",
+        "cloudState": "active",
+        "fileSize": 512,
+        "uploadStatus": "completed",
+        "createdAt": "2026-04-03T00:00:00.000Z",
+        "updatedAt": "2026-04-03T00:01:00.000Z"
+      }
+    },
+    {
+      "id": "video_trash_missing_originals",
+      "data": {
+        "uid": "user_fixture_alpha",
+        "videoId": "video_trash_missing_originals",
+        "fileName": "trash.mp4",
+        "storagePath": "users/user_fixture_alpha/videos/video_trash_missing_originals/trash.mp4",
+        "lifecycleState": "trash",
+        "cloudState": "trash",
+        "trashed": true,
+        "fileSize": 256,
+        "uploadStatus": "completed",
+        "createdAt": "2026-04-04T00:00:00.000Z",
+        "updatedAt": "2026-04-04T00:01:00.000Z"
+      }
+    },
+    {
+      "id": "video_unknown_cloud_state",
+      "data": {
+        "uid": "user_fixture_alpha",
+        "videoId": "video_unknown_cloud_state",
+        "fileName": "unknown.mp4",
+        "storagePath": "users/user_fixture_alpha/videos/video_unknown_cloud_state/unknown.mp4",
+        "storageTier": "cloud",
+        "lifecycleState": "active",
+        "cloudState": "mystery_state",
+        "fileSize": "bad-size",
+        "uploadStatus": "completed",
+        "createdAt": "invalid-date",
+        "updatedAt": "2026-04-05T00:01:00.000Z"
+      }
+    }
+  ],
+  "projects": [
+    {
+      "id": "project_complete",
+      "data": {
+        "uid": "user_fixture_alpha",
+        "localProjectId": "local_project_1",
+        "title": "fixture project",
+        "clipPaths": ["/local/a.mp4", "/local/b.mp4"],
+        "clipCount": 2,
+        "folderName": "기본",
+        "lockState": "none",
+        "clientCreatedAt": "2026-04-01T00:00:00.000Z",
+        "clientUpdatedAt": "2026-04-01T00:01:00.000Z",
+        "lastSyncedAt": "2026-04-01T00:02:00.000Z",
+        "deleted": false
+      }
+    },
+    {
+      "id": "project_missing_refs",
+      "data": {
+        "uid": "user_fixture_alpha",
+        "title": "missing refs",
+        "clipPaths": ["/local/a.mp4"],
+        "clipCount": 2,
+        "clientCreatedAt": "bad-date",
+        "clientUpdatedAt": "2026-04-02T00:00:00.000Z",
+        "deleted": false
+      }
+    }
+  ],
+  "folders": [
+    {
+      "id": "folder_default",
+      "data": {
+        "uid": "user_fixture_alpha",
+        "folderName": "기본",
+        "createdAt": "2026-04-01T00:00:00.000Z",
+        "updatedAt": "2026-04-01T00:00:00.000Z",
+        "deleted": false
+      }
+    }
+  ]
+}

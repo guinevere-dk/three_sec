@@ -5,7 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 import '../managers/user_status_manager.dart';
+import '../services/auth_service.dart';
 import '../services/iap_service.dart';
+import 'login_screen.dart';
 
 class PaywallScreen extends StatefulWidget {
   const PaywallScreen({super.key});
@@ -16,21 +18,18 @@ class PaywallScreen extends StatefulWidget {
 
 class _PaywallScreenState extends State<PaywallScreen> {
   static const Color _gold = Color(0xFFD4AF37);
-  static const Color _goldBright = Color(0xFFE8C95B);
   static const Color _goldDark = Color(0xFFB08D26);
   static const Color _glassNavy = Color(0xCC111A26);
   static const Color _glassBorder = Color(0x26FFFFFF);
 
   final IAPService _iapService = IAPService();
+  final AuthService _authService = AuthService();
   VideoPlayerController? _videoController;
   bool _isPurchaseLoading = false;
   bool _isCatalogLoading = false;
   String? _catalogError;
   List<ProductDetails> _products = [];
   StreamSubscription<List<PurchaseDetails>>? _subscription;
-
-  // 0: Standard, 1: Premium
-  int _selectedTierIndex = 1; // Default to Premium
 
   // Selected Pricing Option
   // 0: Annual, 1: Monthly
@@ -129,7 +128,15 @@ class _PaywallScreenState extends State<PaywallScreen> {
   }
 
   Future<void> _handlePurchaseCompleted(PurchaseDetails purchaseDetails) async {
-    await _waitForLocalTierSync(purchaseDetails.productID);
+    final synced = await _waitForLocalTierSync(purchaseDetails.productID);
+    if (synced && _authService.isAuthenticatedAccount) {
+      final userStatus = UserStatusManager();
+      await _authService.syncSubscriptionToFirestore(
+        tier: userStatus.currentTier,
+        productId: purchaseDetails.productID,
+        purchaseDate: userStatus.purchaseDate,
+      );
+    }
     if (!mounted) return;
 
     ScaffoldMessenger.of(
@@ -139,19 +146,20 @@ class _PaywallScreenState extends State<PaywallScreen> {
     Navigator.pop(context, true);
   }
 
-  Future<void> _waitForLocalTierSync(String productId) async {
+  Future<bool> _waitForLocalTierSync(String productId) async {
     final targetTier = _tierFromProductId(productId);
     final userStatus = UserStatusManager();
-    final deadline = DateTime.now().add(const Duration(seconds: 2));
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
 
     while (DateTime.now().isBefore(deadline)) {
       await userStatus.initialize();
       if (userStatus.currentTier == targetTier &&
           userStatus.productId == productId) {
-        return;
+        return true;
       }
       await Future.delayed(const Duration(milliseconds: 120));
     }
+    return false;
   }
 
   UserTier _tierFromProductId(String productId) {
@@ -164,6 +172,10 @@ class _PaywallScreenState extends State<PaywallScreen> {
 
   Future<void> _handleRestorePressed() async {
     if (!mounted) {
+      return;
+    }
+
+    if (!await _ensureAuthenticatedAccountForPaidAction()) {
       return;
     }
 
@@ -185,6 +197,55 @@ class _PaywallScreenState extends State<PaywallScreen> {
         ),
       ),
     );
+  }
+
+  Future<bool> _ensureAuthenticatedAccountForPaidAction() async {
+    if (_authService.isAuthenticatedAccount) {
+      return true;
+    }
+
+    final shouldLogin = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Standard 구독은 로그인이 필요합니다'),
+        content: const Text(
+          '구독 권한을 계정에 안전하게 연결하기 위해 구매 전에 로그인해 주세요. '
+          '게스트로 만든 영상과 프로젝트는 삭제되지 않습니다.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('나중에 하기'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('로그인하고 계속하기'),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldLogin != true || !mounted) {
+      return false;
+    }
+
+    if (_authService.isGuest) {
+      await _authService.signOutGuest();
+      if (!mounted) return false;
+    }
+
+    await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const LoginScreen(popOnSuccess: true, allowGuest: false),
+      ),
+    );
+
+    if (!mounted) {
+      return false;
+    }
+
+    return _authService.isAuthenticatedAccount;
   }
 
   @override
@@ -288,7 +349,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
                           border: Border.all(color: _gold.withAlpha(110)),
                         ),
                         child: const Text(
-                          'MOA PREMIUM',
+                          'MOA STANDARD',
                           style: TextStyle(
                             color: _gold,
                             fontSize: 12,
@@ -350,7 +411,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           const Text(
-            "Unlock Your Potential",
+            "MOA Standard로 더 자유롭게 기록하세요",
             style: TextStyle(
               color: Colors.white,
               fontSize: 24,
@@ -359,17 +420,12 @@ class _PaywallScreenState extends State<PaywallScreen> {
           ),
           const SizedBox(height: 20),
 
-          // Toggle: Standard | Premium
-          _buildTierToggle(),
-
-          const SizedBox(height: 20),
-
-          // Benefit List (Dynamic based on toggle)
+          // Benefit List
           _buildBenefitList(),
 
           const SizedBox(height: 24),
 
-          // Pricing Cards (Both Standard & Premium)
+          // Pricing Cards (Standard only)
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
@@ -391,7 +447,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
                   title: "Annual",
                   price: _getPrice(_currentAnnualProductId),
                   periodLabel: '/ year',
-                  subtitle: _selectedTierIndex == 1 ? "Save 20%" : null,
+                  subtitle: "Best value",
                   isHero: true,
                   isSelected: _selectedPricingIndex == 0,
                   onTap: () => setState(() => _selectedPricingIndex = 0),
@@ -431,8 +487,11 @@ class _PaywallScreenState extends State<PaywallScreen> {
               onPressed: _isPurchaseLoading
                   ? null
                   : () async {
-                      final selectedProductId = _selectedProductId;
-                      final ok = await _iapService.purchase(selectedProductId);
+                       if (!await _ensureAuthenticatedAccountForPaidAction()) {
+                         return;
+                       }
+                       final selectedProductId = _selectedProductId;
+                       final ok = await _iapService.purchase(selectedProductId);
                       if (!ok && mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
@@ -476,79 +535,13 @@ class _PaywallScreenState extends State<PaywallScreen> {
     );
   }
 
-  Widget _buildTierToggle() {
-    return Container(
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: Colors.black.withAlpha(66),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.white10),
-      ),
-      child: Row(
-        children: [
-          _buildToggleButton("Standard", 0),
-          _buildToggleButton("Premium", 1),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildToggleButton(String text, int index) {
-    final isSelected = _selectedTierIndex == index;
-    final isPremium = index == 1;
-    final selectedBackground = isPremium
-        ? LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [_goldBright, _gold],
-          )
-        : const LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Color(0xFFFFFFFF), Color(0xFFEDEDED)],
-          );
-
-    return Expanded(
-      child: GestureDetector(
-        onTap: () => setState(() => _selectedTierIndex = index),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOutCubic,
-          padding: const EdgeInsets.symmetric(vertical: 12.5),
-          decoration: BoxDecoration(
-            color: isSelected ? null : Colors.transparent,
-            borderRadius: BorderRadius.circular(14),
-            gradient: isSelected ? selectedBackground : null,
-            boxShadow: isSelected
-                ? [
-                    BoxShadow(
-                      color: isPremium
-                          ? _gold.withAlpha(60)
-                          : Colors.white.withAlpha(45),
-                      blurRadius: 14,
-                      offset: const Offset(0, 4),
-                    ),
-                  ]
-                : null,
-          ),
-          alignment: Alignment.center,
-          child: Text(
-            text,
-            style: TextStyle(
-              color: isSelected ? Colors.black : Colors.white.withAlpha(130),
-              fontWeight: FontWeight.bold,
-              fontSize: 15,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _buildBenefitList() {
-    final benefits = _selectedTierIndex == 0
-        ? ["1080p Export", "Basic Filters", "Standard Support"]
-        : ["4K Export", "All AI Filters", "Priority Support", "No Watermark"];
+    final benefits = [
+      "1080p Export",
+      "Cloud 백업/이동",
+      "편집 기능",
+      "Standard Support",
+    ];
 
     return Column(
       children: benefits
@@ -559,7 +552,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
                 children: [
                   Icon(
                     Icons.check_circle,
-                    color: _selectedTierIndex == 1 ? _gold : Colors.white54,
+                    color: Colors.white54,
                     size: 20,
                   ),
                   const SizedBox(width: 8),
@@ -750,15 +743,11 @@ class _PaywallScreenState extends State<PaywallScreen> {
   }
 
   String get _currentMonthlyProductId {
-    return _selectedTierIndex == 1
-        ? IAPService.premiumMonthly
-        : IAPService.standardMonthly;
+    return IAPService.standardMonthly;
   }
 
   String get _currentAnnualProductId {
-    return _selectedTierIndex == 1
-        ? IAPService.premiumAnnual
-        : IAPService.standardAnnual;
+    return IAPService.standardAnnual;
   }
 
   String get _selectedProductId {
@@ -769,14 +758,14 @@ class _PaywallScreenState extends State<PaywallScreen> {
 
   bool get _isDowngradeSelection {
     final currentTier = UserStatusManager().currentTier;
-    return currentTier == UserTier.premium && _selectedTierIndex == 0;
+    return currentTier == UserTier.premium;
   }
 
   String get _ctaLabel {
     if (_isDowngradeSelection) {
       return '다음 갱신일부터 Standard로 변경';
     }
-    return _selectedTierIndex == 1 ? 'Premium으로 업그레이드' : 'Standard로 구독';
+    return 'Standard로 구독';
   }
 
   String get _planChangeHint {
@@ -784,6 +773,6 @@ class _PaywallScreenState extends State<PaywallScreen> {
       return '다운그레이드는 즉시 적용되지 않으며, 현재 결제 기간이 끝난 뒤 다음 갱신일부터 Standard로 전환됩니다.';
     }
 
-    return '업그레이드는 즉시 적용되며, 남은 기간 금액은 스토어 정책에 따라 비례 정산됩니다.';
+    return '구매 전 로그인한 계정에 Standard 구독 권한이 안전하게 연결됩니다.';
   }
 }

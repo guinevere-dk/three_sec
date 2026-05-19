@@ -20,6 +20,7 @@ set APP_LOG=logs\session_%TS%_appsignals.log
 set APP_FULL_LOG=logs\session_%TS%_appfull.log
 set DIAG_LOG=logs\session_%TS%_diagnostics.log
 set PKG_NAME=com.dk.three_sec
+set DEFAULT_SOCIAL_AUTH_EXCHANGE_URL=https://asia-northeast3-fir-3s-8edb9.cloudfunctions.net/social/exchange
 
 if /i "%~1"=="--auto-start" set AUTO_START_APP=1
 if /i "%~1"=="--no-auto-start" set AUTO_START_APP=0
@@ -37,9 +38,9 @@ if "%KAKAO_NATIVE_APP_KEY%"=="" (
 )
 
 if "%SOCIAL_AUTH_EXCHANGE_URL%"=="" (
-  echo [DIAG] 환경변수 SOCIAL_AUTH_EXCHANGE_URL가 비어 있습니다.
-  echo [DIAG] 기본 테스트 실행을 진행하려면 아래와 같이 실행하세요.
-  echo        set SOCIAL_AUTH_EXCHANGE_URL=https://your-domain.example.com/social/exchange
+  set SOCIAL_AUTH_EXCHANGE_URL=%DEFAULT_SOCIAL_AUTH_EXCHANGE_URL%
+  echo [DIAG] 환경변수 SOCIAL_AUTH_EXCHANGE_URL가 비어 있어 기본 Functions URL을 자동 주입합니다.
+  echo [DIAG] SOCIAL_AUTH_EXCHANGE_URL=%DEFAULT_SOCIAL_AUTH_EXCHANGE_URL%
 ) else (
   echo [DIAG] SOCIAL_AUTH_EXCHANGE_URL 확인됨
 )

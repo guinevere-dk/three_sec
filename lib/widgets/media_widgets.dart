@@ -449,6 +449,8 @@ class MediaWidgets {
         return const Color(0xCCD32F2F);
       case '동기화됨':
         return const Color(0xCC2E7D32);
+      case 'Cloud':
+        return const Color(0xCC1A73E8);
       case '기기':
       case '잠김':
         return const Color(0xCC37474F);
@@ -462,6 +464,8 @@ class MediaWidgets {
     switch (statusBadge) {
       case '동기화됨':
         return Icons.cloud_done_rounded;
+      case 'Cloud':
+        return Icons.cloud_download_rounded;
       case '기기':
       case '잠김':
         return Icons.smartphone_rounded;

@@ -1,0 +1,4 @@
+interface:
+  display_name: "MOA Repo Guardrails"
+  short_description: "MOA repository safety workflow"
+  default_prompt: "Use $moa-repo-guardrails before changing this MOA repository."

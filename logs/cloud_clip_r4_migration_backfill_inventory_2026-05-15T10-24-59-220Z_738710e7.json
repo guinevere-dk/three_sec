@@ -1,0 +1,790 @@
+{
+  "reportId": "cloud_clip_r4_migration_backfill_inventory_2026-05-15T10-24-59-220Z_738710e7",
+  "generatedAt": "2026-05-15T10:24:59.228Z",
+  "dryRun": true,
+  "queryVersion": "cloud_clip_r4_migration_backfill_inventory_v1",
+  "environment": {
+    "nodeVersion": "v22.18.0",
+    "platform": "win32",
+    "fixtureMode": true,
+    "includeFolders": true,
+    "limit": null
+  },
+  "policy": {
+    "mutationProhibited": true,
+    "firestoreWrites": 0,
+    "batchUpdates": 0,
+    "fallbackRemoval": 0,
+    "collectionRenames": 0,
+    "storagePathChanges": 0
+  },
+  "summary": {
+    "scannedCollections": {
+      "users": 2,
+      "videos": 5,
+      "vlog_projects": 2,
+      "vlog_folders": 1
+    },
+    "uniqueAnonymousUidHashCount": 2,
+    "uniqueStoragePathHashCount": 5,
+    "reasonSummary": {
+      "subscription_tier_missing": 1,
+      "storage_usage_invalid": 1,
+      "timestamp_invalid": 3,
+      "missing_storage_tier_with_storage_path": 2,
+      "missing_lifecycle_state": 1,
+      "missing_cloud_state": 1,
+      "storage_path_owner_mismatch": 1,
+      "trash_missing_original_storage_path": 1,
+      "trash_missing_original_storage_tier": 1,
+      "unknown_cloud_state": 1,
+      "file_size_invalid": 1,
+      "project_ref_missing": 1,
+      "folder_ref_missing": 1,
+      "clip_count_mismatch": 1
+    },
+    "backfillCandidateReasonCount": 7
+  },
+  "fieldDistribution": {
+    "users": {
+      "subscriptionTier": {
+        "present": 1,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "standard": 1
+        }
+      },
+      "storageUsage": {
+        "present": 2,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 2
+        },
+        "values": {
+          "4096": 1,
+          "-1": 1
+        }
+      },
+      "lastUpdated": {
+        "present": 2,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1,
+          "string": 1
+        },
+        "values": {
+          "2026-04-01t00:00:00.000z": 1,
+          "not-a-date": 1
+        }
+      },
+      "nextTierEffectiveAt": {
+        "present": 0,
+        "missing": 2,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "nextUserTier": {
+        "present": 0,
+        "missing": 2,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "productId": {
+        "present": 0,
+        "missing": 2,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "purchaseDate": {
+        "present": 0,
+        "missing": 2,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      }
+    },
+    "videos": {
+      "uid": {
+        "present": 5,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 5
+        },
+        "values": {
+          "user_fixture_alpha": 4,
+          "user_fixture_beta": 1
+        }
+      },
+      "videoId": {
+        "present": 5,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 5
+        },
+        "values": {
+          "video_complete_active": 1,
+          "video_missing_policy_fields": 1,
+          "video_owner_mismatch": 1,
+          "video_trash_missing_originals": 1,
+          "video_unknown_cloud_state": 1
+        }
+      },
+      "fileName": {
+        "present": 5,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 5
+        },
+        "values": {
+          "active.mp4": 1,
+          "missing.mp4": 1,
+          "mismatch.mp4": 1,
+          "trash.mp4": 1,
+          "unknown.mp4": 1
+        }
+      },
+      "storagePath": {
+        "present": 5,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 5
+        },
+        "values": {
+          "users/user_fixture_alpha/videos/video_complete_active/active.mp4": 1,
+          "users/user_fixture_alpha/videos/video_missing_policy_fields/missing.mp4": 1,
+          "users/user_fixture_alpha/videos/video_owner_mismatch/mismatch.mp4": 1,
+          "users/user_fixture_alpha/videos/video_trash_missing_originals/trash.mp4": 1,
+          "users/user_fixture_alpha/videos/video_unknown_cloud_state/unknown.mp4": 1
+        }
+      },
+      "storageTier": {
+        "present": 3,
+        "missing": 2,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 3
+        },
+        "values": {
+          "cloud": 3
+        }
+      },
+      "lifecycleState": {
+        "present": 4,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 4
+        },
+        "values": {
+          "active": 3,
+          "trash": 1
+        }
+      },
+      "cloudState": {
+        "present": 4,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 4
+        },
+        "values": {
+          "active": 2,
+          "trash": 1,
+          "mystery_state": 1
+        }
+      },
+      "originalStoragePath": {
+        "present": 0,
+        "missing": 5,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "originalStorageTier": {
+        "present": 0,
+        "missing": 5,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "localPath": {
+        "present": 0,
+        "missing": 5,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "albumName": {
+        "present": 2,
+        "missing": 3,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 2
+        },
+        "values": {
+          "일상": 2
+        }
+      },
+      "isFavorite": {
+        "present": 0,
+        "missing": 5,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "fileSize": {
+        "present": 5,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 4,
+          "string": 1
+        },
+        "values": {
+          "256": 1,
+          "512": 1,
+          "1024": 1,
+          "2048": 1,
+          "bad-size": 1
+        }
+      },
+      "uploadStatus": {
+        "present": 5,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 5
+        },
+        "values": {
+          "completed": 5
+        }
+      },
+      "uploadProgress": {
+        "present": 0,
+        "missing": 5,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "downloadUrl": {
+        "present": 0,
+        "missing": 5,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "createdAt": {
+        "present": 5,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 4,
+          "string": 1
+        },
+        "values": {
+          "2026-04-01t00:00:00.000z": 1,
+          "2026-04-02t00:00:00.000z": 1,
+          "2026-04-03t00:00:00.000z": 1,
+          "2026-04-04t00:00:00.000z": 1,
+          "invalid-date": 1
+        }
+      },
+      "updatedAt": {
+        "present": 5,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 5
+        },
+        "values": {
+          "2026-04-01t00:01:00.000z": 1,
+          "2026-04-02t00:01:00.000z": 1,
+          "2026-04-03t00:01:00.000z": 1,
+          "2026-04-04t00:01:00.000z": 1,
+          "2026-04-05t00:01:00.000z": 1
+        }
+      },
+      "completedAt": {
+        "present": 1,
+        "missing": 4,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1
+        },
+        "values": {
+          "2026-04-01t00:01:00.000z": 1
+        }
+      },
+      "trashed": {
+        "present": 1,
+        "missing": 4,
+        "nullOrEmpty": 0,
+        "types": {
+          "boolean": 1
+        },
+        "values": {
+          "true": 1
+        }
+      },
+      "trashedAt": {
+        "present": 0,
+        "missing": 5,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "trashedFromAlbumName": {
+        "present": 0,
+        "missing": 5,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "originalAlbumName": {
+        "present": 0,
+        "missing": 5,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "restoredAt": {
+        "present": 0,
+        "missing": 5,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "deleted": {
+        "present": 0,
+        "missing": 5,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "errorCode": {
+        "present": 0,
+        "missing": 5,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "errorCopy": {
+        "present": 0,
+        "missing": 5,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      }
+    },
+    "projects": {
+      "uid": {
+        "present": 2,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 2
+        },
+        "values": {
+          "user_fixture_alpha": 2
+        }
+      },
+      "localProjectId": {
+        "present": 1,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "local_project_1": 1
+        }
+      },
+      "title": {
+        "present": 2,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 2
+        },
+        "values": {
+          "fixture project": 1,
+          "missing refs": 1
+        }
+      },
+      "clipPaths": {
+        "present": 2,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "array": 2
+        },
+        "values": {}
+      },
+      "clipCount": {
+        "present": 2,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 2
+        },
+        "values": {
+          "2": 2
+        }
+      },
+      "folderName": {
+        "present": 1,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "기본": 1
+        }
+      },
+      "lockState": {
+        "present": 1,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "none": 1
+        }
+      },
+      "clientCreatedAt": {
+        "present": 2,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1,
+          "string": 1
+        },
+        "values": {
+          "2026-04-01t00:00:00.000z": 1,
+          "bad-date": 1
+        }
+      },
+      "clientUpdatedAt": {
+        "present": 2,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 2
+        },
+        "values": {
+          "2026-04-01t00:01:00.000z": 1,
+          "2026-04-02t00:00:00.000z": 1
+        }
+      },
+      "lastSyncedAt": {
+        "present": 1,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1
+        },
+        "values": {
+          "2026-04-01t00:02:00.000z": 1
+        }
+      },
+      "deleted": {
+        "present": 2,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "boolean": 2
+        },
+        "values": {
+          "false": 2
+        }
+      },
+      "cloudProjectId": {
+        "present": 0,
+        "missing": 2,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "ownerAccountId": {
+        "present": 0,
+        "missing": 2,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      }
+    },
+    "folders": {
+      "uid": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "user_fixture_alpha": 1
+        }
+      },
+      "folderName": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "기본": 1
+        }
+      },
+      "name": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "ownerAccountId": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "createdAt": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1
+        },
+        "values": {
+          "2026-04-01t00:00:00.000z": 1
+        }
+      },
+      "updatedAt": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1
+        },
+        "values": {
+          "2026-04-01t00:00:00.000z": 1
+        }
+      },
+      "deleted": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "boolean": 1
+        },
+        "values": {
+          "false": 1
+        }
+      }
+    }
+  },
+  "fieldCombinationSummary": {
+    "storagePath|tier|lifecycle:active|cloud:active|notTrashed": 2,
+    "storagePath|noTier|noLifecycle|noCloudState|notTrashed": 1,
+    "storagePath|noTier|lifecycle:trash|cloud:trash|trashed": 1,
+    "storagePath|tier|lifecycle:active|cloud:mystery_state|notTrashed": 1
+  },
+  "anomalies": [
+    {
+      "collection": "users",
+      "documentIdHash": "74078c6af949d934a166f3a2",
+      "uidHash": null,
+      "videoIdHash": null,
+      "localProjectIdHash": null,
+      "storagePathHash": null,
+      "reasonCodes": [
+        "subscription_tier_missing",
+        "storage_usage_invalid",
+        "timestamp_invalid"
+      ]
+    },
+    {
+      "collection": "videos",
+      "documentIdHash": "913d33f6b34703fac06d55b5",
+      "uidHash": "9fb61e451873e9b231087134",
+      "videoIdHash": "913d33f6b34703fac06d55b5",
+      "localProjectIdHash": null,
+      "storagePathHash": "8132743e7542b62b818db85b",
+      "reasonCodes": [
+        "missing_storage_tier_with_storage_path",
+        "missing_lifecycle_state",
+        "missing_cloud_state"
+      ]
+    },
+    {
+      "collection": "videos",
+      "documentIdHash": "4d27ad5fc7150079e102a0b3",
+      "uidHash": "74078c6af949d934a166f3a2",
+      "videoIdHash": "4d27ad5fc7150079e102a0b3",
+      "localProjectIdHash": null,
+      "storagePathHash": "0f8ab7fe5db840693ffba583",
+      "reasonCodes": [
+        "storage_path_owner_mismatch"
+      ]
+    },
+    {
+      "collection": "videos",
+      "documentIdHash": "59a26ed57b007776062afbde",
+      "uidHash": "9fb61e451873e9b231087134",
+      "videoIdHash": "59a26ed57b007776062afbde",
+      "localProjectIdHash": null,
+      "storagePathHash": "4a38d7dfa26334f0516ce2df",
+      "reasonCodes": [
+        "missing_storage_tier_with_storage_path",
+        "trash_missing_original_storage_path",
+        "trash_missing_original_storage_tier"
+      ]
+    },
+    {
+      "collection": "videos",
+      "documentIdHash": "b4240f83df9e15cff786b339",
+      "uidHash": "9fb61e451873e9b231087134",
+      "videoIdHash": "b4240f83df9e15cff786b339",
+      "localProjectIdHash": null,
+      "storagePathHash": "91d8111692227fa460eba880",
+      "reasonCodes": [
+        "unknown_cloud_state",
+        "timestamp_invalid",
+        "file_size_invalid"
+      ]
+    },
+    {
+      "collection": "vlog_projects",
+      "documentIdHash": "ec7cf7dcbf6fce98149b8b66",
+      "uidHash": "9fb61e451873e9b231087134",
+      "videoIdHash": null,
+      "localProjectIdHash": null,
+      "storagePathHash": null,
+      "reasonCodes": [
+        "project_ref_missing",
+        "folder_ref_missing",
+        "clip_count_mismatch",
+        "timestamp_invalid"
+      ]
+    }
+  ],
+  "backfillCandidateList": [
+    {
+      "reasonCode": "missing_storage_tier_with_storage_path",
+      "affectedAnonymousDocCount": 2,
+      "proposedMinimalFields": [
+        "storageTier"
+      ],
+      "rationale": "storagePath가 있는 cloud metadata에서 tier 판정 fallback을 명시화할 수 있는 최소 후보입니다.",
+      "risk": "medium",
+      "fallbackAvailable": true,
+      "stagedRolloutRequired": true,
+      "execution": "proposal_only_no_write_code"
+    },
+    {
+      "reasonCode": "missing_lifecycle_state",
+      "affectedAnonymousDocCount": 1,
+      "proposedMinimalFields": [
+        "lifecycleState"
+      ],
+      "rationale": "Trash/restore와 삭제 후보 판정에서 active/trash 구분의 기본값 후보입니다.",
+      "risk": "medium",
+      "fallbackAvailable": true,
+      "stagedRolloutRequired": true,
+      "execution": "proposal_only_no_write_code"
+    },
+    {
+      "reasonCode": "missing_cloud_state",
+      "affectedAnonymousDocCount": 1,
+      "proposedMinimalFields": [
+        "cloudState"
+      ],
+      "rationale": "Cloud placeholder와 upload 상태 표시를 보수적으로 안정화할 수 있는 최소 후보입니다.",
+      "risk": "medium",
+      "fallbackAvailable": true,
+      "stagedRolloutRequired": true,
+      "execution": "proposal_only_no_write_code"
+    },
+    {
+      "reasonCode": "trash_missing_original_storage_path",
+      "affectedAnonymousDocCount": 1,
+      "proposedMinimalFields": [
+        "originalStoragePath"
+      ],
+      "rationale": "Trash 복원 시 원본 Storage path 보존에 필요한 후보입니다. storagePath 근거가 명확한 문서만 허용해야 합니다.",
+      "risk": "high",
+      "fallbackAvailable": false,
+      "stagedRolloutRequired": true,
+      "execution": "proposal_only_no_write_code"
+    },
+    {
+      "reasonCode": "trash_missing_original_storage_tier",
+      "affectedAnonymousDocCount": 1,
+      "proposedMinimalFields": [
+        "originalStorageTier"
+      ],
+      "rationale": "Trash 복원 시 원래 cloud/local tier 판정에 필요한 후보입니다.",
+      "risk": "high",
+      "fallbackAvailable": false,
+      "stagedRolloutRequired": true,
+      "execution": "proposal_only_no_write_code"
+    },
+    {
+      "reasonCode": "project_ref_missing",
+      "affectedAnonymousDocCount": 1,
+      "proposedMinimalFields": [
+        "localProjectId"
+      ],
+      "rationale": "Project metadata 연결에 필요한 최소 후보이나, doc id와 client local id 관계가 확실한 경우에만 가능합니다.",
+      "risk": "high",
+      "fallbackAvailable": true,
+      "stagedRolloutRequired": true,
+      "execution": "proposal_only_no_write_code"
+    },
+    {
+      "reasonCode": "folder_ref_missing",
+      "affectedAnonymousDocCount": 1,
+      "proposedMinimalFields": [
+        "folderName"
+      ],
+      "rationale": "Project/folder 표시 fallback을 명시화할 후보이나 기본 폴더 추론이 불확실하면 backfill하지 않습니다.",
+      "risk": "medium",
+      "fallbackAvailable": true,
+      "stagedRolloutRequired": true,
+      "execution": "proposal_only_no_write_code"
+    }
+  ],
+  "stagedRolloutPlan": [
+    "no-op/dry-run report review only",
+    "fixture and emulator validation before any write preview",
+    "sample cohort selected by anonymous hash bucket after approval",
+    "write disabled by default and protected by explicit feature flag",
+    "export target docs before write preview",
+    "keep dual-read fallback until old/new client compatibility is verified"
+  ],
+  "rollbackPlan": [
+    "current dry-run stage is no-op and requires no data rollback",
+    "before future mutation, export existing values for every proposed field",
+    "never overwrite existing non-empty fields; only consider missing/null fields",
+    "disable feature flag and stop batches on anomaly increase",
+    "restore exported values or remove newly added optional fields if rollback is approved",
+    "keep fallback reads active during and after rollback"
+  ]
+}

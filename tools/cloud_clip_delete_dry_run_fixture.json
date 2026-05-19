@@ -1,0 +1,64 @@
+{
+  "objects": [
+    {
+      "name": "users/test_uid_a/videos/video_a/clip_a.mp4",
+      "size": 2048,
+      "contentType": "video/mp4",
+      "updated": "2026-01-01T00:00:00.000Z",
+      "generation": "1001"
+    },
+    {
+      "name": "users/test_uid_a/videos/video_active/clip_active.mp4",
+      "size": 4096,
+      "contentType": "video/mp4",
+      "updated": "2026-01-02T00:00:00.000Z",
+      "generation": "1002"
+    },
+    {
+      "name": "users/test_uid_b/videos/video_orphan/clip_orphan.mp4",
+      "size": 1024,
+      "contentType": "video/mp4",
+      "updated": "2026-01-03T00:00:00.000Z",
+      "generation": "1003"
+    },
+    {
+      "name": "tmp/unowned.mp4",
+      "size": 512,
+      "contentType": "video/mp4",
+      "updated": "2026-01-04T00:00:00.000Z",
+      "generation": "1004"
+    }
+  ],
+  "videos": [
+    {
+      "id": "video_a",
+      "data": {
+        "uid": "test_uid_a",
+        "videoId": "video_a",
+        "fileName": "clip_a.mp4",
+        "storagePath": "users/test_uid_a/videos/video_a/clip_a.mp4",
+        "fileSize": 2048,
+        "uploadStatus": "completed",
+        "lifecycleState": "trash",
+        "cloudState": "trash",
+        "trashed": true,
+        "trashedAt": "2025-12-01T00:00:00.000Z"
+      }
+    },
+    {
+      "id": "video_active",
+      "data": {
+        "uid": "test_uid_a",
+        "videoId": "video_active",
+        "fileName": "clip_active.mp4",
+        "storagePath": "users/test_uid_a/videos/video_active/clip_active.mp4",
+        "fileSize": 4096,
+        "uploadStatus": "completed",
+        "lifecycleState": "active",
+        "cloudState": "active",
+        "trashed": false,
+        "updatedAt": "2026-01-02T00:00:00.000Z"
+      }
+    }
+  ]
+}

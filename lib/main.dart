@@ -116,7 +116,9 @@ Future<void> _warmUpStartupServices() async {
   }
 
   try {
-    await IAPService().initialize();
+    final iapService = IAPService();
+    await iapService.initialize();
+    await iapService.refreshEntitlementsFromStore(reason: 'startup_warmup');
   } catch (e) {
     debugPrint('[Startup] IAPService initialize failed: $e');
   }
@@ -407,8 +409,17 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
     if (state == AppLifecycleState.resumed) {
       unawaited(_restoreCloudUploadQueueOnResume());
+      unawaited(_refreshIapEntitlementsOnResume());
       unawaited(_flushQueuedNotificationRoutes(reason: 'app_resumed'));
       unawaited(AppUpdateService.instance.checkAndPromptOnEntry(context));
+    }
+  }
+
+  Future<void> _refreshIapEntitlementsOnResume() async {
+    try {
+      await IAPService().refreshEntitlementsFromStore(reason: 'app_resumed');
+    } catch (e) {
+      debugPrint('[Main][Lifecycle] IAP entitlement refresh failed: $e');
     }
   }
 
@@ -686,7 +697,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       return;
     }
 
-    if (!completedPerUser && mounted) {
+    final canInjectSamples = await videoManager
+        .shouldAutoInjectTutorialSamples();
+    if (!completedPerUser && canInjectSamples && mounted) {
       final ensured = await videoManager.ensureTutorialSampleClips(
         targetAlbum: '일상',
       );

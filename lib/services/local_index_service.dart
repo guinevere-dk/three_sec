@@ -9,6 +9,13 @@ class LocalIndexEntry {
   final String? ownerAccountId;
   final String lockState;
   final DateTime updatedAt;
+  final String? cloudVideoId;
+  final String? cloudStoragePath;
+  final String? cloudStorageTier;
+  final String? cloudState;
+  final String? cloudFileName;
+  final int? cloudFileSize;
+  final String? albumName;
 
   const LocalIndexEntry({
     required this.id,
@@ -17,16 +24,30 @@ class LocalIndexEntry {
     required this.ownerAccountId,
     required this.lockState,
     required this.updatedAt,
+    this.cloudVideoId,
+    this.cloudStoragePath,
+    this.cloudStorageTier,
+    this.cloudState,
+    this.cloudFileName,
+    this.cloudFileSize,
+    this.albumName,
   });
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'type': type,
-        'pathOrKey': pathOrKey,
-        'ownerAccountId': ownerAccountId,
-        'lockState': lockState,
-        'updatedAt': updatedAt.toIso8601String(),
-      };
+    'id': id,
+    'type': type,
+    'pathOrKey': pathOrKey,
+    'ownerAccountId': ownerAccountId,
+    'lockState': lockState,
+    'updatedAt': updatedAt.toIso8601String(),
+    if (cloudVideoId != null) 'cloudVideoId': cloudVideoId,
+    if (cloudStoragePath != null) 'cloudStoragePath': cloudStoragePath,
+    if (cloudStorageTier != null) 'cloudStorageTier': cloudStorageTier,
+    if (cloudState != null) 'cloudState': cloudState,
+    if (cloudFileName != null) 'cloudFileName': cloudFileName,
+    if (cloudFileSize != null) 'cloudFileSize': cloudFileSize,
+    if (albumName != null) 'albumName': albumName,
+  };
 
   factory LocalIndexEntry.fromJson(Map<String, dynamic> json) {
     return LocalIndexEntry(
@@ -36,7 +57,17 @@ class LocalIndexEntry {
       ownerAccountId: json['ownerAccountId'] as String?,
       lockState: json['lockState'] as String? ?? 'unlocked',
       updatedAt:
-          DateTime.tryParse(json['updatedAt'] as String? ?? '') ?? DateTime.now(),
+          DateTime.tryParse(json['updatedAt'] as String? ?? '') ??
+          DateTime.now(),
+      cloudVideoId: json['cloudVideoId'] as String?,
+      cloudStoragePath: json['cloudStoragePath'] as String?,
+      cloudStorageTier: json['cloudStorageTier'] as String?,
+      cloudState: json['cloudState'] as String?,
+      cloudFileName: json['cloudFileName'] as String?,
+      cloudFileSize: json['cloudFileSize'] is num
+          ? (json['cloudFileSize'] as num).toInt()
+          : int.tryParse('${json['cloudFileSize'] ?? ''}'),
+      albumName: json['albumName'] as String?,
     );
   }
 }
@@ -68,4 +99,3 @@ class LocalIndexService {
     );
   }
 }
-

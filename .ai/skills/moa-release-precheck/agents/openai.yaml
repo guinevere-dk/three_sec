@@ -1,0 +1,4 @@
+interface:
+  display_name: "MOA Release Precheck"
+  short_description: "Check MOA release readiness"
+  default_prompt: "Use $moa-release-precheck before MOA QA, build, deployment, or store release work."

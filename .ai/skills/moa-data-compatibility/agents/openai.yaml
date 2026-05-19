@@ -1,0 +1,4 @@
+interface:
+  display_name: "MOA Data Compatibility"
+  short_description: "Protect MOA data contracts"
+  default_prompt: "Use $moa-data-compatibility before changing MOA data, storage, Firebase, or local persistence contracts."

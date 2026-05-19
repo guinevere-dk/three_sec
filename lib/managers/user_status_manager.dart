@@ -60,29 +60,93 @@ class UserStatusManager {
       return null;
     }
 
-    final cycle = _inferCycle(_productId);
+    return _inferExpiryAt(_purchaseDate!, _productId);
+  }
+
+  /// 마지막으로 확인된 유료 구독의 추정 만료 시각
+  ///
+  /// 자동 만료 강등 후에도 Cloud read grace 판단을 위해 기존 구매일/productId를
+  /// 보수적으로 재사용한다. productId가 없으면 만료 기준이 불확실하므로 null이다.
+  DateTime? get lastKnownPaidExpiryAt {
+    if (_purchaseDate == null || (_productId ?? '').trim().isEmpty) {
+      return null;
+    }
+
+    return _inferExpiryAt(_purchaseDate!, _productId);
+  }
+
+  /// R3 정책: 기존 Cloud clip read/download grace 종료 시각(만료 후 30일).
+  DateTime? get cloudReadGraceEndsAt {
+    final expiryAt = lastKnownPaidExpiryAt;
+    if (expiryAt == null) return null;
+    return expiryAt.add(const Duration(days: 30));
+  }
+
+  /// R3 정책: 신규 Cloud upload/copy 가능 여부.
+  ///
+  /// Standard/Premium이어도 추정 만료 시각이 지났으면 즉시 신규 Cloud write를 차단한다.
+  bool canStartNewCloudWrite({DateTime? now}) {
+    if (!isStandardOrAbove()) return false;
+
+    final expiryAt = estimatedExpiryAt;
+    if (expiryAt == null) return true;
+
+    final current = now ?? DateTime.now();
+    return current.isBefore(expiryAt);
+  }
+
+  /// R3 정책: 기존 Cloud clip 목록/read/download 가능 여부.
+  ///
+  /// 활성 Standard/Premium은 허용한다. Free로 강등된 경우에도 구매 이력에서 추정한
+  /// 만료 후 30일 grace 안이면 기존 Cloud clip read/download만 허용한다.
+  bool canReadExistingCloudClips({DateTime? now}) {
+    if (isStandardOrAbove()) {
+      final expiryAt = estimatedExpiryAt;
+      if (expiryAt == null) return true;
+
+      final current = now ?? DateTime.now();
+      if (current.isBefore(expiryAt)) return true;
+      final graceEndsAt = expiryAt.add(const Duration(days: 30));
+      return current.isBefore(graceEndsAt);
+    }
+
+    final expiryAt = lastKnownPaidExpiryAt;
+    final graceEndsAt = cloudReadGraceEndsAt;
+    if (expiryAt == null || graceEndsAt == null) return false;
+
+    final current = now ?? DateTime.now();
+    return (current.isAfter(expiryAt) || current.isAtSameMomentAs(expiryAt)) &&
+        current.isBefore(graceEndsAt);
+  }
+
+  bool isInCloudReadGrace({DateTime? now}) {
+    return _currentTier == UserTier.free && canReadExistingCloudClips(now: now);
+  }
+
+  DateTime _inferExpiryAt(DateTime purchaseDate, String? productId) {
+    final cycle = _inferCycle(productId);
     if (cycle == _SubscriptionCycle.annual) {
       return DateTime(
-        _purchaseDate!.year + 1,
-        _purchaseDate!.month,
-        _purchaseDate!.day,
-        _purchaseDate!.hour,
-        _purchaseDate!.minute,
-        _purchaseDate!.second,
-        _purchaseDate!.millisecond,
-        _purchaseDate!.microsecond,
+        purchaseDate.year + 1,
+        purchaseDate.month,
+        purchaseDate.day,
+        purchaseDate.hour,
+        purchaseDate.minute,
+        purchaseDate.second,
+        purchaseDate.millisecond,
+        purchaseDate.microsecond,
       );
     }
 
     return DateTime(
-      _purchaseDate!.year,
-      _purchaseDate!.month + 1,
-      _purchaseDate!.day,
-      _purchaseDate!.hour,
-      _purchaseDate!.minute,
-      _purchaseDate!.second,
-      _purchaseDate!.millisecond,
-      _purchaseDate!.microsecond,
+      purchaseDate.year,
+      purchaseDate.month + 1,
+      purchaseDate.day,
+      purchaseDate.hour,
+      purchaseDate.minute,
+      purchaseDate.second,
+      purchaseDate.millisecond,
+      purchaseDate.microsecond,
     );
   }
 
@@ -279,7 +343,7 @@ class UserStatusManager {
         return false;
       }
 
-      final downgraded = await resetToFree();
+      final downgraded = await _downgradeExpiredSubscriptionToFree();
       if (downgraded) {
         print('[UserStatusManager][Expiry] auto downgrade applied -> free');
       }
@@ -289,6 +353,28 @@ class UserStatusManager {
       return false;
     } finally {
       _isEvaluatingExpiry = false;
+    }
+  }
+
+  Future<bool> _downgradeExpiredSubscriptionToFree() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      // tier와 예약 변경만 정리하고, 기존 purchaseDate/productId는 R3 grace 판단을
+      // 위해 보존한다. 신규 구매/restore 시 setTier()가 최신 값으로 덮어쓴다.
+      await prefs.remove(_tierKey);
+      await prefs.remove(_nextTierKey);
+      await prefs.remove(_nextTierEffectiveAtKey);
+
+      _currentTier = UserTier.free;
+      _nextTier = null;
+      _nextTierEffectiveAt = null;
+
+      print('[UserStatusManager][Expiry] expired paid tier downgraded with purchase history preserved');
+      return true;
+    } catch (e) {
+      print('[UserStatusManager][Expiry] expired downgrade failed: $e');
+      return false;
     }
   }
 

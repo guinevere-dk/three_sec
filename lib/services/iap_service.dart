@@ -137,6 +137,7 @@ class IAPService {
   bool _isPurchasing = false;
 
   DateTime? _lastProductQueryAt;
+  DateTime? _lastStoreEntitlementRefreshAt;
 
   /// 초기화 여부
   bool get isInitialized => _isInitialized;
@@ -407,7 +408,15 @@ class IAPService {
 
             // 구매 처리 완료 표시 (중요!)
             if (purchase.pendingCompletePurchase) {
-              await _iap.completePurchase(purchase);
+              if (verificationResult.valid || !verificationResult.recoverable) {
+                await _iap.completePurchase(purchase);
+              } else {
+                print(
+                  '[IAPService][IAPVerify] recoverable verification failure -> '
+                  'completePurchase deferred: productId=${purchase.productID} '
+                  'orderId=$orderId errorCode=${verificationResult.errorCode}',
+                );
+              }
             }
             break;
 
@@ -939,7 +948,7 @@ class IAPService {
       throw const IapVerificationException(
         code: 'MISSING_IAP_VERIFY_URL',
         message: 'SOCIAL_AUTH_EXCHANGE_URL 환경변수가 비어 있습니다.',
-        recoverable: false,
+        recoverable: true,
       );
     }
 
@@ -987,6 +996,16 @@ class IAPService {
     final orderId = payload['orderId'] ?? payload['purchaseId'];
     try {
       return await _verifyWithServer(payload);
+    } on IapVerificationException catch (error, stackTrace) {
+      print(
+        '[IAPService][IAPVerify] 설정/검증 예외: '
+        'key=${_buildPurchaseVerificationKey(payload)} '
+        'productId=$productId orderId=$orderId '
+        'code=${error.code} recoverable=${error.recoverable} '
+        'message=${error.message}',
+      );
+      print(stackTrace);
+      rethrow;
     } on SocketException catch (error, stackTrace) {
       print(
         '[IAPService][IAPVerify] 소켓 오류: '
@@ -1234,10 +1253,16 @@ class IAPService {
       await userManager.clearPendingTierChange();
 
       final authService = AuthService();
-      await authService.syncSubscriptionToFirestore(
+      final firestoreSynced = await authService.syncSubscriptionToFirestore(
         tier: tier,
         productId: productId,
         purchaseDate: purchaseDateTime,
+      );
+      await userManager.initialize();
+      print(
+        '[IAPService][Deliver] entitlement persisted: '
+        'localTier=${userManager.currentTier} productId=${userManager.productId} '
+        'firestoreSynced=$firestoreSynced status=$status',
       );
     } else {
       print('[IAPService] ✗ 사용자 등급 업데이트 실패');
@@ -1378,6 +1403,51 @@ class IAPService {
       print('[IAPService] 구매 복원 실패: $e');
       print(stackTrace);
       return false;
+    }
+  }
+
+  /// 앱 시작/복귀 시 스토어에 남아 있는 구독 권한을 재조회한다.
+  ///
+  /// 결제 UI가 닫힌 뒤 `purchaseStream` 이벤트가 유실되거나 앱이 백그라운드에서
+  /// 복귀한 경우에도 Android `queryPastPurchases()` 결과를 다시 검증해 로컬/Firestore
+  /// 구독 상태를 보정한다.
+  Future<void> refreshEntitlementsFromStore({
+    String reason = 'manual',
+  }) async {
+    final now = DateTime.now();
+    print(
+      '[IAPService][EntitlementRefresh] requested '
+      'reason=$reason initialized=$_isInitialized available=$_isAvailable '
+      'lastAt=${_lastStoreEntitlementRefreshAt?.toIso8601String()} '
+      'platform=${Platform.operatingSystem}',
+    );
+
+    try {
+      if (!_isInitialized || !_isAvailable) {
+        final initialized = await initialize();
+        print(
+          '[IAPService][EntitlementRefresh] initialize result '
+          'reason=$reason initialized=$initialized available=$_isAvailable',
+        );
+        if (!initialized || !_isAvailable) {
+          return;
+        }
+      }
+
+      _lastStoreEntitlementRefreshAt = now;
+      await _retryRestoreVerificationFromStore(source: 'entitlement_refresh_$reason');
+      await _retryPendingVerification(source: 'entitlement_refresh_$reason');
+
+      final userManager = UserStatusManager();
+      await userManager.initialize();
+      print(
+        '[IAPService][EntitlementRefresh] done '
+        'reason=$reason localTier=${userManager.currentTier} '
+        'productId=${userManager.productId} nextTier=${userManager.nextTier}',
+      );
+    } catch (e, stackTrace) {
+      print('[IAPService][EntitlementRefresh] failed reason=$reason error=$e');
+      print(stackTrace);
     }
   }
 

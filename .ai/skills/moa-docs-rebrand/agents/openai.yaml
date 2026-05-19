@@ -1,0 +1,4 @@
+interface:
+  display_name: "MOA Docs Rebrand"
+  short_description: "Align MOA docs and public copy"
+  default_prompt: "Use $moa-docs-rebrand to update MOA documentation, branding, and user-facing copy safely."

@@ -1,0 +1,110 @@
+{
+  "manifestId": "cloud_clip_delete_dry_run_2026-05-14T13-40-34-692Z_93329913",
+  "generatedAt": "2026-05-14T13:40:34.694Z",
+  "dryRun": true,
+  "queryVersion": "cloud_clip_delete_dry_run_inventory_v1",
+  "environment": {
+    "nodeVersion": "v22.18.0",
+    "platform": "win32",
+    "fixtureMode": true,
+    "storageBucket": null,
+    "storagePrefix": "users/"
+  },
+  "policy": {
+    "retentionDays": 90,
+    "retentionCutoff": "2026-03-01T00:00:00.000Z",
+    "mutationProhibited": true,
+    "deleteObjectCalls": 0,
+    "firestoreWrites": 0,
+    "usageAccountingWrites": 0
+  },
+  "approval": {
+    "requiredBeforeExecute": true,
+    "approvedBy": null,
+    "approvedAt": null,
+    "approvedScope": null
+  },
+  "summary": {
+    "scannedObjectCount": 4,
+    "scannedVideoMetadataCount": 2,
+    "candidateCount": 1,
+    "candidateObjectSizeBytes": 2048,
+    "expectedUsageDecrementBytes": 2048,
+    "needsReviewCount": 0,
+    "excludedCount": 3,
+    "uniqueCandidateUidHashCount": 1,
+    "candidatesByReasonCode": {
+      "trash_retention_elapsed_with_metadata": 1
+    },
+    "needsReviewByReasonCode": {},
+    "excludedByReasonCode": {
+      "active_metadata_excluded": 1,
+      "orphan_storage_object_metadata_missing": 1,
+      "invalid_prefix_excluded": 1
+    }
+  },
+  "candidates": [
+    {
+      "reasonCode": "trash_retention_elapsed_with_metadata",
+      "uidHash": "e2a72071a39f594c8aace020",
+      "videoIdHash": "41bfbe95e0741ca45aa472dc",
+      "storagePathHash": "c5e31398d1ac701fe3690286",
+      "fileNameHash": "89fe4df62d845231c2c57c85",
+      "storagePathShape": "users/{uid}/videos/{videoId}/{fileName}",
+      "firestoreDocumentIdHash": "41bfbe95e0741ca45aa472dc",
+      "objectSizeBytes": 2048,
+      "metadataFileSizeBytes": 2048,
+      "expectedUsageDeltaBytes": -2048,
+      "uploadStatus": "completed",
+      "lifecycleState": "trash",
+      "cloudState": "trash",
+      "trashed": true,
+      "lifecycleMarkedAt": "2025-12-01T00:00:00.000Z",
+      "objectUpdatedAt": "2026-01-01T00:00:00.000Z",
+      "generationHash": "fe675fe7aaee830b6fed09b6"
+    }
+  ],
+  "needsReview": [],
+  "excluded": [
+    {
+      "reasonCode": "active_metadata_excluded",
+      "uidHash": "e2a72071a39f594c8aace020",
+      "videoIdHash": "68e78fade4847016b7898076",
+      "storagePathHash": "687b5b6ddd54164d441fcafe",
+      "fileNameHash": "c5c1b984b8fbd72edbf22e7f",
+      "storagePathShape": "users/{uid}/videos/{videoId}/{fileName}",
+      "objectSizeBytes": 4096,
+      "objectUpdatedAt": "2026-01-02T00:00:00.000Z",
+      "generationHash": "b281bc2c616cb3c3a097215f",
+      "firestoreDocumentIdHash": "68e78fade4847016b7898076",
+      "uploadStatus": "completed",
+      "lifecycleState": "active",
+      "cloudState": "active",
+      "expectedUsageDeltaBytes": 0
+    },
+    {
+      "reasonCode": "orphan_storage_object_metadata_missing",
+      "uidHash": "41672322d1794424c9dc7c1e",
+      "videoIdHash": "bb1dd5e3fff5b0f4c6f25b7b",
+      "storagePathHash": "3caf67c59553314954648f92",
+      "fileNameHash": "47dc5c6954e639c89f6cd60d",
+      "storagePathShape": "users/{uid}/videos/{videoId}/{fileName}",
+      "objectSizeBytes": 1024,
+      "objectUpdatedAt": "2026-01-03T00:00:00.000Z",
+      "generationHash": "8c9a013ab70c0434313e3e88",
+      "reviewRequired": true,
+      "expectedUsageDeltaBytes": 0
+    },
+    {
+      "reasonCode": "invalid_prefix_excluded",
+      "uidHash": null,
+      "videoIdHash": null,
+      "storagePathHash": "47134e267e613a0335580f7c",
+      "fileNameHash": null,
+      "storagePathShape": "invalid_or_unsupported",
+      "objectSizeBytes": 512,
+      "objectUpdatedAt": "2026-01-04T00:00:00.000Z",
+      "generationHash": "75992a5ac67ff644d3063976"
+    }
+  ]
+}

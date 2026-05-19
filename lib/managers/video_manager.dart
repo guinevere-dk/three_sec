@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -95,6 +94,7 @@ class VideoManager extends ChangeNotifier {
   final Map<String, Duration> _durationCache = {}; // Cache for video durations
   final Map<String, int> _persistedDurationMs = {};
   final Set<String> _cloudSyncedPaths = {};
+  final Map<String, VideoMetadata> _cloudMetadataByPath = {};
   final Map<String, ClipTransferUiState> _clipTransferUiStateByPath = {};
   final Map<String, String?> _clipOwnerAccountByPath = {};
   final LocalIndexService _localIndexService = LocalIndexService();
@@ -1409,9 +1409,38 @@ class VideoManager extends ChangeNotifier {
 
   Future<Directory> _rawAlbumDir(String album) async {
     final base = await _rawBaseDir();
-    final dir = Directory(p.join(base.path, album));
+    final safeAlbum = _sanitizeRawClipAlbumName(album);
+    final dir = Directory(p.join(base.path, safeAlbum));
+    if (!_isPathInsideDirectory(base.path, dir.path)) {
+      throw FileSystemException('Invalid raw clip album path');
+    }
     if (!await dir.exists()) await dir.create(recursive: true);
     return dir;
+  }
+
+  String _sanitizeRawClipAlbumName(String albumName) {
+    final trimmed = albumName.trim();
+    if (trimmed.isEmpty ||
+        trimmed == '.' ||
+        trimmed == '..' ||
+        p.isAbsolute(trimmed) ||
+        trimmed.contains('/') ||
+        trimmed.contains('\\')) {
+      return '일상';
+    }
+
+    final safeName = trimmed.replaceAll(RegExp(r'[\/:*?"<>|]'), '_').trim();
+    if (safeName.isEmpty || safeName == '.' || safeName == '..') {
+      return '일상';
+    }
+    return safeName;
+  }
+
+  bool _isPathInsideDirectory(String basePath, String targetPath) {
+    final normalizedBase = p.normalize(p.absolute(basePath));
+    final normalizedTarget = p.normalize(p.absolute(targetPath));
+    return p.isWithin(normalizedBase, normalizedTarget) ||
+        normalizedBase == normalizedTarget;
   }
 
   Future<Directory> _vlogFolderDir(String folderName) async {
@@ -1463,6 +1492,8 @@ class VideoManager extends ChangeNotifier {
   }
 
   Future<Uint8List?> getThumbnail(String videoPath) async {
+    if (_isCloudOnlyPlaceholderPath(videoPath)) return null;
+
     _logThumbnailEvent(
       event: 'request',
       operation: 'getThumbnail',
@@ -1653,6 +1684,8 @@ class VideoManager extends ChangeNotifier {
   // Get multiple thumbnails distributed evenly across duration
   /// Get cached video duration. Creates a temporary controller only on first call.
   Future<Duration> getVideoDuration(String videoPath) async {
+    if (_isCloudOnlyPlaceholderPath(videoPath)) return Duration.zero;
+
     if (_durationCache.containsKey(videoPath)) {
       return _durationCache[videoPath]!;
     }
@@ -3083,11 +3116,102 @@ class VideoManager extends ChangeNotifier {
           File(b).lastModifiedSync().compareTo(File(a).lastModifiedSync()),
     );
     recordedVideoPaths = files;
+    await _mergeCloudOnlyPlaceholdersForCurrentAlbum();
     unawaited(_preloadClipDurationsForPaths(recordedVideoPaths));
     await _cleanupCloudSyncedPaths();
     await _cleanupClipOwnershipMetadata();
     notifyListeners();
   }
+
+  Future<void> syncCloudMetadataToLibrary({String trigger = 'manual'}) async {
+    if (AuthService().isGuest ||
+        !UserStatusManager().canReadExistingCloudClips()) {
+      return;
+    }
+
+    try {
+      final videos = await CloudService().getCompletedUserVideos();
+      _cloudMetadataByPath.clear();
+      for (final video in videos) {
+        final albumName = video.albumName.trim().isEmpty
+            ? '일상'
+            : video.albumName.trim();
+        final placeholder = _cloudPlaceholderPath(albumName, video);
+        _cloudMetadataByPath[placeholder] = video;
+        _cloudSyncedPaths.add(placeholder);
+        await _upsertLocalIndexCloudClip(
+          placeholderPath: placeholder,
+          video: video,
+          albumName: albumName,
+        );
+      }
+      await _persistCloudSyncedPaths();
+      await _mergeCloudOnlyPlaceholdersForCurrentAlbum();
+      debugPrint(
+        '[VideoManager][CloudSync] metadata_pull trigger=$trigger count=${videos.length}',
+      );
+      notifyListeners();
+    } catch (e) {
+      debugPrint(
+        '[VideoManager][CloudSync] metadata_pull_failed trigger=$trigger error=$e',
+      );
+    }
+  }
+
+  Future<void> _mergeCloudOnlyPlaceholdersForCurrentAlbum() async {
+    if (_cloudMetadataByPath.isEmpty &&
+        !AuthService().isGuest &&
+        UserStatusManager().canReadExistingCloudClips()) {
+      final videos = await CloudService().getCompletedUserVideos();
+      for (final video in videos) {
+        final albumName = video.albumName.trim().isEmpty
+            ? '일상'
+            : video.albumName.trim();
+        _cloudMetadataByPath[_cloudPlaceholderPath(albumName, video)] = video;
+      }
+    }
+
+    final placeholders = _cloudMetadataByPath.entries
+        .where((entry) => _cloudPlaceholderAlbum(entry.key) == currentAlbum)
+        .where((entry) => !recordedVideoPaths.contains(entry.key))
+        .where((entry) => !_hasLocalClipMatchingCloudVideo(entry.value))
+        .map((entry) => entry.key)
+        .toList(growable: false);
+    if (placeholders.isEmpty) return;
+    recordedVideoPaths.addAll(placeholders);
+  }
+
+  bool _hasLocalClipMatchingCloudVideo(VideoMetadata video) {
+    return recordedVideoPaths.any((path) {
+      if (_isCloudOnlyPlaceholderPath(path)) return false;
+      if (p.basename(path) != video.fileName) return false;
+      final file = File(path);
+      return file.existsSync() && file.lengthSync() == video.fileSize;
+    });
+  }
+
+  String _cloudPlaceholderPath(String albumName, VideoMetadata video) {
+    final safeAlbum = albumName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    final safeName = video.fileName.isEmpty
+        ? '${video.videoId}.mp4'
+        : video.fileName;
+    return 'cloud_only://$safeAlbum/${video.videoId}/$safeName';
+  }
+
+  bool _isCloudOnlyPlaceholderPath(String path) =>
+      path.startsWith('cloud_only://');
+
+  String _cloudPlaceholderAlbum(String path) {
+    if (!_isCloudOnlyPlaceholderPath(path)) return '';
+    final withoutScheme = path.substring('cloud_only://'.length);
+    final slash = withoutScheme.indexOf('/');
+    return slash == -1 ? withoutScheme : withoutScheme.substring(0, slash);
+  }
+
+  VideoMetadata? getCloudMetadataForPath(String path) =>
+      _cloudMetadataByPath[path];
+
+  bool isCloudOnlyPlaceholder(String path) => _isCloudOnlyPlaceholderPath(path);
 
   Future<List<String>> ensureTutorialSampleClips({
     String targetAlbum = '일상',
@@ -3129,6 +3253,35 @@ class VideoManager extends ChangeNotifier {
       await loadClipsFromCurrentAlbum();
     }
     return ensuredPaths;
+  }
+
+  Future<bool> shouldAutoInjectTutorialSamples() async {
+    final prefs = await SharedPreferences.getInstance();
+    final uid = AuthService().uid ?? 'anonymous';
+    final perUserKey = 'tutorial_completed_user_$uid';
+    final completedPerUser = prefs.getBool(perUserKey) ?? false;
+    final legacyCompleted = (prefs.getBool('isFirstRun') ?? true) == false;
+    if (completedPerUser || legacyCompleted) return false;
+    if (AuthService().isSignedIn && uid != 'anonymous') {
+      final entries = await _localIndexService.loadEntries();
+      final hasOwnedContent = entries.any(
+        (entry) => entry.ownerAccountId == uid && entry.type == 'clip',
+      );
+      if (hasOwnedContent) {
+        await prefs.setBool(perUserKey, true);
+        await prefs.setBool('isFirstRun', false);
+        return false;
+      }
+      if (!AuthService().isGuest) {
+        final cloudVideos = await CloudService().getCompletedUserVideos();
+        if (cloudVideos.isNotEmpty) {
+          await prefs.setBool(perUserKey, true);
+          await prefs.setBool('isFirstRun', false);
+          return false;
+        }
+      }
+    }
+    return true;
   }
 
   Future<void> _preloadClipDurationsForPaths(List<String> paths) async {
@@ -3237,6 +3390,26 @@ class VideoManager extends ChangeNotifier {
   Future<void> moveClipsBatch(List<String> paths, String targetAlbum) async {
     final targetDir = await _rawAlbumDir(targetAlbum);
     for (var oldPath in paths) {
+      if (_isCloudOnlyPlaceholderPath(oldPath)) {
+        final meta = _cloudMetadataByPath.remove(oldPath);
+        if (meta == null) continue;
+        final nextPath = _cloudPlaceholderPath(targetAlbum, meta);
+        _cloudMetadataByPath[nextPath] = meta;
+        _cloudSyncedPaths
+          ..remove(oldPath)
+          ..add(nextPath);
+        await CloudService().markVideoMovedToAlbum(
+          videoId: meta.videoId,
+          albumName: targetAlbum,
+        );
+        await _removeLocalIndexByKey(oldPath);
+        await _upsertLocalIndexCloudClip(
+          placeholderPath: nextPath,
+          video: meta,
+          albumName: targetAlbum,
+        );
+        continue;
+      }
       final dest = await _buildUniqueFilePath(
         targetDir.path,
         p.basename(oldPath),
@@ -3245,13 +3418,16 @@ class VideoManager extends ChangeNotifier {
         await File(oldPath).rename(dest);
         await _moveClipOwnershipPath(oldPath, dest);
         await _moveDurationCachePath(oldPath, dest);
+        await _moveCloudSyncedPath(oldPath, dest, targetAlbum: targetAlbum);
       } catch (_) {
         await File(oldPath).copy(dest);
         await File(oldPath).delete();
         await _moveClipOwnershipPath(oldPath, dest);
         await _moveDurationCachePath(oldPath, dest);
+        await _moveCloudSyncedPath(oldPath, dest, targetAlbum: targetAlbum);
       }
     }
+    await _persistCloudSyncedPaths();
     notifyListeners();
     await _updateAlbumClipCounts();
   }
@@ -3259,10 +3435,20 @@ class VideoManager extends ChangeNotifier {
   Future<void> deleteClipsBatch(List<String> paths) async {
     // ✅ 영구 삭제 (휴지통 전용)
     for (var path in paths) {
-      await File(path).delete();
+      final meta = _cloudMetadataByPath.remove(path);
+      if (meta != null) {
+        await CloudService().deleteVideo(meta.videoId);
+      }
+      final file = File(path);
+      if (await file.exists()) {
+        await file.delete();
+      }
       await _removeClipOwnershipForPath(path);
       await _removeDurationCacheForPath(path);
+      await _removeLocalIndexByKey(path);
+      _cloudSyncedPaths.remove(path);
     }
+    await _persistCloudSyncedPaths();
     notifyListeners();
     await _updateAlbumClipCounts();
   }
@@ -3811,6 +3997,7 @@ class VideoManager extends ChangeNotifier {
         milliseconds: postVerifyDurationMs ?? _targetRecordingDurationMs,
       ),
     );
+    unawaited(_enqueueAutoCloudUploadAfterLocalSave(currentPath, albumName));
     if (currentAlbum == albumName) {
       await loadClipsFromCurrentAlbum();
     }
@@ -4070,6 +4257,9 @@ class VideoManager extends ChangeNotifier {
         );
       }
       await _upsertLocalIndexClip(outputPath);
+      unawaited(
+        _enqueueAutoCloudUploadAfterLocalSave(outputPath, currentAlbum),
+      );
       await loadClipsFromCurrentAlbum();
       await _updateAlbumClipCounts();
       return true;
@@ -4213,6 +4403,40 @@ class VideoManager extends ChangeNotifier {
 
   bool isClipCloudSynced(String path) => _cloudSyncedPaths.contains(path);
 
+  Future<void> _enqueueAutoCloudUploadAfterLocalSave(
+    String path,
+    String albumName,
+  ) async {
+    if (AuthService().isGuest || !UserStatusManager().isStandardOrAbove()) {
+      return;
+    }
+    if (isClipCloudSynced(path)) return;
+
+    try {
+      final file = File(path);
+      if (!await file.exists()) return;
+      markClipTransferPendingUpload(path);
+      final videoId = await CloudService().uploadVideo(
+        videoFile: file,
+        albumName: albumName,
+        isFavorite: favorites.contains(path),
+        localPath: path,
+      );
+      if (videoId == null) {
+        markClipTransferUploadFailed(path);
+        return;
+      }
+      debugPrint(
+        '[VideoManager][AutoCloudUpload] queued path=$path videoId=$videoId',
+      );
+    } catch (e) {
+      markClipTransferUploadFailed(path);
+      debugPrint(
+        '[VideoManager][AutoCloudUpload] enqueue_failed path=$path error=$e',
+      );
+    }
+  }
+
   void markClipTransferPendingUpload(String path) {
     _clipTransferUiStateByPath[path] = ClipTransferUiState.pendingUpload;
     notifyListeners();
@@ -4345,10 +4569,44 @@ class VideoManager extends ChangeNotifier {
     if (!await trashDir.exists()) await trashDir.create(recursive: true);
     final trashName = "${currentAlbum}__${p.basename(path)}";
     final destPath = await _buildUniqueFilePath(trashDir.path, trashName);
+    if (_isCloudOnlyPlaceholderPath(path)) {
+      final meta = _cloudMetadataByPath.remove(path);
+      if (meta != null) {
+        final trashPlaceholder = _cloudPlaceholderPath('휴지통', meta);
+        _cloudMetadataByPath[trashPlaceholder] = meta;
+        _cloudSyncedPaths
+          ..remove(path)
+          ..add(trashPlaceholder);
+        await CloudService().markVideoInTrash(
+          videoId: meta.videoId,
+          originalAlbumName: currentAlbum,
+          trashLocalPath: trashPlaceholder,
+        );
+        await _removeLocalIndexByKey(path);
+        await _upsertLocalIndexCloudClip(
+          placeholderPath: trashPlaceholder,
+          video: meta,
+          albumName: '휴지통',
+        );
+      }
+      await _persistCloudSyncedPaths();
+      notifyListeners();
+      await _updateAlbumClipCounts();
+      return;
+    }
     await File(path).copy(destPath);
     await File(path).delete();
     await _moveClipOwnershipPath(path, destPath);
     await _moveDurationCachePath(path, destPath);
+    await _moveCloudSyncedPath(path, destPath, targetAlbum: '휴지통');
+    if (isClipCloudSynced(destPath)) {
+      await CloudService().markVideoInTrashByLocalPath(
+        localPath: destPath,
+        originalAlbumName: currentAlbum,
+        trashLocalPath: destPath,
+      );
+    }
+    await _persistCloudSyncedPaths();
     notifyListeners();
     await _updateAlbumClipCounts();
   }
@@ -4375,10 +4633,47 @@ class VideoManager extends ChangeNotifier {
       await targetDir.create(recursive: true);
     }
     final destPath = await _buildUniqueFilePath(targetDir.path, newName);
+    if (_isCloudOnlyPlaceholderPath(trashPath)) {
+      final meta = _cloudMetadataByPath.remove(trashPath);
+      if (meta != null) {
+        final restoredPlaceholder = _cloudPlaceholderPath(target, meta);
+        _cloudMetadataByPath[restoredPlaceholder] = meta;
+        _cloudSyncedPaths
+          ..remove(trashPath)
+          ..add(restoredPlaceholder);
+        await CloudService().restoreVideoFromTrash(
+          videoId: meta.videoId,
+          albumName: target,
+          localPath: restoredPlaceholder,
+        );
+        await _removeLocalIndexByKey(trashPath);
+        await _upsertLocalIndexCloudClip(
+          placeholderPath: restoredPlaceholder,
+          video: meta,
+          albumName: target,
+        );
+      }
+      await _persistCloudSyncedPaths();
+      notifyListeners();
+      await _updateAlbumClipCounts();
+      return;
+    }
     await File(trashPath).copy(destPath);
     await File(trashPath).delete();
     await _moveClipOwnershipPath(trashPath, destPath);
     await _moveDurationCachePath(trashPath, destPath);
+    await _moveCloudSyncedPath(trashPath, destPath, targetAlbum: target);
+    if (isClipCloudSynced(destPath)) {
+      final meta = await CloudService().findUserVideoByLocalPath(destPath);
+      if (meta != null) {
+        await CloudService().restoreVideoFromTrash(
+          videoId: meta.videoId,
+          albumName: target,
+          localPath: destPath,
+        );
+      }
+    }
+    await _persistCloudSyncedPaths();
     notifyListeners();
     await _updateAlbumClipCounts();
   }
@@ -4443,6 +4738,13 @@ class VideoManager extends ChangeNotifier {
       // 복사: 대상 폴더로 복사하고 원본 유지
       final targetDir = await _rawAlbumDir(target);
       for (var sourcePath in list) {
+        if (_isCloudOnlyPlaceholderPath(sourcePath)) {
+          final meta = _cloudMetadataByPath[sourcePath];
+          debugPrint(
+            '[VideoManager][CloudCopy] cloud_only copy requires explicit download/cloud-copy action; skipped videoId=${meta?.videoId}',
+          );
+          continue;
+        }
         final dest = await _buildUniqueFilePath(
           targetDir.path,
           p.basename(sourcePath),
@@ -4450,8 +4752,11 @@ class VideoManager extends ChangeNotifier {
         await File(sourcePath).copy(dest);
         await _copyClipOwnershipPath(sourcePath, dest);
         await _copyDurationCachePath(sourcePath, dest);
+        // 정책: 일반 복사는 기본 local_only 복사본이며 Cloud metadata/usage를 복제하지 않는다.
+        _cloudSyncedPaths.remove(dest);
       }
     }
+    await _persistCloudSyncedPaths();
     notifyListeners();
     await _updateAlbumClipCounts();
   }
@@ -4468,6 +4773,90 @@ class VideoManager extends ChangeNotifier {
       if (!await File(candidate).exists()) return candidate;
       index++;
     }
+  }
+
+  Future<String> buildUniqueRawClipPath({
+    required String albumName,
+    required String fileName,
+  }) async {
+    final albumDir = await _rawAlbumDir(albumName);
+    final rawBase = await _rawBaseDir();
+    if (!_isPathInsideDirectory(rawBase.path, albumDir.path)) {
+      throw FileSystemException('Invalid raw clip destination');
+    }
+    final safeFileName = fileName.trim().isEmpty
+        ? 'cloud_clip_${DateTime.now().millisecondsSinceEpoch}.mp4'
+        : fileName.trim().replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    final candidate = await _buildUniqueFilePath(albumDir.path, safeFileName);
+    if (!_isPathInsideDirectory(rawBase.path, candidate)) {
+      throw FileSystemException('Invalid raw clip file path');
+    }
+    return candidate;
+  }
+
+  Future<bool> hasExistingCloudRestoredClip({
+    required String fileName,
+    required int fileSize,
+  }) async {
+    final safeFileName = fileName.trim();
+    if (safeFileName.isEmpty || fileSize <= 0) {
+      return false;
+    }
+    final allClips = await _listAllClipPaths();
+    for (final path in allClips) {
+      if (!isClipCloudSynced(path)) {
+        continue;
+      }
+      if (p.basename(path) != safeFileName) {
+        continue;
+      }
+      final file = File(path);
+      if (await file.exists() && await file.length() == fileSize) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Future<void> registerCloudRestoredClip({
+    required String path,
+    required String albumName,
+    bool cloudSynced = true,
+    VideoMetadata? cloudMetadata,
+  }) async {
+    await _setClipOwnership(path, ownerAccountId: UserStatusManager().userId);
+    await _removeDurationCacheForPath(path);
+    await _upsertLocalIndexClip(path);
+    if (cloudSynced) {
+      await markClipCloudSynced(path);
+    }
+    if (cloudMetadata != null) {
+      final placeholders = _cloudMetadataByPath.entries
+          .where((entry) => entry.value.videoId == cloudMetadata.videoId)
+          .map((entry) => entry.key)
+          .toList(growable: false);
+      for (final placeholder in placeholders) {
+        _cloudMetadataByPath.remove(placeholder);
+        _cloudSyncedPaths.remove(placeholder);
+        await _removeLocalIndexByKey(placeholder);
+      }
+      _cloudMetadataByPath[path] = cloudMetadata;
+      await _upsertLocalIndexCloudClip(
+        placeholderPath: path,
+        video: cloudMetadata,
+        albumName: albumName,
+      );
+      await CloudService().markVideoMovedToAlbum(
+        videoId: cloudMetadata.videoId,
+        albumName: albumName,
+        localPath: path,
+      );
+    }
+    await _updateAlbumClipCounts();
+    if (currentAlbum == albumName) {
+      await loadClipsFromCurrentAlbum();
+    }
+    notifyListeners();
   }
 
   Future<String?> getFirstClipPath(String n) async {
@@ -4515,6 +4904,10 @@ class VideoManager extends ChangeNotifier {
   }
 
   Future<void> deletePermanently(String path) async {
+    final meta = _cloudMetadataByPath.remove(path);
+    if (meta != null) {
+      await CloudService().deleteVideo(meta.videoId);
+    }
     final file = File(path);
     if (await file.exists()) {
       await file.delete();
@@ -4523,6 +4916,8 @@ class VideoManager extends ChangeNotifier {
     await _removeClipOwnershipForPath(path);
     await _removeLocalIndexByKey(path);
     await _removeDurationCacheForPath(path);
+    _cloudSyncedPaths.remove(path);
+    await _persistCloudSyncedPaths();
     notifyListeners();
     await _updateAlbumClipCounts();
   }
@@ -4532,7 +4927,12 @@ class VideoManager extends ChangeNotifier {
     final stored = prefs.getStringList(_cloudSyncedKey) ?? [];
     _cloudSyncedPaths
       ..clear()
-      ..addAll(stored.where((path) => File(path).existsSync()));
+      ..addAll(
+        stored.where(
+          (path) =>
+              File(path).existsSync() || _isCloudOnlyPlaceholderPath(path),
+        ),
+      );
   }
 
   Future<void> _persistCloudSyncedPaths() async {
@@ -4542,7 +4942,10 @@ class VideoManager extends ChangeNotifier {
 
   Future<void> _cleanupCloudSyncedPaths() async {
     final removed = _cloudSyncedPaths
-        .where((path) => !File(path).existsSync())
+        .where(
+          (path) =>
+              !File(path).existsSync() && !_isCloudOnlyPlaceholderPath(path),
+        )
         .toList();
     if (removed.isEmpty) return;
     _cloudSyncedPaths.removeAll(removed);
@@ -4556,6 +4959,8 @@ class VideoManager extends ChangeNotifier {
   bool isClipLocked(String path) => false;
 
   String getClipStatusBadge(String path) {
+    if (_isCloudOnlyPlaceholderPath(path)) return 'Cloud';
+
     final transferState = getClipTransferUiState(path);
     switch (transferState) {
       case ClipTransferUiState.pendingUpload:
@@ -4575,7 +4980,7 @@ class VideoManager extends ChangeNotifier {
   bool isClipVisibleByStorageFilter(String path, String filter) {
     switch (filter) {
       case 'device':
-        return !isClipCloudSynced(path);
+        return !isClipCloudSynced(path) && !_isCloudOnlyPlaceholderPath(path);
       case 'cloud':
         return isClipCloudSynced(path);
       case 'all':
@@ -4718,6 +5123,48 @@ class VideoManager extends ChangeNotifier {
     await _upsertLocalIndexClip(newPath);
   }
 
+  Future<void> _moveCloudSyncedPath(
+    String oldPath,
+    String newPath, {
+    required String targetAlbum,
+  }) async {
+    final hadCloudMarker = _cloudSyncedPaths.remove(oldPath);
+    final meta = _cloudMetadataByPath.remove(oldPath);
+    if (hadCloudMarker) {
+      _cloudSyncedPaths.add(newPath);
+    }
+    if (meta != null) {
+      _cloudMetadataByPath[newPath] = meta;
+      await _upsertLocalIndexCloudClip(
+        placeholderPath: newPath,
+        video: meta,
+        albumName: targetAlbum,
+      );
+      await CloudService().markVideoMovedToAlbum(
+        videoId: meta.videoId,
+        albumName: targetAlbum,
+        localPath: newPath,
+      );
+      await _removeLocalIndexByKey(oldPath);
+    } else if (hadCloudMarker) {
+      final cloudMeta = await CloudService().findUserVideoByLocalPath(oldPath);
+      if (cloudMeta != null) {
+        _cloudMetadataByPath[newPath] = cloudMeta;
+        await _upsertLocalIndexCloudClip(
+          placeholderPath: newPath,
+          video: cloudMeta,
+          albumName: targetAlbum,
+        );
+        await CloudService().markVideoMovedToAlbum(
+          videoId: cloudMeta.videoId,
+          albumName: targetAlbum,
+          localPath: newPath,
+        );
+      }
+    }
+    await _removeLocalIndexByKey(oldPath);
+  }
+
   Future<void> _copyClipOwnershipPath(
     String sourcePath,
     String targetPath,
@@ -4763,6 +5210,41 @@ class VideoManager extends ChangeNotifier {
     );
     final index = entries.indexWhere(
       (e) => e.pathOrKey == project.id && e.type == 'project',
+    );
+    if (index == -1) {
+      entries.add(entry);
+    } else {
+      entries[index] = entry;
+    }
+    await _localIndexService.saveEntries(entries);
+  }
+
+  Future<void> _upsertLocalIndexCloudClip({
+    required String placeholderPath,
+    required VideoMetadata video,
+    required String albumName,
+  }) async {
+    final entries = await _localIndexService.loadEntries();
+    final owner =
+        getClipOwnerAccountId(placeholderPath) ?? UserStatusManager().userId;
+    final entry = LocalIndexEntry(
+      id: placeholderPath,
+      type: 'clip',
+      pathOrKey: placeholderPath,
+      ownerAccountId: owner,
+      lockState: 'unlocked',
+      updatedAt: DateTime.now(),
+      cloudVideoId: video.videoId,
+      cloudStoragePath: video.storagePath,
+      cloudStorageTier: 'cloud',
+      cloudState: video.cloudState,
+      cloudFileName: video.fileName,
+      cloudFileSize: video.fileSize,
+      albumName: albumName,
+    );
+
+    final index = entries.indexWhere(
+      (e) => e.pathOrKey == placeholderPath && e.type == 'clip',
     );
     if (index == -1) {
       entries.add(entry);

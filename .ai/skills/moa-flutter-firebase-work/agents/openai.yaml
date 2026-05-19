@@ -1,0 +1,4 @@
+interface:
+  display_name: "MOA Flutter Firebase Work"
+  short_description: "Guide MOA app and Firebase edits"
+  default_prompt: "Use $moa-flutter-firebase-work before editing MOA Flutter, Dart, Firebase, or Functions code."

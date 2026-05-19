@@ -432,6 +432,9 @@ class AuthService {
   /// 게스트 모드 여부
   bool get isGuest => _authMode.value == AuthMode.guest;
 
+  /// 유료 구독/복원/구독 관리에 사용할 수 있는 계정 로그인 여부
+  bool get isAuthenticatedAccount => isSignedIn && !isGuest;
+
   /// 인증 모드 변경 스트림
   ValueListenable<AuthMode> get authMode => _authMode;
 
@@ -1255,6 +1258,7 @@ class AuthService {
 
       // 로그인 복귀/앱 재시작 시 저장된 업로드 큐 복구 트리거
       await CloudService().restoreUploadQueueFromStore();
+      await VideoManager().syncCloudMetadataToLibrary(trigger: 'auth_post_login');
 
       print('[AuthService] ✓ 로그인 후처리 완료');
     } catch (e, stackTrace) {
@@ -1268,6 +1272,7 @@ class AuthService {
   Future<bool> _syncSubscriptionFromFirestoreWithRetry(
     String uid, {
     required bool preserveLocalOnFailure,
+    bool preserveLocalPaidTier = false,
   }) async {
     // [AndroidRelease][Checklist-1]
     // 로그인 직후 Firestore 일시 장애를 고려해 최소 1회 재시도 후,
@@ -1275,6 +1280,7 @@ class AuthService {
     final first = await _syncSubscriptionFromFirestore(
       uid,
       preserveLocalOnFailure: preserveLocalOnFailure,
+      preserveLocalPaidTier: preserveLocalPaidTier,
       attempt: 1,
     );
     if (first) return true;
@@ -1285,7 +1291,28 @@ class AuthService {
     return _syncSubscriptionFromFirestore(
       uid,
       preserveLocalOnFailure: preserveLocalOnFailure,
+      preserveLocalPaidTier: preserveLocalPaidTier,
       attempt: 2,
+    );
+  }
+
+  Future<bool> syncCurrentUserSubscriptionFromFirestore({
+    bool preserveLocalPaidTier = true,
+    String reason = 'manual_refresh',
+  }) async {
+    final currentUid = uid;
+    if (currentUid == null || !isAuthenticatedAccount) {
+      print(
+        '[AuthService][TierSync] current user sync skipped: '
+        'reason=$reason signedIn=$isSignedIn guest=$isGuest',
+      );
+      return false;
+    }
+
+    return _syncSubscriptionFromFirestoreWithRetry(
+      currentUid,
+      preserveLocalOnFailure: true,
+      preserveLocalPaidTier: preserveLocalPaidTier,
     );
   }
 
@@ -1293,6 +1320,7 @@ class AuthService {
   Future<bool> _syncSubscriptionFromFirestore(
     String uid, {
     required bool preserveLocalOnFailure,
+    bool preserveLocalPaidTier = false,
     int attempt = 1,
   }) async {
     try {
@@ -1375,8 +1403,19 @@ class AuthService {
         }
       }
 
-      // 서버 응답이 free인 경우는 정상 정합화로 간주.
+      // 서버 응답이 free인 경우는 정상 정합화로 간주하되,
+      // 결제 직후 로컬 유료 권한이 먼저 반영된 상태에서는 Firestore 반영 지연으로
+      // 즉시 free 강등되는 것을 피한다.
       if (tier == UserTier.free) {
+        if (preserveLocalPaidTier && userManager.currentTier != UserTier.free) {
+          print(
+            '[AuthService][Diag][TierSync][LOCAL_PAID_PRESERVED] '
+            'Firestore free but keep local paid tier temporarily '
+            'uid=$uid attempt=$attempt localTier=${userManager.currentTier} '
+            'localProduct=${userManager.productId}',
+          );
+          return false;
+        }
         await userManager.resetToFree();
         print('[AuthService] Firestore 구독 정보 없음/비정상 → 로컬 free로 정합화');
         print(

@@ -1,0 +1,568 @@
+{
+  "reportId": "cloud_clip_r4_migration_backfill_inventory_2026-05-15T10-24-59-603Z_66c88b54",
+  "generatedAt": "2026-05-15T10:24:59.606Z",
+  "dryRun": true,
+  "queryVersion": "cloud_clip_r4_migration_backfill_inventory_v1",
+  "environment": {
+    "nodeVersion": "v22.18.0",
+    "platform": "win32",
+    "fixtureMode": true,
+    "includeFolders": false,
+    "limit": null
+  },
+  "policy": {
+    "mutationProhibited": true,
+    "firestoreWrites": 0,
+    "batchUpdates": 0,
+    "fallbackRemoval": 0,
+    "collectionRenames": 0,
+    "storagePathChanges": 0
+  },
+  "summary": {
+    "scannedCollections": {
+      "users": 1,
+      "videos": 1,
+      "vlog_projects": 1,
+      "vlog_folders": 0
+    },
+    "uniqueAnonymousUidHashCount": 1,
+    "uniqueStoragePathHashCount": 1,
+    "reasonSummary": {},
+    "backfillCandidateReasonCount": 0
+  },
+  "fieldDistribution": {
+    "users": {
+      "subscriptionTier": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "standard": 1
+        }
+      },
+      "storageUsage": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1
+        },
+        "values": {
+          "2048": 1
+        }
+      },
+      "lastUpdated": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1
+        },
+        "values": {
+          "2026-04-01t00:00:00.000z": 1
+        }
+      },
+      "nextTierEffectiveAt": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "nextUserTier": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "productId": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "purchaseDate": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      }
+    },
+    "videos": {
+      "uid": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "user_zero_fixture": 1
+        }
+      },
+      "videoId": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "video_zero_complete": 1
+        }
+      },
+      "fileName": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "complete.mp4": 1
+        }
+      },
+      "storagePath": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "users/user_zero_fixture/videos/video_zero_complete/complete.mp4": 1
+        }
+      },
+      "storageTier": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "cloud": 1
+        }
+      },
+      "lifecycleState": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "active": 1
+        }
+      },
+      "cloudState": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "active": 1
+        }
+      },
+      "originalStoragePath": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "users/user_zero_fixture/videos/video_zero_complete/complete.mp4": 1
+        }
+      },
+      "originalStorageTier": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "cloud": 1
+        }
+      },
+      "localPath": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "albumName": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "일상": 1
+        }
+      },
+      "isFavorite": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "boolean": 1
+        },
+        "values": {
+          "false": 1
+        }
+      },
+      "fileSize": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1
+        },
+        "values": {
+          "2048": 1
+        }
+      },
+      "uploadStatus": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "completed": 1
+        }
+      },
+      "uploadProgress": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1
+        },
+        "values": {
+          "100": 1
+        }
+      },
+      "downloadUrl": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "createdAt": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1
+        },
+        "values": {
+          "2026-04-01t00:00:00.000z": 1
+        }
+      },
+      "updatedAt": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1
+        },
+        "values": {
+          "2026-04-01t00:01:00.000z": 1
+        }
+      },
+      "completedAt": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1
+        },
+        "values": {
+          "2026-04-01t00:01:00.000z": 1
+        }
+      },
+      "trashed": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "boolean": 1
+        },
+        "values": {
+          "false": 1
+        }
+      },
+      "trashedAt": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "trashedFromAlbumName": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "originalAlbumName": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "restoredAt": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "deleted": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "errorCode": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "errorCopy": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      }
+    },
+    "projects": {
+      "uid": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "user_zero_fixture": 1
+        }
+      },
+      "localProjectId": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "local_project_zero": 1
+        }
+      },
+      "title": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "zero fixture project": 1
+        }
+      },
+      "clipPaths": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "array": 1
+        },
+        "values": {}
+      },
+      "clipCount": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1
+        },
+        "values": {
+          "1": 1
+        }
+      },
+      "folderName": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "기본": 1
+        }
+      },
+      "lockState": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "string": 1
+        },
+        "values": {
+          "none": 1
+        }
+      },
+      "clientCreatedAt": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1
+        },
+        "values": {
+          "2026-04-01t00:00:00.000z": 1
+        }
+      },
+      "clientUpdatedAt": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1
+        },
+        "values": {
+          "2026-04-01t00:01:00.000z": 1
+        }
+      },
+      "lastSyncedAt": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "timestamp": 1
+        },
+        "values": {
+          "2026-04-01t00:02:00.000z": 1
+        }
+      },
+      "deleted": {
+        "present": 1,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {
+          "boolean": 1
+        },
+        "values": {
+          "false": 1
+        }
+      },
+      "cloudProjectId": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "ownerAccountId": {
+        "present": 0,
+        "missing": 1,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      }
+    },
+    "folders": {
+      "uid": {
+        "present": 0,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "folderName": {
+        "present": 0,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "name": {
+        "present": 0,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "ownerAccountId": {
+        "present": 0,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "createdAt": {
+        "present": 0,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "updatedAt": {
+        "present": 0,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      },
+      "deleted": {
+        "present": 0,
+        "missing": 0,
+        "nullOrEmpty": 0,
+        "types": {},
+        "values": {}
+      }
+    }
+  },
+  "fieldCombinationSummary": {
+    "storagePath|tier|lifecycle:active|cloud:active|notTrashed": 1
+  },
+  "anomalies": [],
+  "backfillCandidateList": [],
+  "stagedRolloutPlan": [
+    "no-op/dry-run report review only",
+    "fixture and emulator validation before any write preview",
+    "sample cohort selected by anonymous hash bucket after approval",
+    "write disabled by default and protected by explicit feature flag",
+    "export target docs before write preview",
+    "keep dual-read fallback until old/new client compatibility is verified"
+  ],
+  "rollbackPlan": [
+    "current dry-run stage is no-op and requires no data rollback",
+    "before future mutation, export existing values for every proposed field",
+    "never overwrite existing non-empty fields; only consider missing/null fields",
+    "disable feature flag and stop batches on anomaly increase",
+    "restore exported values or remove newly added optional fields if rollback is approved",
+    "keep fallback reads active during and after rollback"
+  ]
+}

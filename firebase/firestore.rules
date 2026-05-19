@@ -22,6 +22,23 @@ service cloud.firestore {
       // ✅ 쓰기: 인증된 본인만 (자신의 정보 업데이트)
       allow write: if request.auth != null 
                    && request.auth.uid == userId;
+
+      // ✅ 사용량 이벤트: 인증된 본인만, event payload uid도 본인으로 고정
+      match /usageEvents/{eventId} {
+        allow read: if request.auth != null
+                    && request.auth.uid == userId;
+
+        allow create: if request.auth != null
+                      && request.auth.uid == userId
+                      && request.resource.data.uid == userId;
+
+        allow update: if request.auth != null
+                      && request.auth.uid == userId
+                      && resource.data.uid == userId
+                      && request.resource.data.uid == resource.data.uid;
+
+        allow delete: if false;
+      }
     }
     
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

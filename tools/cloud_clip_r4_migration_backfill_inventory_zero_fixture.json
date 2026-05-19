@@ -1,0 +1,56 @@
+{
+  "users": [
+    {
+      "id": "user_zero_fixture",
+      "data": {
+        "subscriptionTier": "standard",
+        "storageUsage": 2048,
+        "lastUpdated": "2026-04-01T00:00:00.000Z"
+      }
+    }
+  ],
+  "videos": [
+    {
+      "id": "video_zero_complete",
+      "data": {
+        "uid": "user_zero_fixture",
+        "videoId": "video_zero_complete",
+        "fileName": "complete.mp4",
+        "storagePath": "users/user_zero_fixture/videos/video_zero_complete/complete.mp4",
+        "storageTier": "cloud",
+        "lifecycleState": "active",
+        "cloudState": "active",
+        "originalStoragePath": "users/user_zero_fixture/videos/video_zero_complete/complete.mp4",
+        "originalStorageTier": "cloud",
+        "albumName": "일상",
+        "isFavorite": false,
+        "fileSize": 2048,
+        "uploadStatus": "completed",
+        "uploadProgress": 100,
+        "createdAt": "2026-04-01T00:00:00.000Z",
+        "updatedAt": "2026-04-01T00:01:00.000Z",
+        "completedAt": "2026-04-01T00:01:00.000Z",
+        "trashed": false
+      }
+    }
+  ],
+  "projects": [
+    {
+      "id": "project_zero_complete",
+      "data": {
+        "uid": "user_zero_fixture",
+        "localProjectId": "local_project_zero",
+        "title": "zero fixture project",
+        "clipPaths": ["/local/complete.mp4"],
+        "clipCount": 1,
+        "folderName": "기본",
+        "lockState": "none",
+        "clientCreatedAt": "2026-04-01T00:00:00.000Z",
+        "clientUpdatedAt": "2026-04-01T00:01:00.000Z",
+        "lastSyncedAt": "2026-04-01T00:02:00.000Z",
+        "deleted": false
+      }
+    }
+  ],
+  "folders": []
+}

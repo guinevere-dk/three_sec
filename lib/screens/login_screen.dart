@@ -11,7 +11,10 @@ import '../services/auth_service.dart';
 /// - Kakao (Android/iOS)
 /// - Naver (출시 이후 토큰 발급 전까지 숨김)
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+  const LoginScreen({super.key, this.popOnSuccess = false, this.allowGuest = true});
+
+  final bool popOnSuccess;
+  final bool allowGuest;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -57,14 +60,18 @@ class _LoginScreenState extends State<LoginScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   // 로고 및 타이틀
-                  const Icon(
-                    Icons.videocam_rounded,
-                    size: 80,
-                    color: Colors.white,
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(24),
+                    child: Image.asset(
+                      'assets/icon/app_icon.png',
+                      width: 80,
+                      height: 80,
+                      fit: BoxFit.cover,
+                    ),
                   ),
                   const SizedBox(height: 20),
                   const Text(
-                    '2S Vlog',
+                    'MOA',
                     style: TextStyle(
                       fontSize: 48,
                       fontWeight: FontWeight.bold,
@@ -132,7 +139,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           label: 'Continue with Kakao',
                         ),
 
-                        if (_isGuestLoginEnabled) ...[
+                        if (widget.allowGuest && _isGuestLoginEnabled) ...[
                           const SizedBox(height: 16),
                           _buildSocialButton(
                             onPressed: _handleGuestSignIn,
@@ -253,6 +260,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('Welcome to MOA!')));
+        if (widget.popOnSuccess) Navigator.pop(context, true);
       }
     } catch (e) {
       if (mounted) {
@@ -274,6 +282,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('Welcome to MOA!')));
+        if (widget.popOnSuccess) Navigator.pop(context, true);
       }
     } catch (e) {
       if (mounted) {
@@ -295,6 +304,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('Welcome to MOA!')));
+        if (widget.popOnSuccess) Navigator.pop(context, true);
       }
     } on AuthServiceException catch (e) {
       if (mounted) {
@@ -351,6 +361,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('Welcome to MOA!')));
+        if (widget.popOnSuccess) Navigator.pop(context, true);
       }
     } on AuthServiceException catch (e) {
       if (mounted) {

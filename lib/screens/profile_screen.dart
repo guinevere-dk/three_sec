@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -14,7 +15,9 @@ import '../services/app_update_service.dart';
 import '../managers/user_status_manager.dart';
 import '../managers/video_manager.dart';
 import 'announcements_screen.dart';
+import 'cloud_backup_screen.dart';
 import 'notifications_screen.dart';
+import 'subscription_management_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -29,6 +32,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final CloudService _cloudService = CloudService();
   final ImagePicker _imagePicker = ImagePicker();
   String _appVersionText = 'v-';
+  int _cloudClipCount = 0;
+  double _cloudStorageUsageGB = 0;
+  double _cloudStorageLimitGB = 0;
+  SyncStatusSummary _syncSummary = const SyncStatusSummary();
+  StreamSubscription<CloudStatsSnapshot>? _cloudStatsSubscription;
+  StreamSubscription<SyncStatusSummary>? _syncSummarySubscription;
   bool _isDeletingAccount = false;
 
   static const Color _bgColor = Color(0xFFF6F7F8);
@@ -38,7 +47,28 @@ class _ProfileScreenState extends State<ProfileScreen> {
   @override
   void initState() {
     super.initState();
+    _cloudStatsSubscription = _cloudService.cloudStatsStream.listen((snapshot) {
+      if (!mounted) return;
+      setState(() {
+        _cloudClipCount = snapshot.cloudClipCount;
+        _cloudStorageUsageGB = snapshot.storageUsageGB;
+        _cloudStorageLimitGB = snapshot.storageLimitGB;
+        _syncSummary = snapshot.syncSummary;
+      });
+    });
+    _syncSummarySubscription = _cloudService.syncSummaryStream.listen((summary) {
+      if (!mounted) return;
+      setState(() => _syncSummary = summary);
+      unawaited(_cloudService.refreshCloudStatsSnapshot(trigger: 'sync_summary_update'));
+    });
     _initializeProfileState();
+  }
+
+  @override
+  void dispose() {
+    _cloudStatsSubscription?.cancel();
+    _syncSummarySubscription?.cancel();
+    super.dispose();
   }
 
   Future<void> _initializeProfileState() async {
@@ -69,7 +99,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
     }
 
+    await _loadCloudStats();
     await _loadAppVersion();
+  }
+
+  Future<void> _loadCloudStats() async {
+    if (_authService.isGuest || !_userStatusManager.isStandardOrAbove()) {
+      if (!mounted) return;
+      setState(() {
+        _cloudClipCount = 0;
+        _cloudStorageUsageGB = 0;
+        _cloudStorageLimitGB = _cloudService.getStorageLimitGB();
+      });
+      return;
+    }
+
+    final snapshot = await _cloudService.refreshCloudStatsSnapshot(
+      trigger: 'profile_load_stats',
+    );
+    if (mounted) {
+      await context.read<VideoManager>().syncCloudMetadataToLibrary(
+        trigger: 'profile_stats_refresh',
+      );
+    }
+    if (!mounted) return;
+    setState(() {
+      _cloudClipCount = snapshot.cloudClipCount;
+      _cloudStorageUsageGB = snapshot.storageUsageGB;
+      _cloudStorageLimitGB = snapshot.storageLimitGB;
+      _syncSummary = snapshot.syncSummary;
+    });
   }
 
   Future<void> _loadAppVersion() async {
@@ -107,6 +166,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
     }
 
+    await _loadCloudStats();
     await _loadAppVersion();
   }
 
@@ -637,6 +697,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  Future<void> _openStandardSubscriptionEntry() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const SubscriptionManagementScreen()),
+    );
+
+    await _refreshProfile();
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  Future<void> _openCloudBackup() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const CloudBackupScreen()),
+    );
+    await _refreshProfile();
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = _authService.currentUser;
@@ -652,6 +731,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final displayName = _profileDisplayName(user);
     final subtitle = _profileSubtitle(user);
     final isGuestMode = _authService.isGuest;
+    final subscriptionLabel = switch (tier) {
+      UserTier.free => 'Standard 구독하기',
+      UserTier.standard => 'Standard 플랜 관리',
+      UserTier.premium => '구독 상태 확인',
+    };
 
     return Scaffold(
       backgroundColor: _bgColor,
@@ -702,6 +786,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 _buildSectionTitle('SETTINGS'),
                 _buildMenuGroup(
                   children: [
+                    _buildMenuItem(
+                      Icons.workspace_premium,
+                      subscriptionLabel,
+                      valueText: _statusLabelForProfile(tier),
+                      valueColor: _primaryBlue,
+                      iconBgColor: const Color(0xFFEFF6FF),
+                      iconColor: _primaryBlue,
+                      onTap: _openStandardSubscriptionEntry,
+                    ),
                     _buildMenuItem(
                       Icons.notifications,
                       '알림 설정',
@@ -968,23 +1061,95 @@ class _ProfileScreenState extends State<ProfileScreen> {
         final clipCount = NumberFormat.decimalPattern().format(
           videoManager.totalClipCount,
         );
+        final isCloudEnabled =
+            !_authService.isGuest && _userStatusManager.isStandardOrAbove();
+        final cloudClipCount = isCloudEnabled
+            ? NumberFormat.decimalPattern().format(_cloudClipCount)
+            : '-';
+        final cloudUsage = isCloudEnabled ? _formatCloudUsageText() : '미지원';
+        final syncText = isCloudEnabled ? _syncSummaryText() : '';
 
         return Container(
           padding: const EdgeInsets.symmetric(vertical: 2),
-          child: Row(
-            children: [Expanded(child: _buildStatItem(clipCount, 'CLIP'))],
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(child: _buildStatItem(clipCount, '기기 CLIP')),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _buildStatItem(
+                      cloudClipCount,
+                      'Cloud CLIP',
+                      onTap: _openCloudBackup,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _buildStatItem(
+                      cloudUsage,
+                      'Cloud 사용량',
+                      isStorage: true,
+                    ),
+                  ),
+                ],
+              ),
+              if (syncText.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  '동기화 상태: $syncText',
+                  style: const TextStyle(
+                    color: Color(0xFF64748B),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ],
           ),
         );
       },
     );
   }
 
-  Widget _buildStatItem(String value, String label, {bool isStorage = false}) {
+  String _formatCloudUsageText() {
+    if (_cloudStorageLimitGB <= 0) {
+      return '${_cloudStorageUsageGB.toStringAsFixed(1)}GB';
+    }
+    return '${_cloudStorageUsageGB.toStringAsFixed(1)}/${_cloudStorageLimitGB.toStringAsFixed(0)}GB';
+  }
+
+  String _syncSummaryText() {
+    final pending = _syncSummary.queuedCount + _syncSummary.uploadingCount;
+    if (pending == 0 && _syncSummary.failedCount == 0) return '';
+    final parts = <String>[];
+    if (pending > 0) parts.add('대기 $pending');
+    if (_syncSummary.failedCount > 0) parts.add('실패 ${_syncSummary.failedCount}');
+    return parts.join(' · ');
+  }
+
+  String _statusLabelForProfile(UserTier tier) {
+    switch (tier) {
+      case UserTier.free:
+        return 'Free';
+      case UserTier.standard:
+        return 'Standard';
+      case UserTier.premium:
+        return '보호';
+    }
+  }
+
+  Widget _buildStatItem(
+    String value,
+    String label, {
+    bool isStorage = false,
+    VoidCallback? onTap,
+  }) {
     final isCloudUsageSummary =
         isStorage && (value.contains('/') || value.contains('미지원'));
     final parsedStorage = _splitStorageText(value);
 
-    return Container(
+    final content = Container(
       height: 80,
       decoration: BoxDecoration(
         color: _cardColor,
@@ -1056,6 +1221,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
         ],
       ),
+    );
+
+    if (onTap == null) return content;
+    return InkWell(
+      borderRadius: BorderRadius.circular(24),
+      onTap: onTap,
+      child: content,
     );
   }
 

@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../managers/user_status_manager.dart';
+import '../services/auth_service.dart';
 import '../services/iap_service.dart';
 import 'paywall_screen.dart';
 
@@ -21,6 +22,7 @@ class _SubscriptionManagementScreenState
     with WidgetsBindingObserver {
   final UserStatusManager _userStatus = UserStatusManager();
   final IAPService _iapService = IAPService();
+  final AuthService _authService = AuthService();
 
   static const String _androidPackageName = 'com.dk.three_sec';
 
@@ -58,6 +60,13 @@ class _SubscriptionManagementScreenState
     print('[SubscriptionManagement][Diag] after cancel-sync reason=$reason');
 
     await _userStatus.initialize();
+    if (_authService.isAuthenticatedAccount) {
+      await _authService.syncCurrentUserSubscriptionFromFirestore(
+        preserveLocalPaidTier: true,
+        reason: reason,
+      );
+      await _userStatus.initialize();
+    }
     print(
       '[SubscriptionManagement][Diag] refresh after initialize '
       'reason=$reason tier=${_userStatus.currentTier} '
@@ -71,6 +80,8 @@ class _SubscriptionManagementScreenState
   }
 
   Future<void> _openPaywallAndRefresh() async {
+    if (!mounted) return;
+
     await Navigator.push<bool>(
       context,
       MaterialPageRoute(builder: (_) => const PaywallScreen()),
@@ -90,7 +101,13 @@ class _SubscriptionManagementScreenState
       'estimatedExpiry=${userStatus.estimatedExpiryAt}',
     );
 
-    final statusLabel = _statusLabel(userStatus.currentTier);
+    final currentTier = userStatus.currentTier;
+    final statusLabel = _statusLabel(currentTier);
+    final primaryButtonLabel = switch (currentTier) {
+      UserTier.free => 'Standard 구독하기',
+      UserTier.standard => 'Standard 플랜 관리',
+      UserTier.premium => '구독 상태 확인',
+    };
     final expiryDate = userStatus.estimatedExpiryAt;
     final nextTier = userStatus.nextTier;
     final nextTierEffectiveAt = userStatus.nextTierEffectiveAt;
@@ -113,7 +130,7 @@ class _SubscriptionManagementScreenState
             title: '만료일',
             value: expiryDateText,
             helper: isSubscribed
-                ? '구독 해지 시 만료일까지 Cloud 및 편집 기능을 이용할 수 있습니다.'
+                ? '구독 해지 시 만료일까지 Cloud 및 편집 기능을 이용할 수 있습니다. 만료 전 Cloud 보관함에서 필요한 클립을 이 기기에 복원해 두세요.'
                 : '현재 활성 구독이 없습니다.',
           ),
           const SizedBox(height: 12),
@@ -138,7 +155,7 @@ class _SubscriptionManagementScreenState
             child: FilledButton.icon(
               onPressed: _openPaywallAndRefresh,
               icon: const Icon(Icons.workspace_premium),
-              label: Text(isSubscribed ? '플랜 변경 / 구독하기' : '구독하기'),
+              label: Text(primaryButtonLabel),
             ),
           ),
           const SizedBox(height: 10),
@@ -189,8 +206,9 @@ class _SubscriptionManagementScreenState
     final shouldProceed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
+        title: const Text('구독 해지 전 확인'),
         content: const Text(
-          '해지 후 만료 시점부터 Cloud 및 편집 기능 사용이 불가합니다.\nCloud 데이터는 계속 보관됩니다.',
+          '해지 후 만료 시점부터 Cloud 및 편집 기능 사용이 불가합니다.\n\n만료 전 Cloud 보관함에서 필요한 클립을 이 기기에 복원해 두세요.',
         ),
         actions: [
           FilledButton.tonal(
@@ -317,11 +335,11 @@ class _FeatureGuideCard extends StatelessWidget {
             ),
           ),
           SizedBox(height: 10),
-          _FeatureBullet(text: 'Cloud 백업/이동: Standard 이상에서 사용 가능'),
+          _FeatureBullet(text: '50 GB Cloud 제공'),
           SizedBox(height: 6),
-          _FeatureBullet(text: '편집 기능: Standard 이상에서 사용 가능'),
+          _FeatureBullet(text: '편집 기능 제공'),
           SizedBox(height: 6),
-          _FeatureBullet(text: '내보내기 해상도: Free 720p · Standard 1080p · Premium 4K'),
+          _FeatureBullet(text: '내보내기 해상도 1080p 제공'),
         ],
       ),
     );
