@@ -16,7 +16,107 @@ import '../services/cloud_service.dart';
 import '../services/auth_service.dart';
 import 'subscription_management_screen.dart';
 
-enum _SelectionActionState { local, cloud, mixed }
+enum LibraryClipTransferAction {
+  upload,
+  download,
+  cloudDone,
+  progress,
+  disabled,
+}
+
+LibraryClipTransferAction resolveLibraryClipTransferAction(
+  Iterable<ClipStorageState> states,
+) {
+  final list = states.toList(growable: false);
+  if (list.isEmpty) return LibraryClipTransferAction.disabled;
+
+  if (list.contains(ClipStorageState.pendingUpload)) {
+    return LibraryClipTransferAction.progress;
+  }
+
+  final uploadable = list.every(
+    (state) =>
+        state == ClipStorageState.localOnly ||
+        state == ClipStorageState.failedUpload,
+  );
+  if (uploadable) return LibraryClipTransferAction.upload;
+
+  final downloadable = list.every(
+    (state) =>
+        state == ClipStorageState.cloudOnly ||
+        state == ClipStorageState.failedDownload,
+  );
+  if (downloadable) return LibraryClipTransferAction.download;
+
+  final cloudSyncedLocal = list.every(
+    (state) => state == ClipStorageState.cloudSyncedLocal,
+  );
+  if (cloudSyncedLocal) return LibraryClipTransferAction.cloudDone;
+
+  return LibraryClipTransferAction.disabled;
+}
+
+IconData libraryClipTransferIconForAction(LibraryClipTransferAction action) {
+  switch (action) {
+    case LibraryClipTransferAction.upload:
+      return Icons.cloud_upload_rounded;
+    case LibraryClipTransferAction.download:
+      return Icons.download_rounded;
+    case LibraryClipTransferAction.cloudDone:
+      return Icons.cloud_done_rounded;
+    case LibraryClipTransferAction.progress:
+      return Icons.sync_rounded;
+    case LibraryClipTransferAction.disabled:
+      return Icons.download_for_offline_rounded;
+  }
+}
+
+bool isUploadMoveEligibleFromPrePendingState(ClipStorageState? state) {
+  return state == ClipStorageState.localOnly ||
+      state == ClipStorageState.failedUpload;
+}
+
+Map<String, int> clipStorageStateCountsForStates(
+  Iterable<ClipStorageState> states,
+) {
+  final counts = <String, int>{
+    'localFileCount': 0,
+    'localOnlyCount': 0,
+    'cloudSyncedLocalCount': 0,
+    'cloudOnlyCount': 0,
+    'pendingUploadCount': 0,
+    'failedUploadCount': 0,
+    'failedDownloadCount': 0,
+    'uploadableCount': 0,
+  };
+
+  for (final state in states) {
+    switch (state) {
+      case ClipStorageState.localOnly:
+        counts['localOnlyCount'] = counts['localOnlyCount']! + 1;
+        counts['uploadableCount'] = counts['uploadableCount']! + 1;
+        break;
+      case ClipStorageState.pendingUpload:
+        counts['pendingUploadCount'] = counts['pendingUploadCount']! + 1;
+        break;
+      case ClipStorageState.cloudSyncedLocal:
+        counts['cloudSyncedLocalCount'] = counts['cloudSyncedLocalCount']! + 1;
+        break;
+      case ClipStorageState.cloudOnly:
+        counts['cloudOnlyCount'] = counts['cloudOnlyCount']! + 1;
+        break;
+      case ClipStorageState.failedUpload:
+        counts['failedUploadCount'] = counts['failedUploadCount']! + 1;
+        counts['uploadableCount'] = counts['uploadableCount']! + 1;
+        break;
+      case ClipStorageState.failedDownload:
+        counts['failedDownloadCount'] = counts['failedDownloadCount']! + 1;
+        break;
+    }
+  }
+
+  return Map<String, int>.unmodifiable(counts);
+}
 
 class LibraryScreen extends StatefulWidget {
   final GlobalKey keyPickMedia;
@@ -78,6 +178,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   bool _lastAlbumDetailVisible = false;
   bool _lastCreateProjectButtonVisible = false;
   String? _lastDetailRenderSignature;
+  String? _lastTransferRenderSignature;
   final Set<String> _thumbnailLoggedLoadingPaths = <String>{};
   final Set<String> _thumbnailLoggedReadyPaths = <String>{};
   final Set<String> _thumbnailLoggedErrorPaths = <String>{};
@@ -198,11 +299,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
         'count=${videoManager.recordedVideoPaths.length} elapsedMs=$elapsedMs',
       );
       if (mounted) setState(() {});
-    } catch (error, stackTrace) {
+    } catch (error) {
       final elapsedMs = DateTime.now().difference(startedAt).inMilliseconds;
       debugPrint(
         '$_traceTag load_clips_error album=$album elapsedMs=$elapsedMs '
-        'error=$error\n$stackTrace',
+        'errorType=${error.runtimeType}',
       );
       rethrow;
     }
@@ -238,12 +339,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (_thumbnailLoggedLoadingPaths.add(path)) {
       debugPrint(
         '$_traceTag thumbnail_request album=${videoManager.currentAlbum} '
-        'index=$index path=$path',
+        'index=$index path=<redacted-path>',
       );
       debugPrint(
         '[thumbnailLog] {"event":"ui_request","operation":"LibraryScreen.getThumbnail",'
         '"status":"request","album":"${videoManager.currentAlbum}",'
-        '"index":$index,"videoPath":"$path"}',
+        '"index":$index,"videoPath":"<redacted-path>"}',
       );
     }
     try {
@@ -252,37 +353,37 @@ class _LibraryScreenState extends State<LibraryScreen> {
         if (_thumbnailLoggedErrorPaths.add('null:$path')) {
           debugPrint(
             '$_traceTag thumbnail_null album=${videoManager.currentAlbum} '
-            'index=$index path=$path fallback=empty_or_plugin_unavailable',
+            'index=$index path=<redacted-path> fallback=empty_or_plugin_unavailable',
           );
           debugPrint(
             '[thumbnailLog] {"event":"ui_null","operation":"LibraryScreen.getThumbnail",'
             '"status":"null","fallback":"empty_or_plugin_unavailable",'
-            '"album":"${videoManager.currentAlbum}","index":$index,"videoPath":"$path"}',
+            '"album":"${videoManager.currentAlbum}","index":$index,"videoPath":"<redacted-path>"}',
           );
         }
       } else if (_thumbnailLoggedReadyPaths.add(path)) {
         debugPrint(
           '$_traceTag thumbnail_ready album=${videoManager.currentAlbum} '
-          'index=$index bytes=${thumbnail.length} path=$path',
+          'index=$index bytes=${thumbnail.length} path=<redacted-path>',
         );
         debugPrint(
           '[thumbnailLog] {"event":"ui_ready","operation":"LibraryScreen.getThumbnail",'
           '"status":"ready","album":"${videoManager.currentAlbum}",'
-          '"index":$index,"bytes":${thumbnail.length},"videoPath":"$path"}',
+          '"index":$index,"bytes":${thumbnail.length},"videoPath":"<redacted-path>"}',
         );
       }
       return thumbnail;
-    } catch (error, stackTrace) {
+    } catch (error) {
       if (_thumbnailLoggedErrorPaths.add('error:$path')) {
         debugPrint(
           '$_traceTag thumbnail_error album=${videoManager.currentAlbum} '
-          'index=$index path=$path error=$error\n$stackTrace',
+          'index=$index path=<redacted-path> errorType=${error.runtimeType}',
         );
         debugPrint(
           '[thumbnailLog] {"event":"ui_fallback","operation":"LibraryScreen.getThumbnail",'
           '"status":"fallback","reason":"exception",'
           '"album":"${videoManager.currentAlbum}","index":$index,'
-          '"videoPath":"$path","error":"${error.runtimeType}"}',
+          '"videoPath":"<redacted-path>","error":"${error.runtimeType}"}',
         );
       }
       rethrow;
@@ -497,6 +598,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
     final int count = visibleClipPaths.length;
     final String subtitle = "$count Clips";
     final selectionState = _resolveSelectionActionState();
+    final showTransferButton = _userStatusManager.isStandardOrAbove();
+    _logTransferRenderIfChanged(
+      action: selectionState,
+      showTransferButton: showTransferButton,
+    );
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -590,32 +696,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 child: Wrap(
                   spacing: 8,
                   children: [
-                    _buildStorageFilterChip('all', '전체'),
-                    _buildStorageFilterChip('device', '기기'),
-                    FilterChip(
-                      label: const Text('하트만'),
-                      avatar: Icon(
-                        _showFavoritesOnly
-                            ? Icons.favorite
-                            : Icons.favorite_border_rounded,
-                        size: 18,
-                      ),
-                      selected: _showFavoritesOnly,
-                      selectedColor: const Color(0xFFFFE5EC),
-                      checkmarkColor: const Color(0xFFE91E63),
-                      onSelected: (selected) {
-                        setState(() {
-                          _showFavoritesOnly = selected;
-                          _selectedClipPaths.clear();
-                          _isClipSelectionMode = false;
-                          if (_previewingPath != null &&
-                              !videoManager.favorites.contains(
-                                _previewingPath,
-                              )) {
-                            _previewingPath = null;
-                          }
-                        });
-                      },
+                    _buildLibraryFilterChip('all', 'All'),
+                    _buildLibraryFilterChip('device', 'Local'),
+                    _buildLibraryFilterChip('cloud', 'Cloud'),
+                    _buildLibraryFilterChip(
+                      'favorites',
+                      '',
+                      icon: Icons.favorite_border_rounded,
+                      selectedIcon: Icons.favorite_rounded,
                     ),
                   ],
                 ),
@@ -656,6 +744,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     final path = visibleClipPaths[index];
                     final isSelected = _selectedClipPaths.contains(path);
                     final int selectIdx = _selectedClipPaths.indexOf(path);
+                    final storageState = videoManager.getClipStorageState(path);
                     final item = MediaWidgets.buildMediaGridItem(
                       path: path,
                       isSelected: isSelected,
@@ -665,6 +754,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       benchmarkStyle: true,
                       showDurationBadge: true,
                       statusBadge: videoManager.getClipStatusBadge(path),
+                      isCloudOnly: storageState == ClipStorageState.cloudOnly,
+                      getCloudThumbnail:
+                          storageState == ClipStorageState.cloudOnly &&
+                              videoManager.hasCompletedCloudThumbnail(path)
+                          ? videoManager.getCloudThumbnail
+                          : null,
                       isFavorite: videoManager.favorites.contains(path),
                       getDuration: videoManager.getVideoDuration,
                       onTap: () {
@@ -752,7 +847,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     onTransfer: _transferHandlerForSelectionState(
                       selectionState,
                     ),
-                    showTransferButton: _userStatusManager.isStandardOrAbove(),
+                    showTransferButton: showTransferButton,
                     onCreateProject: _selectedClipPaths.length < 2
                         ? null
                         : () {
@@ -973,46 +1068,206 @@ class _LibraryScreenState extends State<LibraryScreen> {
     hapticFeedback();
   }
 
-  _SelectionActionState _resolveSelectionActionState() {
-    if (_selectedClipPaths.isEmpty) return _SelectionActionState.mixed;
-
-    var cloudCount = 0;
-
-    for (final path in _selectedClipPaths) {
-      if (videoManager.isClipCloudSynced(path)) {
-        cloudCount++;
-      }
-    }
-
-    if (cloudCount == 0) return _SelectionActionState.local;
-    if (cloudCount == _selectedClipPaths.length)
-      return _SelectionActionState.cloud;
-    return _SelectionActionState.mixed;
+  LibraryClipTransferAction _resolveSelectionActionState() {
+    return resolveLibraryClipTransferAction(
+      _selectedClipPaths.map(videoManager.getClipStorageState),
+    );
   }
 
-  IconData _transferIconForSelectionState(_SelectionActionState state) {
-    switch (state) {
-      case _SelectionActionState.local:
-        return Icons.cloud_upload_rounded;
-      case _SelectionActionState.cloud:
-        return Icons.download_rounded;
-      case _SelectionActionState.mixed:
-        return Icons.download_for_offline_rounded;
+  Map<String, int> _selectedStorageStateCounts() {
+    return videoManager.getStorageStateDebugCounts(paths: _selectedClipPaths);
+  }
+
+  String _transferBranchName(LibraryClipTransferAction action) {
+    switch (action) {
+      case LibraryClipTransferAction.upload:
+        return 'upload_move';
+      case LibraryClipTransferAction.download:
+        return 'download_move';
+      case LibraryClipTransferAction.cloudDone:
+        return 'cloud_done';
+      case LibraryClipTransferAction.progress:
+        return 'progress';
+      case LibraryClipTransferAction.disabled:
+        return 'disabled';
     }
   }
 
-  VoidCallback? _transferHandlerForSelectionState(_SelectionActionState state) {
+  void _logLibraryTransfer(
+    String event, {
+    required LibraryClipTransferAction action,
+    required String branch,
+    required bool handlerInvoked,
+    bool? showTransferButton,
+  }) {
+    final counts = _selectedStorageStateCounts();
+    final canStartNewCloudWrite = _userStatusManager.canStartNewCloudWrite();
+    final canReadExistingCloudClips = _userStatusManager
+        .canReadExistingCloudClips();
+    debugPrint(
+      '[LibraryTransfer] $event '
+      'selected_count=${_selectedClipPaths.length} '
+      'state_counts '
+      'localOnly=${counts['localOnlyCount'] ?? 0} '
+      'cloudOnly=${counts['cloudOnlyCount'] ?? 0} '
+      'cloudSyncedLocal=${counts['cloudSyncedLocalCount'] ?? 0} '
+      'pendingUpload=${counts['pendingUploadCount'] ?? 0} '
+      'failedUpload=${counts['failedUploadCount'] ?? 0} '
+      'failedDownload=${counts['failedDownloadCount'] ?? 0} '
+      'uploadable=${counts['uploadableCount'] ?? 0} '
+      'resolved_action=${action.name} '
+      'show_transfer_button=${showTransferButton ?? 'unknown'} '
+      'can_start_new_cloud_write=$canStartNewCloudWrite '
+      'can_read_existing_cloud_clips=$canReadExistingCloudClips '
+      'branch=$branch '
+      'handler_invoked=$handlerInvoked',
+    );
+  }
+
+  void _logTransferRenderIfChanged({
+    required LibraryClipTransferAction action,
+    required bool showTransferButton,
+  }) {
+    if (!_isClipSelectionMode) return;
+    final counts = _selectedStorageStateCounts();
+    final signature = [
+      _selectedClipPaths.length,
+      counts['localOnlyCount'] ?? 0,
+      counts['cloudOnlyCount'] ?? 0,
+      counts['cloudSyncedLocalCount'] ?? 0,
+      counts['pendingUploadCount'] ?? 0,
+      counts['failedUploadCount'] ?? 0,
+      counts['failedDownloadCount'] ?? 0,
+      counts['uploadableCount'] ?? 0,
+      action.name,
+      showTransferButton,
+      _userStatusManager.canStartNewCloudWrite(),
+      _userStatusManager.canReadExistingCloudClips(),
+    ].join('|');
+    if (_lastTransferRenderSignature == signature) return;
+    _lastTransferRenderSignature = signature;
+    _logLibraryTransfer(
+      'render',
+      action: action,
+      branch: 'render',
+      handlerInvoked: false,
+      showTransferButton: showTransferButton,
+    );
+  }
+
+  void _logUploadMoveMethod(
+    String event, {
+    required int targetCount,
+    int? selectedCount,
+    bool? isGuest,
+    bool? canStartNewCloudWrite,
+    bool? pendingUploadUiSet,
+    String? earlyReturnReason,
+    bool? backgroundDispatchInvoked,
+    bool? taskStarted,
+    Map<String, int>? stateCounts,
+    int? stateAllowedCount,
+    int? stateMismatchCount,
+    int? localFileExistsCount,
+    int? localFileMissingCount,
+    int? uploadVideoImmediateCallCount,
+    int? uploadSuccessCount,
+    int? uploadFailureCount,
+    int? successCount,
+    int? failureCount,
+    int? skippedCount,
+    String? finalToastType,
+  }) {
+    final counts = stateCounts ?? const <String, int>{};
+    debugPrint(
+      '[LibraryTransfer][UploadMove] $event '
+      'target_count=$targetCount '
+      'selected_count=${selectedCount ?? 'unknown'} '
+      'is_guest=${isGuest ?? 'unknown'} '
+      'can_start_new_cloud_write=${canStartNewCloudWrite ?? 'unknown'} '
+      'pending_upload_ui_set=${pendingUploadUiSet ?? 'unknown'} '
+      'early_return_reason=${earlyReturnReason ?? 'none'} '
+      'background_dispatch_invoked=${backgroundDispatchInvoked ?? false} '
+      'task_started=${taskStarted ?? false} '
+      'state_counts '
+      'localOnly=${counts['localOnlyCount'] ?? 0} '
+      'cloudOnly=${counts['cloudOnlyCount'] ?? 0} '
+      'cloudSyncedLocal=${counts['cloudSyncedLocalCount'] ?? 0} '
+      'pendingUpload=${counts['pendingUploadCount'] ?? 0} '
+      'failedUpload=${counts['failedUploadCount'] ?? 0} '
+      'failedDownload=${counts['failedDownloadCount'] ?? 0} '
+      'uploadable_count=${counts['uploadableCount'] ?? 0} '
+      'state_allowed_count=${stateAllowedCount ?? 0} '
+      'state_mismatch_count=${stateMismatchCount ?? 0} '
+      'local_file_exists_count=${localFileExistsCount ?? 0} '
+      'local_file_missing_count=${localFileMissingCount ?? 0} '
+      'uploadVideoImmediate_call_count=${uploadVideoImmediateCallCount ?? 0} '
+      'upload_success_count=${uploadSuccessCount ?? 0} '
+      'upload_failure_count=${uploadFailureCount ?? 0} '
+      'success_count=${successCount ?? 0} '
+      'failure_count=${failureCount ?? 0} '
+      'skipped_count=${skippedCount ?? 0} '
+      'final_toast_type=${finalToastType ?? 'none'}',
+    );
+  }
+
+  IconData _transferIconForSelectionState(LibraryClipTransferAction action) {
+    return libraryClipTransferIconForAction(action);
+  }
+
+  VoidCallback? _transferHandlerForSelectionState(
+    LibraryClipTransferAction action,
+  ) {
+    VoidCallback wrap(String branch, VoidCallback handler) {
+      return () {
+        _logLibraryTransfer(
+          'tap_start',
+          action: action,
+          branch: branch,
+          handlerInvoked: true,
+          showTransferButton: _userStatusManager.isStandardOrAbove(),
+        );
+        handler();
+      };
+    }
+
     if (AuthService().isGuest) {
-      return _showGuestCloudActionBlockedToast;
+      return wrap('guest_blocked', _showGuestCloudActionBlockedToast);
     }
 
-    switch (state) {
-      case _SelectionActionState.local:
-        return _moveSelectedLocalToCloud;
-      case _SelectionActionState.cloud:
-        return _removeSelectedCloudBackup;
-      case _SelectionActionState.mixed:
-        return null;
+    switch (action) {
+      case LibraryClipTransferAction.upload:
+        if (!_userStatusManager.canStartNewCloudWrite()) {
+          return wrap('write_gate_blocked', _showCloudWriteBlockedToast);
+        }
+        return wrap('upload_move', _moveSelectedLocalToCloud);
+      case LibraryClipTransferAction.download:
+        if (!_userStatusManager.canReadExistingCloudClips()) {
+          return wrap('read_gate_blocked', _showCloudReadBlockedToast);
+        }
+        if (!_userStatusManager.canStartNewCloudWrite()) {
+          return wrap('write_gate_blocked', _showCloudWriteBlockedToast);
+        }
+        return wrap('download_move', _removeSelectedCloudBackup);
+      case LibraryClipTransferAction.cloudDone:
+        return wrap(
+          _transferBranchName(action),
+          () => _showCloudTransferUnavailableToast('이미 기기와 Cloud에 동기화된 클립입니다.'),
+        );
+      case LibraryClipTransferAction.progress:
+        return wrap(
+          _transferBranchName(action),
+          () => _showCloudTransferUnavailableToast(
+            'Cloud 작업이 진행 중인 클립입니다. 완료 후 다시 시도해 주세요.',
+          ),
+        );
+      case LibraryClipTransferAction.disabled:
+        return wrap(
+          _transferBranchName(action),
+          () => _showCloudTransferUnavailableToast(
+            '서로 다른 Cloud 상태의 클립은 한 번에 처리할 수 없습니다.',
+          ),
+        );
     }
   }
 
@@ -1025,12 +1280,92 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
   }
 
+  void _showCloudWriteBlockedToast() {
+    if (!mounted) return;
+    final message = _userStatusManager.canReadExistingCloudClips()
+        ? _cloudService.subscriptionExpiredCloudWriteMessage()
+        : '클라우드 이동은 Standard 이상에서 사용할 수 있어요. 플랜을 확인해주세요.';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 6)),
+    );
+  }
+
+  void _showCloudReadBlockedToast() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(_cloudService.subscriptionExpiredCloudReadMessage()),
+        duration: const Duration(seconds: 6),
+      ),
+    );
+  }
+
+  void _showCloudTransferUnavailableToast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
+    );
+  }
+
   Future<void> _moveSelectedLocalToCloud() async {
     final targets = List<String>.from(_selectedClipPaths);
-    if (targets.isEmpty) return;
+    final prePendingStates = <String, ClipStorageState>{
+      for (final path in targets) path: videoManager.getClipStorageState(path),
+    };
+    final selectedCount = _selectedClipPaths.length;
+    final isGuest = AuthService().isGuest;
+    final canStartNewCloudWrite = _userStatusManager.canStartNewCloudWrite();
+    _logUploadMoveMethod(
+      '_moveSelectedLocalToCloud_entry',
+      targetCount: targets.length,
+      selectedCount: selectedCount,
+      isGuest: isGuest,
+      canStartNewCloudWrite: canStartNewCloudWrite,
+      pendingUploadUiSet: false,
+      stateCounts: clipStorageStateCountsForStates(prePendingStates.values),
+    );
 
-    if (AuthService().isGuest) {
+    if (targets.isEmpty) {
+      _logUploadMoveMethod(
+        '_moveSelectedLocalToCloud_early_return',
+        targetCount: targets.length,
+        selectedCount: selectedCount,
+        isGuest: isGuest,
+        canStartNewCloudWrite: canStartNewCloudWrite,
+        pendingUploadUiSet: false,
+        earlyReturnReason: 'no_targets',
+        stateCounts: clipStorageStateCountsForStates(prePendingStates.values),
+      );
+      return;
+    }
+
+    if (isGuest) {
+      _logUploadMoveMethod(
+        '_moveSelectedLocalToCloud_early_return',
+        targetCount: targets.length,
+        selectedCount: selectedCount,
+        isGuest: isGuest,
+        canStartNewCloudWrite: canStartNewCloudWrite,
+        pendingUploadUiSet: false,
+        earlyReturnReason: 'guest_blocked',
+        stateCounts: clipStorageStateCountsForStates(prePendingStates.values),
+      );
       _showGuestCloudActionBlockedToast();
+      return;
+    }
+
+    if (!canStartNewCloudWrite) {
+      _logUploadMoveMethod(
+        '_moveSelectedLocalToCloud_early_return',
+        targetCount: targets.length,
+        selectedCount: selectedCount,
+        isGuest: isGuest,
+        canStartNewCloudWrite: canStartNewCloudWrite,
+        pendingUploadUiSet: false,
+        earlyReturnReason: 'write_gate_blocked',
+        stateCounts: clipStorageStateCountsForStates(prePendingStates.values),
+      );
+      _showCloudWriteBlockedToast();
       return;
     }
 
@@ -1043,31 +1378,71 @@ class _LibraryScreenState extends State<LibraryScreen> {
       videoManager.markClipTransferPendingUpload(path);
     }
 
-    unawaited(_moveSelectedLocalToCloudInBackground(targets));
+    _logUploadMoveMethod(
+      '_moveSelectedLocalToCloud_background_dispatch',
+      targetCount: targets.length,
+      selectedCount: selectedCount,
+      isGuest: isGuest,
+      canStartNewCloudWrite: canStartNewCloudWrite,
+      pendingUploadUiSet: true,
+      backgroundDispatchInvoked: true,
+      stateCounts: clipStorageStateCountsForStates(prePendingStates.values),
+    );
+    unawaited(
+      _moveSelectedLocalToCloudInBackground(
+        targets,
+        prePendingStates: prePendingStates,
+      ),
+    );
   }
 
   Future<void> _moveSelectedLocalToCloudInBackground(
-    List<String> targets,
-  ) async {
+    List<String> targets, {
+    required Map<String, ClipStorageState> prePendingStates,
+  }) async {
     var success = 0;
     var failed = 0;
+    var skipped = 0;
+    var stateAllowedCount = 0;
+    var stateMismatchCount = 0;
+    var localFileExistsCount = 0;
+    var localFileMissingCount = 0;
+    var uploadVideoImmediateCallCount = 0;
+    var uploadSuccessCount = 0;
+    var uploadFailureCount = 0;
     String? firstErrorCode;
     String? firstErrorCopy;
+    _logUploadMoveMethod(
+      '_moveSelectedLocalToCloudInBackground_entry',
+      targetCount: targets.length,
+      selectedCount: 0,
+      pendingUploadUiSet: true,
+      taskStarted: true,
+      stateCounts: clipStorageStateCountsForStates(prePendingStates.values),
+    );
 
     for (final path in targets) {
       try {
-        if (videoManager.isClipCloudSynced(path)) {
+        final prePendingState = prePendingStates[path];
+        if (!isUploadMoveEligibleFromPrePendingState(prePendingState)) {
+          stateMismatchCount++;
+          skipped++;
           videoManager.markClipTransferUploadFailed(path);
           failed++;
           continue;
         }
+        stateAllowedCount++;
         final file = File(path);
         if (!await file.exists()) {
+          localFileMissingCount++;
+          skipped++;
           videoManager.markClipTransferUploadFailed(path);
           failed++;
           continue;
         }
+        localFileExistsCount++;
 
+        uploadVideoImmediateCallCount++;
         final videoId = await _cloudService.uploadVideoImmediate(
           videoFile: file,
           albumName: videoManager.currentAlbum,
@@ -1076,6 +1451,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         );
 
         if (videoId == null) {
+          uploadFailureCount++;
           firstErrorCode ??= _cloudService.lastImmediateUploadErrorCode;
           firstErrorCopy ??= _cloudService.lastImmediateUploadErrorCopy;
           videoManager.markClipTransferUploadFailed(path);
@@ -1083,24 +1459,53 @@ class _LibraryScreenState extends State<LibraryScreen> {
           continue;
         }
 
-        // UX 수정:
-        // "클라우드로 이동" 이후 Library에서 항목이 완전히 사라지는 문제를 방지하기 위해
-        // 로컬 파일을 즉시 삭제하지 않고, 클라우드 동기화 상태만 마킹한다.
-        // (필요 시 별도 '기기에서 삭제' 액션으로 정리)
-        await videoManager.markClipCloudSynced(path);
+        uploadSuccessCount++;
+        // Exclusive storage model: a completed Cloud move removes the local
+        // copy so the clip exists in exactly one storage tier.
+        await videoManager.removeLocalClipAfterCloudMove(
+          path: path,
+          albumName: videoManager.currentAlbum,
+        );
         videoManager.clearClipTransferUiState(path);
         success++;
       } catch (_) {
+        uploadFailureCount++;
         videoManager.markClipTransferUploadFailed(path);
         failed++;
       }
     }
+
+    final finalToastType = failed == 0
+        ? 'success'
+        : (success > 0 ? 'partial' : 'failure');
+    _logUploadMoveMethod(
+      '_moveSelectedLocalToCloudInBackground_summary',
+      targetCount: targets.length,
+      selectedCount: 0,
+      pendingUploadUiSet: true,
+      stateCounts: clipStorageStateCountsForStates(prePendingStates.values),
+      stateAllowedCount: stateAllowedCount,
+      stateMismatchCount: stateMismatchCount,
+      localFileExistsCount: localFileExistsCount,
+      localFileMissingCount: localFileMissingCount,
+      uploadVideoImmediateCallCount: uploadVideoImmediateCallCount,
+      uploadSuccessCount: uploadSuccessCount,
+      uploadFailureCount: uploadFailureCount,
+      successCount: success,
+      failureCount: failed,
+      skippedCount: skipped,
+      finalToastType: finalToastType,
+    );
 
     final text = failed == 0
         ? '클라우드로 $success개 이동 완료'
         : '클라우드 이동 완료 $success개, 실패 $failed개';
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+    }
+
+    if (success > 0) {
+      await videoManager.syncCloudMetadataToLibrary(trigger: 'move_to_cloud');
     }
 
     if (failed > 0 && mounted) {
@@ -1222,7 +1627,21 @@ class _LibraryScreenState extends State<LibraryScreen> {
             failed++;
             continue;
           }
-          await videoManager.registerCloudRestoredClip(
+
+          final removedFromCloud = await _cloudService.markVideoMovedToDevice(
+            meta.videoId,
+          );
+          if (!removedFromCloud) {
+            final downloadedFile = File(localPath);
+            if (await downloadedFile.exists()) {
+              await downloadedFile.delete();
+            }
+            videoManager.markClipTransferDownloadFailed(path);
+            failed++;
+            continue;
+          }
+
+          await videoManager.registerCloudMovedToDeviceClip(
             path: localPath,
             albumName: albumName,
             cloudMetadata: meta,
@@ -1254,18 +1673,74 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
   }
 
-  Widget _buildStorageFilterChip(String value, String label) {
-    final selected = _storageFilter == value;
+  bool _isLibraryFilterSelected(String value) {
+    if (value == 'favorites') return _showFavoritesOnly;
+    return !_showFavoritesOnly && _storageFilter == value;
+  }
+
+  void _setLibraryFilter(String value) {
+    setState(() {
+      if (value == 'favorites') {
+        _storageFilter = 'all';
+        _showFavoritesOnly = true;
+      } else {
+        _storageFilter = value;
+        _showFavoritesOnly = false;
+      }
+      _selectedClipPaths.clear();
+      _isClipSelectionMode = false;
+      if (_previewingPath != null &&
+          !videoManager.isClipVisibleByStorageFilter(
+            _previewingPath!,
+            _storageFilter,
+          )) {
+        _previewingPath = null;
+      }
+      if (_previewingPath != null &&
+          _showFavoritesOnly &&
+          !videoManager.favorites.contains(_previewingPath)) {
+        _previewingPath = null;
+      }
+    });
+  }
+
+  Widget _buildLibraryFilterChip(
+    String value,
+    String label, {
+    IconData? icon,
+    IconData? selectedIcon,
+  }) {
+    final selected = _isLibraryFilterSelected(value);
+    final resolvedIcon = selected ? selectedIcon ?? icon : icon;
+    final iconOnly = label.isEmpty && resolvedIcon != null;
     return ChoiceChip(
-      label: Text(label),
+      label: iconOnly
+          ? Icon(
+              resolvedIcon,
+              size: 18,
+              color: value == 'favorites'
+                  ? const Color(0xFFE91E63)
+                  : const Color(0xFF1A73E8),
+            )
+          : Text(label),
+      avatar: iconOnly || resolvedIcon == null
+          ? null
+          : Icon(
+              resolvedIcon,
+              size: 18,
+              color: value == 'favorites'
+                  ? const Color(0xFFE91E63)
+                  : const Color(0xFF1A73E8),
+            ),
+      showCheckmark: !iconOnly,
       selected: selected,
-      onSelected: (_) {
-        setState(() {
-          _storageFilter = value;
-          _selectedClipPaths.clear();
-          _isClipSelectionMode = false;
-        });
-      },
+      selectedColor: value == 'favorites'
+          ? const Color(0xFFFFE5EC)
+          : const Color(0xFFE8F0FE),
+      checkmarkColor: value == 'favorites'
+          ? const Color(0xFFE91E63)
+          : const Color(0xFF1A73E8),
+      onSelected: (_) => _setLibraryFilter(value),
     );
   }
 

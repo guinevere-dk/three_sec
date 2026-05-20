@@ -36,6 +36,22 @@ service firebase.storage {
                     && request.auth.uid == userId;
     }
 
+    // Cloud clip thumbnail path:
+    // users/{userId}/videos/{videoId}/thumbnails/poster.jpg
+    match /users/{userId}/videos/{videoId}/thumbnails/{fileName} {
+      allow read: if request.auth != null
+                  && request.auth.uid == userId
+                  && fileName == 'poster.jpg';
+
+      allow create, update: if request.auth != null
+                            && request.auth.uid == userId
+                            && fileName == 'poster.jpg'
+                            && isValidThumbnailFile();
+
+      // Storage physical delete is out of scope for the current move model.
+      allow delete: if false;
+    }
+
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 👤 사용자 프로필 이미지 경로: users/{userId}/profile/{fileName}
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -76,6 +92,14 @@ service firebase.storage {
     function isValidProfileImageFile() {
       let maxSize = 10 * 1024 * 1024; // 10MB
       let validTypes = ['image/jpeg', 'image/png', 'image/webp'];
+
+      return request.resource.size <= maxSize
+          && request.resource.contentType in validTypes;
+    }
+
+    function isValidThumbnailFile() {
+      let maxSize = 10 * 1024 * 1024; // 10MB
+      let validTypes = ['image/jpeg'];
 
       return request.resource.size <= maxSize
           && request.resource.contentType in validTypes;

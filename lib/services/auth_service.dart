@@ -101,9 +101,8 @@ class AuthServiceException implements Exception {
 
   @override
   String toString() {
-    return 'AuthServiceException(code=$code, provider=$provider, '
-        'httpStatus=$httpStatus, requestId=$requestId, message=$message, '
-        'details=$details, cause=$cause)';
+    return 'AuthServiceException(code=$code, provider=<redacted-provider>, '
+        'httpStatus=$httpStatus, requestId=$requestId)';
   }
 }
 
@@ -130,6 +129,93 @@ class AuthService {
     unawaited(_initializeAuthMode());
   }
 
+  static String _maskUid(String? value) {
+    final uid = value?.trim();
+    if (uid == null || uid.isEmpty) return '<no-uid>';
+    if (uid.length <= 8) return '<masked-uid>';
+    return '${uid.substring(0, 4)}...${uid.substring(uid.length - 4)}';
+  }
+
+  static String _redactedEmail(String? value) {
+    final email = value?.trim();
+    if (email == null || email.isEmpty) return '<no-email>';
+    final at = email.indexOf('@');
+    if (at <= 0) return '<redacted-email>';
+    return '${email[0]}***@***';
+  }
+
+  static String _redactedUrl(String? value) {
+    final url = value?.trim();
+    if (url == null || url.isEmpty) return '<no-url>';
+    return '<redacted-url>';
+  }
+
+  static String _entitlementTierName(UserTier tier) {
+    switch (tier) {
+      case UserTier.free:
+        return 'free';
+      case UserTier.standard:
+        return 'standard';
+      case UserTier.premium:
+        return 'premium';
+    }
+  }
+
+  static String _entitlementTrigger(String reason) {
+    switch (reason) {
+      case 'startup_warmup':
+      case 'app_resumed':
+      case 'return_from_paywall':
+        return reason;
+      case 'profile_initialize':
+        return 'profile_init';
+      case 'profile_refresh':
+        return 'profile_refresh';
+      case 'screen_init':
+      case 'return_from_play_cancel':
+      case 'manual_refresh':
+        return 'subscription_management_init';
+      default:
+        return 'startup_warmup';
+    }
+  }
+
+  static void _logEntitlementRefresh({
+    required String trigger,
+    required String source,
+    required UserTier beforeTier,
+    required UserTier afterTier,
+    required String result,
+    required String reasonCode,
+    required int durationMs,
+  }) {
+    print(
+      '[EntitlementRefresh] '
+      'trigger=${_entitlementTrigger(trigger)} '
+      'source=$source '
+      'before_tier=${_entitlementTierName(beforeTier)} '
+      'after_tier=${_entitlementTierName(afterTier)} '
+      'result=$result '
+      'reason_code=$reasonCode '
+      'candidate_count=0 '
+      'verified_active_count=0 '
+      'verified_inactive_count=0 '
+      'verification_failed_count=0 '
+      'duration_ms=$durationMs',
+    );
+  }
+
+  static String _redactedAuthError(Object error) {
+    if (error is FirebaseAuthException) {
+      return 'FirebaseAuthException(code=${error.code})';
+    }
+    if (error is AuthServiceException) {
+      return 'AuthServiceException(code=${error.code}, '
+          'httpStatus=${error.httpStatus}, requestId=${error.requestId})';
+    }
+    return error.runtimeType.toString();
+  }
+
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final GoogleSignIn _googleSignIn = GoogleSignIn();
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -141,6 +227,10 @@ class AuthService {
   static const bool guestLoginEnabledDefault = bool.fromEnvironment(
     'GUEST_LOGIN_ENABLED',
     defaultValue: true,
+  );
+  static const bool r3QaSubscriptionLockRequested = bool.fromEnvironment(
+    'R3_QA_SUBSCRIPTION_LOCK',
+    defaultValue: false,
   );
   static const String _guestLoginEnabledKey = '3s_guest_login_enabled';
   static const String _socialAuthExchangeUrl = String.fromEnvironment(
@@ -185,6 +275,31 @@ class AuthService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_guestAuthModeKey, mode == AuthMode.guest);
     print('[AuthService] authMode 변경: $mode');
+  }
+
+  static bool get isR3QaSubscriptionLockEnabled {
+    return !kReleaseMode && r3QaSubscriptionLockRequested;
+  }
+
+  @visibleForTesting
+  static bool shouldSkipFirestorePaidForQaLock({
+    required bool qaLockRequested,
+    required bool isReleaseMode,
+    required bool isSignedInUser,
+    required UserTier localTier,
+    required bool localGraceHistoryPresent,
+    required UserTier? firestoreCandidateTier,
+  }) {
+    final lockEnabled = !isReleaseMode && qaLockRequested;
+    final firestoreCandidatePaid =
+        firestoreCandidateTier == UserTier.standard ||
+        firestoreCandidateTier == UserTier.premium;
+
+    return lockEnabled &&
+        isSignedInUser &&
+        localTier == UserTier.free &&
+        localGraceHistoryPresent &&
+        firestoreCandidatePaid;
   }
 
   Future<bool> isGuestLoginEnabled() async {
@@ -249,16 +364,17 @@ class AuthService {
             final photoURL = data?['photoURL'];
             final photoUrlLegacy = data?['photo_url'];
             print(
-              '[AuthService][Diag][ProfileSnapshot] phase=$phase uid=$uid '
+              '[AuthService][Diag][ProfileSnapshot] phase=$phase uid=${_maskUid(uid)} '
               'exists=${snapshot.exists} '
-              'displayName=$displayName display_name=$displayNameLegacy '
-              'photoURL=$photoURL photo_url=$photoUrlLegacy '
+              'hasDisplayName=${displayName != null} hasDisplayNameLegacy=${displayNameLegacy != null} '
+              'photoURL=${_redactedUrl(_extractStringValue(photoURL, trim: true))} '
+              'photo_url=${_redactedUrl(_extractStringValue(photoUrlLegacy, trim: true))} '
               'rawKeys=${data?.keys.toList()} ',
             );
           })
           .catchError((e, stackTrace) {
             print(
-              '[AuthService][Diag][ProfileSnapshot] phase=$phase uid=$uid read failed: $e',
+              '[AuthService][Diag][ProfileSnapshot] phase=$phase uid=${_maskUid(uid)} read failed: $e',
             );
             print(stackTrace);
           }),
@@ -481,14 +597,18 @@ class AuthService {
         credential,
       );
 
-      print('[AuthService] ✓ Google 로그인 성공: ${userCredential.user?.email}');
+      print(
+        '[AuthService] ✓ Google 로그인 성공: '
+        'uid=${_maskUid(userCredential.user?.uid)} '
+        'email=${_redactedEmail(userCredential.user?.email)}',
+      );
 
       // 5. 로그인 후 후처리
       await _onSignInSuccess(userCredential.user!);
 
       return userCredential;
     } catch (e, stackTrace) {
-      print('[AuthService] ✗ Google 로그인 실패: $e');
+      print('[AuthService] ✗ Google 로그인 실패: ${_redactedAuthError(e)}');
       print(stackTrace);
       unawaited(
         _reviewFallbackMetrics.recordSocialLoginFailure(
@@ -533,7 +653,9 @@ class AuthService {
       );
 
       print(
-        '[AuthService] ✓ Apple 로그인 성공: ${userCredential.user?.email ?? "이메일 없음"}',
+        '[AuthService] ✓ Apple 로그인 성공: '
+        'uid=${_maskUid(userCredential.user?.uid)} '
+        'email=${_redactedEmail(userCredential.user?.email)}',
       );
 
       // 4. 로그인 후 후처리
@@ -541,7 +663,7 @@ class AuthService {
 
       return userCredential;
     } catch (e, stackTrace) {
-      print('[AuthService] ✗ Apple 로그인 실패: $e');
+      print('[AuthService] ✗ Apple 로그인 실패: ${_redactedAuthError(e)}');
       print(stackTrace);
       unawaited(
         _reviewFallbackMetrics.recordSocialLoginFailure(
@@ -606,9 +728,7 @@ class AuthService {
       print(
         '[AuthService][Diag][Kakao] loginWithKakao* 완료: '
         'hasAccessToken=${token.accessToken.isNotEmpty}, '
-        'hasIdToken=${token.idToken?.isNotEmpty ?? false}, '
-        'scopes=${token.scopes ?? []}, '
-        'expiresAt=${token.expiresAt.toIso8601String()}',
+        'hasIdToken=${token.idToken?.isNotEmpty ?? false}',
       );
 
       final userCredential = await _signInWithSocialProviderCustomToken(
@@ -623,10 +743,10 @@ class AuthService {
 
       print(
         '[AuthService] ✓ Kakao 로그인 성공: '
-        'uid=${userCredential.user?.uid} '
-        'email=${userCredential.user?.email} '
-        'displayName=${userCredential.user?.displayName} '
-        'photoUrl=${userCredential.user?.photoURL}',
+        'uid=${_maskUid(userCredential.user?.uid)} '
+        'email=${_redactedEmail(userCredential.user?.email)} '
+        'hasDisplayName=${userCredential.user?.displayName?.trim().isNotEmpty ?? false} '
+        'photoUrl=${_redactedUrl(userCredential.user?.photoURL)}',
       );
 
       await _onSignInSuccess(userCredential.user!);
@@ -643,7 +763,7 @@ class AuthService {
         _sessionBootstrapInProgress.value = false;
         return null;
       }
-      print('[AuthService] ✗ Kakao 로그인 실패: $e');
+      print('[AuthService] ✗ Kakao 로그인 실패: ${_redactedAuthError(e)}');
       print(stackTrace);
       unawaited(
         _reviewFallbackMetrics.recordSocialLoginFailure(
@@ -705,12 +825,16 @@ class AuthService {
         appVersion: await _resolveAppVersion(),
       );
 
-      print('[AuthService] ✓ Naver 로그인 성공: ${userCredential.user?.email}');
+      print(
+        '[AuthService] ✓ Naver 로그인 성공: '
+        'uid=${_maskUid(userCredential.user?.uid)} '
+        'email=${_redactedEmail(userCredential.user?.email)}',
+      );
 
       await _onSignInSuccess(userCredential.user!);
       return userCredential;
     } catch (e, stackTrace) {
-      print('[AuthService] ✗ Naver 로그인 실패: $e');
+      print('[AuthService] ✗ Naver 로그인 실패: ${_redactedAuthError(e)}');
       print(stackTrace);
       unawaited(
         _reviewFallbackMetrics.recordSocialLoginFailure(
@@ -743,13 +867,12 @@ class AuthService {
     String? appVersion,
     String? rawProviderUserId,
   }) async {
-    print('[AuthService][Diag][Exchange] provider=$provider');
+    print('[AuthService][Diag][Exchange] provider=<redacted-provider>');
     print(
-      '[AuthService][Diag][Exchange] socialAccessTokenLength=${socialAccessToken.length}',
+      '[AuthService][Diag][Exchange] hasSocialAccessToken=${socialAccessToken.isNotEmpty}',
     );
     print(
-      '[AuthService][Diag][Exchange] socialIdTokenLength='
-      '${socialIdToken?.length ?? 0}',
+      '[AuthService][Diag][Exchange] hasSocialIdToken=${socialIdToken?.isNotEmpty ?? false}',
     );
     _logRequestHeaders('Exchange', const {'Content-Type': 'application/json'});
 
@@ -809,7 +932,9 @@ class AuthService {
           )
           .timeout(const Duration(seconds: _socialAuthExchangeTimeoutSec));
     } catch (e, stackTrace) {
-      print('[AuthService][Diag][Exchange] post request failed: $e');
+      print(
+        '[AuthService][Diag][Exchange] post request failed: ${_redactedAuthError(e)}',
+      );
       print(stackTrace);
       if (e is SocketException) {
         throw AuthServiceException(
@@ -996,11 +1121,12 @@ class AuthService {
 
     print(
       '[AuthService][Diag][Exchange] extractedProfile '
-      'provider=$provider '
-      'displayName=$socialDisplayName photoUrl=$socialPhotoUrl '
-      'email=$socialEmail emailSource=$exchangeEmailSource '
+      'provider=<redacted-provider> '
+      'hasDisplayName=${socialDisplayName != null && socialDisplayName.isNotEmpty} '
+      'photoUrl=${_redactedUrl(socialPhotoUrl)} '
+      'email=${_redactedEmail(socialEmail)} emailSource=$exchangeEmailSource '
       'profileStatus=$socialProfileStatus '
-      'providerInfo=$socialProviderInfo',
+      'providerInfo=<redacted-provider-info>',
     );
 
     final userCredential = await _auth.signInWithCustomToken(firebaseToken);
@@ -1083,12 +1209,13 @@ class AuthService {
     try {
       print(
         '[AuthService][Diag][Exchange] applyProfile start '
-        'uid=${user.uid} '
+        'uid=${_maskUid(user.uid)} '
         'hasName=$hasProfileName hasPhoto=$hasProfilePhoto '
         'hasEmail=$hasEmail '
-        'exchangeName=$socialDisplayName exchangePhoto=$socialPhotoUrl '
-        'provider=$provider resolvedProvider=$providerLabel '
-        'providerPhoto=$providerPhotoUrl '
+        'exchangeNamePresent=${socialDisplayName != null && socialDisplayName.isNotEmpty} '
+        'exchangePhoto=${_redactedUrl(socialPhotoUrl)} '
+        'provider=<redacted-provider> resolvedProvider=<redacted-provider> '
+        'providerPhoto=${_redactedUrl(providerPhotoUrl)} '
         'providerStatus=$normalizedProfileStatus',
       );
 
@@ -1107,7 +1234,7 @@ class AuthService {
           }
         } on FirebaseAuthException catch (error) {
           print(
-            '[AuthService][Diag][Exchange] updateEmail skipped uid=${user.uid} '
+            '[AuthService][Diag][Exchange] updateEmail skipped uid=${_maskUid(user.uid)} '
             'code=${error.code} message=${error.message}',
           );
         }
@@ -1167,11 +1294,15 @@ class AuthService {
 
       print(
         '[AuthService][Diag][Exchange] applyProfile done '
-        'uid=${user.uid} '
-        'displayName=$resolvedDisplayName photoUrl=$resolvedPhotoUrl email=$socialEmail',
+        'uid=${_maskUid(user.uid)} '
+        'hasDisplayName=${resolvedDisplayName != null && resolvedDisplayName.isNotEmpty} '
+        'photoUrl=${_redactedUrl(resolvedPhotoUrl)} '
+        'email=${_redactedEmail(socialEmail)}',
       );
     } catch (e, stackTrace) {
-      print('[AuthService][Diag][Exchange] applyProfile failed: $e');
+      print(
+        '[AuthService][Diag][Exchange] applyProfile failed: ${_redactedAuthError(e)}',
+      );
       print(stackTrace);
     }
   }
@@ -1188,21 +1319,23 @@ class AuthService {
   Future<void> _onSignInSuccess(User user) async {
     try {
       final uid = user.uid;
+      final maskedUid = _maskUid(uid);
       await _setAuthMode(AuthMode.signedIn);
       final userManager = UserStatusManager();
       final previousLocalUid = userManager.userId;
+      final maskedPreviousLocalUid = _maskUid(previousLocalUid);
       final canPreserveLocalTierOnSyncFailure =
           previousLocalUid == uid && userManager.currentTier != UserTier.free;
-      print('[AuthService] 로그인 후처리 시작: $uid');
+      print('[AuthService] 로그인 후처리 시작: $maskedUid');
       print(
         '[AuthService][Diag][Session] sign-in bootstrap '
-        'uid=$uid localTier(beforeReset)=${UserStatusManager().currentTier} '
+        'uid=$maskedUid localTier(beforeReset)=${UserStatusManager().currentTier} '
         'localProduct(beforeReset)=${UserStatusManager().productId} '
         'localNextTier(beforeReset)=${UserStatusManager().nextTier}',
       );
       print(
         '[AuthService][Diag][Session] tier_preserve_guard '
-        'uid=$uid previousLocalUid=$previousLocalUid '
+        'uid=$maskedUid previousLocalUid=$maskedPreviousLocalUid '
         'canPreserveLocalTierOnSyncFailure=$canPreserveLocalTierOnSyncFailure',
       );
 
@@ -1213,21 +1346,21 @@ class AuthService {
         await userManager.resetToFree();
         print(
           '[AuthService][Diag][Session] after resetToFree '
-          'uid=$uid localTier=${userManager.currentTier} '
+          'uid=$maskedUid localTier=${userManager.currentTier} '
           'localProduct=${userManager.productId} localNextTier=${userManager.nextTier}',
         );
       } else {
         print(
           '[AuthService][Diag][TierSync][SYNCING_PENDING] '
           'preserve local tier before firestore sync '
-          'uid=$uid tier=${userManager.currentTier} productId=${userManager.productId}',
+          'uid=$maskedUid tier=${userManager.currentTier} productId=${userManager.productId}',
         );
       }
 
       // 2. UserStatusManager에 uid 저장
       await userManager.setUserId(uid);
       print(
-        '[AuthService][Session] setUserId done: uid=$uid, currentTier=${userManager.currentTier}',
+        '[AuthService][Session] setUserId done: uid=$maskedUid, currentTier=${userManager.currentTier}',
       );
 
       // 3. Firestore에서 구독 등급 동기화
@@ -1239,15 +1372,15 @@ class AuthService {
         print(
           '[AuthService][Diag][TierSync][SYNCING_PENDING] '
           'sync failed after retry but local tier is preserved '
-          'uid=$uid tier=${userManager.currentTier} productId=${userManager.productId}',
+          'uid=$maskedUid tier=${userManager.currentTier} productId=${userManager.productId}',
         );
       }
       print(
-        '[AuthService][Session] subscription sync done: uid=$uid, currentTier=${userManager.currentTier}, productId=${userManager.productId}',
+        '[AuthService][Session] subscription sync done: uid=$maskedUid, currentTier=${userManager.currentTier}, productId=${userManager.productId}',
       );
       print(
         '[AuthService][Diag][Session] post firestore sync '
-        'uid=$uid localTier=${userManager.currentTier} '
+        'uid=$maskedUid localTier=${userManager.currentTier} '
         'localProduct=${userManager.productId} '
         'localNextTier=${userManager.nextTier} '
         'localNextTierEffectiveAt=${userManager.nextTierEffectiveAt}',
@@ -1258,7 +1391,9 @@ class AuthService {
 
       // 로그인 복귀/앱 재시작 시 저장된 업로드 큐 복구 트리거
       await CloudService().restoreUploadQueueFromStore();
-      await VideoManager().syncCloudMetadataToLibrary(trigger: 'auth_post_login');
+      await VideoManager().syncCloudMetadataToLibrary(
+        trigger: 'auth_post_login',
+      );
 
       print('[AuthService] ✓ 로그인 후처리 완료');
     } catch (e, stackTrace) {
@@ -1273,6 +1408,7 @@ class AuthService {
     String uid, {
     required bool preserveLocalOnFailure,
     bool preserveLocalPaidTier = false,
+    String reason = 'startup_warmup',
   }) async {
     // [AndroidRelease][Checklist-1]
     // 로그인 직후 Firestore 일시 장애를 고려해 최소 1회 재시도 후,
@@ -1282,10 +1418,14 @@ class AuthService {
       preserveLocalOnFailure: preserveLocalOnFailure,
       preserveLocalPaidTier: preserveLocalPaidTier,
       attempt: 1,
+      reason: reason,
     );
     if (first) return true;
 
-    print('[AuthService][Diag][TierSync] retry once after sync failure: uid=$uid');
+    print(
+      '[AuthService][Diag][TierSync] retry once after sync failure: '
+      'uid=${_maskUid(uid)}',
+    );
     await Future<void>.delayed(const Duration(milliseconds: 350));
 
     return _syncSubscriptionFromFirestore(
@@ -1293,6 +1433,7 @@ class AuthService {
       preserveLocalOnFailure: preserveLocalOnFailure,
       preserveLocalPaidTier: preserveLocalPaidTier,
       attempt: 2,
+      reason: reason,
     );
   }
 
@@ -1313,7 +1454,25 @@ class AuthService {
       currentUid,
       preserveLocalOnFailure: true,
       preserveLocalPaidTier: preserveLocalPaidTier,
+      reason: reason,
     );
+  }
+
+  Future<bool> reconcileCurrentUserEntitlement({required String reason}) async {
+    if (!isAuthenticatedAccount) {
+      print(
+        '[AuthService][EntitlementRefresh] reconcile skipped: '
+        'reason=$reason signedIn=$isSignedIn guest=$isGuest',
+      );
+      return false;
+    }
+
+    final synced = await syncCurrentUserSubscriptionFromFirestore(
+      preserveLocalPaidTier: true,
+      reason: reason,
+    );
+    await UserStatusManager().initialize();
+    return synced;
   }
 
   /// Firestore에서 구독 등급 동기화
@@ -1322,13 +1481,17 @@ class AuthService {
     required bool preserveLocalOnFailure,
     bool preserveLocalPaidTier = false,
     int attempt = 1,
+    String reason = 'startup_warmup',
   }) async {
+    final maskedUid = _maskUid(uid);
+    final stopwatch = Stopwatch()..start();
     try {
       final userManager = UserStatusManager();
+      final beforeTier = userManager.currentTier;
       print(
         '[AuthService][Diag][TierSync] start '
         'attempt=$attempt preserveLocalOnFailure=$preserveLocalOnFailure '
-        'uid=$uid localTier(beforeFetch)=${userManager.currentTier} '
+        'uid=$maskedUid localTier(beforeFetch)=${userManager.currentTier} '
         'localProduct(beforeFetch)=${userManager.productId} '
         'localNextTier(beforeFetch)=${userManager.nextTier}',
       );
@@ -1339,11 +1502,29 @@ class AuthService {
           print(
             '[AuthService][Diag][TierSync][SYNCING_PENDING] '
             'Firestore user doc missing. keep local tier temporarily '
-            'uid=$uid attempt=$attempt',
+            'uid=$maskedUid attempt=$attempt',
+          );
+          _logEntitlementRefresh(
+            trigger: reason,
+            source: 'firestore_cache',
+            beforeTier: beforeTier,
+            afterTier: userManager.currentTier,
+            result: 'preserved',
+            reasonCode: 'no_candidate',
+            durationMs: stopwatch.elapsedMilliseconds,
           );
           return false;
         }
         await userManager.resetToFree();
+        _logEntitlementRefresh(
+          trigger: reason,
+          source: 'firestore_cache',
+          beforeTier: beforeTier,
+          afterTier: userManager.currentTier,
+          result: 'applied',
+          reasonCode: 'firestore_free',
+          durationMs: stopwatch.elapsedMilliseconds,
+        );
         print('[AuthService] Firestore에 사용자 데이터 없음 (신규 사용자)');
         return true;
       }
@@ -1377,7 +1558,7 @@ class AuthService {
 
       print(
         '[AuthService][TierSync] raw firestore data: '
-        'uid=$uid, tierString=$tierString, productId=$productId, purchaseDateMillis=$purchaseDateMillis, '
+        'uid=$maskedUid, tierString=$tierString, productId=$productId, purchaseDateMillis=$purchaseDateMillis, '
         'nextTierString=$nextTierString, nextTierEffectiveAtMillis=$nextTierEffectiveAtMillis',
       );
 
@@ -1407,12 +1588,39 @@ class AuthService {
       // 결제 직후 로컬 유료 권한이 먼저 반영된 상태에서는 Firestore 반영 지연으로
       // 즉시 free 강등되는 것을 피한다.
       if (tier == UserTier.free) {
+        if (userManager.currentTier == UserTier.free &&
+            userManager.canReadExistingCloudClips()) {
+          print(
+            '[AuthService][Diag][TierSync][LOCAL_GRACE_PRESERVED] '
+            'Firestore free but keep local R3 cloud read grace '
+            'uid=$maskedUid attempt=$attempt graceEnds=${userManager.cloudReadGraceEndsAt}',
+          );
+          _logEntitlementRefresh(
+            trigger: reason,
+            source: 'firestore_cache',
+            beforeTier: beforeTier,
+            afterTier: userManager.currentTier,
+            result: 'preserved',
+            reasonCode: 'local_grace_preserved',
+            durationMs: stopwatch.elapsedMilliseconds,
+          );
+          return true;
+        }
         if (preserveLocalPaidTier && userManager.currentTier != UserTier.free) {
           print(
             '[AuthService][Diag][TierSync][LOCAL_PAID_PRESERVED] '
             'Firestore free but keep local paid tier temporarily '
-            'uid=$uid attempt=$attempt localTier=${userManager.currentTier} '
+            'uid=$maskedUid attempt=$attempt localTier=${userManager.currentTier} '
             'localProduct=${userManager.productId}',
+          );
+          _logEntitlementRefresh(
+            trigger: reason,
+            source: 'firestore_cache',
+            beforeTier: beforeTier,
+            afterTier: userManager.currentTier,
+            result: 'preserved',
+            reasonCode: 'local_paid_preserved',
+            durationMs: stopwatch.elapsedMilliseconds,
           );
           return false;
         }
@@ -1420,7 +1628,16 @@ class AuthService {
         print('[AuthService] Firestore 구독 정보 없음/비정상 → 로컬 free로 정합화');
         print(
           '[AuthService][Diag][TierSync] normalized to free '
-          'uid=$uid tierFromFirestore=$tier nextTierFromFirestore=$nextTier',
+          'uid=$maskedUid tierFromFirestore=$tier nextTierFromFirestore=$nextTier',
+        );
+        _logEntitlementRefresh(
+          trigger: reason,
+          source: 'firestore_cache',
+          beforeTier: beforeTier,
+          afterTier: userManager.currentTier,
+          result: 'applied',
+          reasonCode: 'firestore_free',
+          durationMs: stopwatch.elapsedMilliseconds,
         );
         return true;
       }
@@ -1431,12 +1648,50 @@ class AuthService {
           print(
             '[AuthService][Diag][TierSync][SYNCING_PENDING] '
             'invalid tier payload -> keep local tier '
-            'uid=$uid attempt=$attempt',
+            'uid=$maskedUid attempt=$attempt',
+          );
+          _logEntitlementRefresh(
+            trigger: reason,
+            source: 'firestore_cache',
+            beforeTier: beforeTier,
+            afterTier: userManager.currentTier,
+            result: 'preserved',
+            reasonCode: 'no_candidate',
+            durationMs: stopwatch.elapsedMilliseconds,
           );
           return false;
         }
         await userManager.resetToFree();
+        _logEntitlementRefresh(
+          trigger: reason,
+          source: 'firestore_cache',
+          beforeTier: beforeTier,
+          afterTier: userManager.currentTier,
+          result: 'applied',
+          reasonCode: 'firestore_free',
+          durationMs: stopwatch.elapsedMilliseconds,
+        );
         print('[AuthService] Firestore 구독 정보 비정상(null) → 로컬 free로 정합화');
+        return true;
+      }
+
+      if (shouldSkipFirestorePaidForQaLock(
+        qaLockRequested: r3QaSubscriptionLockRequested,
+        isReleaseMode: kReleaseMode,
+        isSignedInUser: isAuthenticatedAccount,
+        localTier: userManager.currentTier,
+        localGraceHistoryPresent: userManager.isInCloudReadGrace(),
+        firestoreCandidateTier: tier,
+      )) {
+        _logEntitlementRefresh(
+          trigger: reason,
+          source: 'firestore_cache',
+          beforeTier: beforeTier,
+          afterTier: userManager.currentTier,
+          result: 'skipped',
+          reasonCode: 'qa_lock_applied',
+          durationMs: stopwatch.elapsedMilliseconds,
+        );
         return true;
       }
 
@@ -1472,7 +1727,7 @@ class AuthService {
 
       print(
         '[AuthService][Diag][TierSync] pending-evaluation '
-        'uid=$uid hasValidPendingChange=$hasValidPendingChange '
+        'uid=$maskedUid hasValidPendingChange=$hasValidPendingChange '
         'nextTierFromFirestore=$nextTier '
         'nextTierEffectiveAtFromFirestore=$nextTierEffectiveAtMillis '
         'localNextTier=${userManager.nextTier} '
@@ -1508,24 +1763,53 @@ class AuthService {
       print('[AuthService] ✓ Firestore에서 등급 동기화: $tier');
       print(
         '[AuthService][Diag][TierSync] done '
-        'uid=$uid localTier=${userManager.currentTier} '
+        'uid=$maskedUid localTier=${userManager.currentTier} '
         'localProduct=${userManager.productId} '
         'localNextTier=${userManager.nextTier} '
         'localNextTierEffectiveAt=${userManager.nextTierEffectiveAt}',
+      );
+      _logEntitlementRefresh(
+        trigger: reason,
+        source: 'firestore_cache',
+        beforeTier: beforeTier,
+        afterTier: userManager.currentTier,
+        result: 'applied',
+        reasonCode: downgraded ? 'expired_downgrade' : 'firestore_paid',
+        durationMs: stopwatch.elapsedMilliseconds,
       );
       return true;
     } catch (e, stackTrace) {
       print('[AuthService] ✗ Firestore 동기화 실패: $e');
       print(stackTrace);
       if (preserveLocalOnFailure) {
+        final userManager = UserStatusManager();
         print(
           '[AuthService][Diag][TierSync][SYNCING_PENDING] '
           'sync exception but keep local tier '
-          'uid=$uid attempt=$attempt',
+          'uid=$maskedUid attempt=$attempt',
+        );
+        _logEntitlementRefresh(
+          trigger: reason,
+          source: 'firestore_cache',
+          beforeTier: userManager.currentTier,
+          afterTier: userManager.currentTier,
+          result: 'failed',
+          reasonCode: 'no_candidate',
+          durationMs: stopwatch.elapsedMilliseconds,
         );
         return false;
       }
+      final beforeResetTier = UserStatusManager().currentTier;
       await UserStatusManager().resetToFree();
+      _logEntitlementRefresh(
+        trigger: reason,
+        source: 'firestore_cache',
+        beforeTier: beforeResetTier,
+        afterTier: UserStatusManager().currentTier,
+        result: 'failed',
+        reasonCode: 'firestore_free',
+        durationMs: stopwatch.elapsedMilliseconds,
+      );
       print('[AuthService] Firestore 동기화 예외 → 로컬 free로 정합화');
       return false;
     }
@@ -1536,8 +1820,9 @@ class AuthService {
     try {
       print(
         '[AuthService][Diag][ProfileUpdate] beforeSet '
-        'uid=${user.uid} email=${user.email} '
-        'displayName=${user.displayName} photoUrl=${user.photoURL}',
+        'uid=${_maskUid(user.uid)} email=${_redactedEmail(user.email)} '
+        'hasDisplayName=${user.displayName?.trim().isNotEmpty ?? false} '
+        'photoUrl=${_redactedUrl(user.photoURL)}',
       );
       _logProfileDocSnapshot(user.uid, 'beforeSet');
 
@@ -1605,7 +1890,7 @@ class AuthService {
 
       print(
         '[AuthService][Diag][ProfileEdit] start '
-        'uid=${user.uid} email=${user.email} '
+        'uid=${_maskUid(user.uid)} email=${_redactedEmail(user.email)} '
         'hasImage=${profileImageFile != null} '
         'displayNameLen=${trimmedName.length} '
         'bucket=${_storage.bucket}',
@@ -1617,7 +1902,8 @@ class AuthService {
         final fileSize = await profileImageFile.length();
         print(
           '[AuthService][Diag][ProfileEdit] upload prepare '
-          'uid=${user.uid} path=$uploadPath size=$fileSize contentType=image/jpeg',
+          'uid=${_maskUid(user.uid)} path=<redacted-storage-path> '
+          'size=$fileSize contentType=image/jpeg',
         );
 
         final ref = _storage.ref().child(uploadPath);
@@ -1628,7 +1914,8 @@ class AuthService {
         photoUrl = await taskSnapshot.ref.getDownloadURL();
         print(
           '[AuthService][Diag][ProfileEdit] upload success '
-          'uid=${user.uid} path=${ref.fullPath} photoUrl=$photoUrl',
+          'uid=${_maskUid(user.uid)} path=<redacted-storage-path> '
+          'photoUrl=${_redactedUrl(photoUrl)}',
         );
       }
 
@@ -1637,7 +1924,8 @@ class AuthService {
       await user.reload();
       print(
         '[AuthService][Diag][ProfileEdit] auth profile updated '
-        'uid=${user.uid} displayName=$trimmedName photoUrl=$photoUrl',
+        'uid=${_maskUid(user.uid)} displayNameLen=${trimmedName.length} '
+        'photoUrl=${_redactedUrl(photoUrl)}',
       );
 
       await _firestore.collection('users').doc(user.uid).set({
@@ -1649,7 +1937,8 @@ class AuthService {
         'updated_at': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
       print(
-        '[AuthService][Diag][ProfileEdit] firestore sync done uid=${user.uid}',
+        '[AuthService][Diag][ProfileEdit] firestore sync done '
+        'uid=${_maskUid(user.uid)}',
       );
 
       print('[AuthService] ✓ 사용자 편집 프로필 업데이트 완료');
@@ -1866,7 +2155,7 @@ class AuthService {
     await userManager.resetToFree();
     await userManager.clearUserId();
     print(
-      '[AuthService][Session] user status reset done: tier=${userManager.currentTier}, userId=${userManager.userId}',
+      '[AuthService][Session] user status reset done: tier=${userManager.currentTier}, userId=${_maskUid(userManager.userId)}',
     );
 
     // 세션 종료 시 로컬 처리 정책 적용
@@ -2065,14 +2354,15 @@ class AuthService {
       }
 
       final uid = deletingUser.uid;
-      print('[AuthService] 회원 탈퇴 시작: $uid');
+      final maskedUid = _maskUid(uid);
+      print('[AuthService] 회원 탈퇴 시작: $maskedUid');
 
       // Firebase delete는 최근 인증이 필수이므로, 삭제 실패/부분삭제를 막기 위해
       // 사전으로 최근 로그인 여부를 점검한다.
       if (!_isSignInRecentEnoughForDeletion(deletingUser)) {
         print(
           '[AuthService] 재인증 필요: 삭제 전 최근 로그인 이력이 부족함. '
-          'requiresReauth guard triggered uid=$uid lastSignIn=${deletingUser.metadata.lastSignInTime}',
+          'requiresReauth guard triggered uid=$maskedUid lastSignIn=${deletingUser.metadata.lastSignInTime}',
         );
         return const AccountDeletionResult(
           success: false,
@@ -2164,7 +2454,7 @@ class AuthService {
     final elapsed = DateTime.now().difference(lastSignIn);
     print(
       '[AuthService][Diag][DeleteAuth] lastSignIn=$lastSignIn elapsed=${elapsed.inSeconds}s '
-      'maxAllowed=${freshnessWindow.inSeconds}s uid=${user.uid}',
+      'maxAllowed=${freshnessWindow.inSeconds}s uid=${_maskUid(user.uid)}',
     );
     return elapsed <= freshnessWindow;
   }

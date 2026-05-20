@@ -99,13 +99,70 @@ void logFirstCameraPreviewStage(String stage, {String? detail}) {
   );
 }
 
+String _entitlementTierName(UserTier tier) {
+  switch (tier) {
+    case UserTier.free:
+      return 'free';
+    case UserTier.standard:
+      return 'standard';
+    case UserTier.premium:
+      return 'premium';
+  }
+}
+
+void _logStartupEntitlementRefresh({
+  required String source,
+  required UserTier beforeTier,
+  required UserTier afterTier,
+  required String result,
+  required String reasonCode,
+  required int durationMs,
+}) {
+  debugPrint(
+    '[EntitlementRefresh] '
+    'trigger=startup_warmup '
+    'source=$source '
+    'before_tier=${_entitlementTierName(beforeTier)} '
+    'after_tier=${_entitlementTierName(afterTier)} '
+    'result=$result '
+    'reason_code=$reasonCode '
+    'candidate_count=0 '
+    'verified_active_count=0 '
+    'verified_inactive_count=0 '
+    'verification_failed_count=0 '
+    'duration_ms=$durationMs',
+  );
+}
+
 Future<void> _warmUpStartupServices() async {
   try {
     final userStatusManager = UserStatusManager();
+    final initStopwatch = Stopwatch()..start();
+    final beforeInitTier = userStatusManager.currentTier;
     await userStatusManager.initialize();
+    _logStartupEntitlementRefresh(
+      source: 'local_cache',
+      beforeTier: beforeInitTier,
+      afterTier: userStatusManager.currentTier,
+      result: beforeInitTier == userStatusManager.currentTier
+          ? 'preserved'
+          : 'applied',
+      reasonCode: 'no_candidate',
+      durationMs: initStopwatch.elapsedMilliseconds,
+    );
 
+    final expiryStopwatch = Stopwatch()..start();
+    final beforeExpiryTier = userStatusManager.currentTier;
     final downgraded = await userStatusManager
         .evaluateAndAutoDowngradeIfExpired(reason: 'startup_warmup');
+    _logStartupEntitlementRefresh(
+      source: 'expiry_eval',
+      beforeTier: beforeExpiryTier,
+      afterTier: userStatusManager.currentTier,
+      result: downgraded ? 'applied' : 'skipped',
+      reasonCode: downgraded ? 'expired_downgrade' : 'no_candidate',
+      durationMs: expiryStopwatch.elapsedMilliseconds,
+    );
     if (downgraded) {
       await AuthService().syncFreeTierToFirestore(
         reason: 'startup_warmup_auto_downgrade',
@@ -121,6 +178,14 @@ Future<void> _warmUpStartupServices() async {
     await iapService.refreshEntitlementsFromStore(reason: 'startup_warmup');
   } catch (e) {
     debugPrint('[Startup] IAPService initialize failed: $e');
+  }
+
+  try {
+    await AuthService().reconcileCurrentUserEntitlement(
+      reason: 'startup_warmup',
+    );
+  } catch (e) {
+    debugPrint('[Startup] entitlement Firestore reconciliation failed: $e');
   }
 }
 

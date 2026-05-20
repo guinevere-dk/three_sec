@@ -40,6 +40,49 @@ class _ProfileScreenState extends State<ProfileScreen> {
   StreamSubscription<SyncStatusSummary>? _syncSummarySubscription;
   bool _isDeletingAccount = false;
 
+  static String _maskUid(String? value) {
+    final uid = value?.trim();
+    if (uid == null || uid.isEmpty) return '<no-uid>';
+    if (uid.length <= 8) return '<masked-uid>';
+    return '${uid.substring(0, 4)}...${uid.substring(uid.length - 4)}';
+  }
+
+  static String _entitlementTierName(UserTier tier) {
+    switch (tier) {
+      case UserTier.free:
+        return 'free';
+      case UserTier.standard:
+        return 'standard';
+      case UserTier.premium:
+        return 'premium';
+    }
+  }
+
+  static void _logEntitlementRefresh({
+    required String trigger,
+    required String source,
+    required UserTier beforeTier,
+    required UserTier afterTier,
+    required String result,
+    required String reasonCode,
+    required int durationMs,
+  }) {
+    print(
+      '[EntitlementRefresh] '
+      'trigger=$trigger '
+      'source=$source '
+      'before_tier=${_entitlementTierName(beforeTier)} '
+      'after_tier=${_entitlementTierName(afterTier)} '
+      'result=$result '
+      'reason_code=$reasonCode '
+      'candidate_count=0 '
+      'verified_active_count=0 '
+      'verified_inactive_count=0 '
+      'verification_failed_count=0 '
+      'duration_ms=$durationMs',
+    );
+  }
+
   static const Color _bgColor = Color(0xFFF6F7F8);
   static const Color _cardColor = Colors.white;
   static const Color _primaryBlue = Color(0xFF2BADEE);
@@ -56,10 +99,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
         _syncSummary = snapshot.syncSummary;
       });
     });
-    _syncSummarySubscription = _cloudService.syncSummaryStream.listen((summary) {
+    _syncSummarySubscription = _cloudService.syncSummaryStream.listen((
+      summary,
+    ) {
       if (!mounted) return;
       setState(() => _syncSummary = summary);
-      unawaited(_cloudService.refreshCloudStatsSnapshot(trigger: 'sync_summary_update'));
+      unawaited(
+        _cloudService.refreshCloudStatsSnapshot(trigger: 'sync_summary_update'),
+      );
     });
     _initializeProfileState();
   }
@@ -72,6 +119,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _initializeProfileState() async {
+    final initStopwatch = Stopwatch()..start();
+    final beforeInitTier = _userStatusManager.currentTier;
     print(
       '[ProfileScreen][Diag] initialize start '
       'tier(beforeInit)=${_userStatusManager.currentTier} '
@@ -82,6 +131,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
     // UserStatusManager는 앱 시작 직후 비동기 초기화될 수 있어
     // 프로필 진입 시점에 최신 tier를 보장하도록 한 번 더 초기화한다.
     await _userStatusManager.initialize();
+    _logEntitlementRefresh(
+      trigger: 'profile_init',
+      source: 'local_cache',
+      beforeTier: beforeInitTier,
+      afterTier: _userStatusManager.currentTier,
+      result: beforeInitTier == _userStatusManager.currentTier
+          ? 'preserved'
+          : 'applied',
+      reasonCode: 'no_candidate',
+      durationMs: initStopwatch.elapsedMilliseconds,
+    );
 
     print(
       '[ProfileScreen][Diag] initialize after userStatus.initialize '
@@ -91,20 +151,37 @@ class _ProfileScreenState extends State<ProfileScreen> {
       'effectiveAt=${_userStatusManager.nextTierEffectiveAt}',
     );
 
+    final expiryStopwatch = Stopwatch()..start();
+    final beforeExpiryTier = _userStatusManager.currentTier;
     final downgraded = await _userStatusManager
         .evaluateAndAutoDowngradeIfExpired(reason: 'profile_initialize');
+    _logEntitlementRefresh(
+      trigger: 'profile_init',
+      source: 'expiry_eval',
+      beforeTier: beforeExpiryTier,
+      afterTier: _userStatusManager.currentTier,
+      result: downgraded ? 'applied' : 'skipped',
+      reasonCode: downgraded ? 'expired_downgrade' : 'no_candidate',
+      durationMs: expiryStopwatch.elapsedMilliseconds,
+    );
     if (downgraded) {
       await _authService.syncFreeTierToFirestore(
         reason: 'profile_initialize_auto_downgrade',
       );
     }
 
+    await _authService.reconcileCurrentUserEntitlement(
+      reason: 'profile_initialize',
+    );
+    await _userStatusManager.initialize();
+
     await _loadCloudStats();
     await _loadAppVersion();
   }
 
   Future<void> _loadCloudStats() async {
-    if (_authService.isGuest || !_userStatusManager.isStandardOrAbove()) {
+    if (_authService.isGuest ||
+        !_userStatusManager.canReadExistingCloudClips()) {
       if (!mounted) return;
       setState(() {
         _cloudClipCount = 0;
@@ -142,6 +219,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _refreshProfile() async {
+    final initStopwatch = Stopwatch()..start();
+    final beforeInitTier = _userStatusManager.currentTier;
     print(
       '[ProfileScreen][Diag] refresh start '
       'tier(beforeInit)=${_userStatusManager.currentTier} '
@@ -149,6 +228,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
 
     await _userStatusManager.initialize();
+    _logEntitlementRefresh(
+      trigger: 'profile_refresh',
+      source: 'local_cache',
+      beforeTier: beforeInitTier,
+      afterTier: _userStatusManager.currentTier,
+      result: beforeInitTier == _userStatusManager.currentTier
+          ? 'preserved'
+          : 'applied',
+      reasonCode: 'no_candidate',
+      durationMs: initStopwatch.elapsedMilliseconds,
+    );
 
     print(
       '[ProfileScreen][Diag] refresh after userStatus.initialize '
@@ -158,13 +248,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
       'effectiveAt=${_userStatusManager.nextTierEffectiveAt}',
     );
 
+    final expiryStopwatch = Stopwatch()..start();
+    final beforeExpiryTier = _userStatusManager.currentTier;
     final downgraded = await _userStatusManager
         .evaluateAndAutoDowngradeIfExpired(reason: 'profile_refresh');
+    _logEntitlementRefresh(
+      trigger: 'profile_refresh',
+      source: 'expiry_eval',
+      beforeTier: beforeExpiryTier,
+      afterTier: _userStatusManager.currentTier,
+      result: downgraded ? 'applied' : 'skipped',
+      reasonCode: downgraded ? 'expired_downgrade' : 'no_candidate',
+      durationMs: expiryStopwatch.elapsedMilliseconds,
+    );
     if (downgraded) {
       await _authService.syncFreeTierToFirestore(
         reason: 'profile_refresh_auto_downgrade',
       );
     }
+
+    await _authService.reconcileCurrentUserEntitlement(
+      reason: 'profile_refresh',
+    );
+    await _userStatusManager.initialize();
 
     await _loadCloudStats();
     await _loadAppVersion();
@@ -726,7 +832,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       'productId=${_userStatusManager.productId} '
       'nextTier=${_userStatusManager.nextTier} '
       'effectiveAt=${_userStatusManager.nextTierEffectiveAt} '
-      'uid=${_userStatusManager.userId}',
+      'uid=${_maskUid(_userStatusManager.userId)}',
     );
     final displayName = _profileDisplayName(user);
     final subtitle = _profileSubtitle(user);
@@ -1059,10 +1165,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return Consumer<VideoManager>(
       builder: (context, videoManager, child) {
         final clipCount = NumberFormat.decimalPattern().format(
-          videoManager.totalClipCount,
+          videoManager.totalDeviceClipCount,
         );
         final isCloudEnabled =
-            !_authService.isGuest && _userStatusManager.isStandardOrAbove();
+            !_authService.isGuest &&
+            _userStatusManager.canReadExistingCloudClips();
         final cloudClipCount = isCloudEnabled
             ? NumberFormat.decimalPattern().format(_cloudClipCount)
             : '-';
@@ -1113,10 +1220,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   String _formatCloudUsageText() {
+    final limitText = '${_cloudStorageLimitGB.toStringAsFixed(0)}GB';
     if (_cloudStorageLimitGB <= 0) {
+      if (_cloudStorageUsageGB < 1) {
+        return '${(_cloudStorageUsageGB * 1024).round()}MB';
+      }
       return '${_cloudStorageUsageGB.toStringAsFixed(1)}GB';
     }
-    return '${_cloudStorageUsageGB.toStringAsFixed(1)}/${_cloudStorageLimitGB.toStringAsFixed(0)}GB';
+    if (_cloudStorageUsageGB < 1) {
+      return '${(_cloudStorageUsageGB * 1024).round()}MB/$limitText';
+    }
+    return '${_cloudStorageUsageGB.toStringAsFixed(1)}/$limitText';
   }
 
   String _syncSummaryText() {
@@ -1124,7 +1238,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (pending == 0 && _syncSummary.failedCount == 0) return '';
     final parts = <String>[];
     if (pending > 0) parts.add('대기 $pending');
-    if (_syncSummary.failedCount > 0) parts.add('실패 ${_syncSummary.failedCount}');
+    if (_syncSummary.failedCount > 0)
+      parts.add('실패 ${_syncSummary.failedCount}');
     return parts.join(' · ');
   }
 

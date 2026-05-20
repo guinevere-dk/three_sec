@@ -222,11 +222,13 @@ class MediaWidgets {
     bool benchmarkStyle = false,
     bool showDurationBadge = false,
     String? statusBadge,
+    bool isCloudOnly = false,
     String? title, // Added
     String? subtitle, // Added
     required VoidCallback onTap,
     required VoidCallback onLongPress,
     required Future<Uint8List?> Function(String) getThumbnail,
+    Future<Uint8List?> Function(String)? getCloudThumbnail,
     Future<Duration> Function(String)? getDuration,
     ValueChanged<AsyncSnapshot<Uint8List?>>? onThumbnailSnapshot,
   }) {
@@ -247,22 +249,28 @@ class MediaWidgets {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // Thumbnail
-            FutureBuilder<Uint8List?>(
-              future: getThumbnail(path),
-              builder: (c, s) {
-                onThumbnailSnapshot?.call(s);
-                return s.hasData
-                    ? Image.memory(s.data!, fit: BoxFit.cover)
-                    : Container(
-                        color: benchmarkStyle
-                            ? const Color(0xFFD6DBE2)
-                            : Colors.grey[200],
-                      );
-              },
-            ),
+            // Thumbnail / Cloud placeholder
+            if (isCloudOnly)
+              _buildCloudOnlyClipBody(
+                path: path,
+                getCloudThumbnail: getCloudThumbnail,
+              )
+            else
+              FutureBuilder<Uint8List?>(
+                future: getThumbnail(path),
+                builder: (c, s) {
+                  onThumbnailSnapshot?.call(s);
+                  return s.hasData
+                      ? Image.memory(s.data!, fit: BoxFit.cover)
+                      : Container(
+                          color: benchmarkStyle
+                              ? const Color(0xFFD6DBE2)
+                              : Colors.grey[200],
+                        );
+                },
+              ),
 
-            if (showDurationBadge && getDuration != null)
+            if (!isCloudOnly && showDurationBadge && getDuration != null)
               Positioned(
                 left: 8,
                 bottom: 8,
@@ -441,6 +449,98 @@ class MediaWidgets {
     return formatClipDurationBadge(d);
   }
 
+  static Widget _buildCloudOnlyClipBody({
+    required String path,
+    Future<Uint8List?> Function(String)? getCloudThumbnail,
+  }) {
+    if (getCloudThumbnail != null) {
+      return FutureBuilder<Uint8List?>(
+        future: getCloudThumbnail(path),
+        builder: (context, snapshot) {
+          final bytes = snapshot.data;
+          if (bytes != null && bytes.isNotEmpty) {
+            return Image.memory(bytes, fit: BoxFit.cover);
+          }
+          return _buildCloudOnlyFallbackBody();
+        },
+      );
+    }
+
+    return _buildCloudOnlyFallbackBody();
+  }
+
+  static Widget _buildCloudOnlyFallbackBody() {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFFEAF3FF), Color(0xFFD9E9FF)],
+        ),
+      ),
+      padding: const EdgeInsets.fromLTRB(10, 18, 10, 12),
+      child: Center(
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: SizedBox(
+            width: 150,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withAlpha(220),
+                    borderRadius: BorderRadius.circular(14),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF16A34A).withAlpha(34),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  alignment: Alignment.center,
+                  child: const Icon(
+                    Icons.cloud_done_rounded,
+                    color: Color(0xFF16A34A),
+                    size: 31,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Cloud',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(0xFF166534),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  '길게 눌러 기기로 받기',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(0xFF3F6F50),
+                    fontSize: 10,
+                    height: 1.15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   static bool _isLoadingBadge(String statusBadge) => statusBadge == '로딩중';
 
   static Color _statusBadgeBackgroundColor(String statusBadge) {
@@ -450,7 +550,7 @@ class MediaWidgets {
       case '동기화됨':
         return const Color(0xCC2E7D32);
       case 'Cloud':
-        return const Color(0xCC1A73E8);
+        return const Color(0xCC16A34A);
       case '기기':
       case '잠김':
         return const Color(0xCC37474F);
@@ -465,7 +565,7 @@ class MediaWidgets {
       case '동기화됨':
         return Icons.cloud_done_rounded;
       case 'Cloud':
-        return Icons.cloud_download_rounded;
+        return Icons.cloud_done_rounded;
       case '기기':
       case '잠김':
         return Icons.smartphone_rounded;

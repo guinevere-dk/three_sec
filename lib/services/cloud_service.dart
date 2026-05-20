@@ -1,9 +1,13 @@
 import 'dart:io';
 import 'dart:async';
 import 'dart:math';
+import 'dart:ui' as ui;
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
+import 'package:video_player/video_player.dart';
+import 'package:video_thumbnail/video_thumbnail.dart' as thum;
 import '../managers/user_status_manager.dart';
 import '../managers/video_manager.dart';
 import '../models/vlog_project.dart';
@@ -59,6 +63,9 @@ class CloudService {
   static const String _errorNetwork = 'network_unavailable';
   static const String _errorQuota = 'quota_exceeded';
   static const String _errorUploadFailed = 'upload_failed';
+  static const String _errorThumbnailGeneration = 'thumbnail_generation_failed';
+  static const String _errorThumbnailUpload = 'thumbnail_upload_failed';
+  static const String _errorThumbnailMetadata = 'thumbnail_metadata_failed';
   static const String _errorFileSystem = 'file_system_error';
   static const String _errorNotFound = 'resource_not_found';
 
@@ -102,6 +109,38 @@ class CloudService {
     _lastImmediateUploadErrorCopy = null;
   }
 
+  static String _maskUid(String? value) {
+    final uid = value?.trim();
+    if (uid == null || uid.isEmpty) return '<uid-unavailable>';
+    if (uid.length <= 8) return '<masked-uid>';
+    return '${uid.substring(0, 4)}...${uid.substring(uid.length - 4)}';
+  }
+
+  static String _redactErrorForMetadata(String rawError) {
+    final trimmed = rawError.trim();
+    if (trimmed.isEmpty) return '<redacted-error>';
+    return trimmed
+        .replaceAll(
+          RegExp(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}'),
+          '<redacted-email>',
+        )
+        .replaceAll(RegExp(r'[A-Za-z]:[\\/][^\s)]+'), '<redacted-path>')
+        .replaceAll(RegExp(r'/(?:[^\s)]+/)*[^\s)]+\.mp4'), '<redacted-path>')
+        .replaceAll(RegExp(r'\b[\w.-]+\.mp4\b'), '<redacted-file>');
+  }
+
+  static String _maskId(String? value, {String label = 'id'}) {
+    final id = value?.trim();
+    if (id == null || id.isEmpty) return '<$label-unavailable>';
+    if (id.length <= 8) return '<masked-$label>';
+    return '${id.substring(0, 4)}...${id.substring(id.length - 4)}';
+  }
+
+  static String _redactedPathCountLabel(String? value) {
+    final hasValue = value != null && value.trim().isNotEmpty;
+    return hasValue ? '<redacted-path>' : '<path-unavailable>';
+  }
+
   Future<void> initializeQueueStore() async {
     if (_syncJobsLoaded) return;
     _syncJobs = await _syncQueueStore.loadJobs();
@@ -143,7 +182,9 @@ class CloudService {
             job.storagePath!.trim().isEmpty) {
           print(
             '[CloudService] ⚠️ 복구 스킵: 동기화 메타데이터 누락 '
-            '(videoId=${job.entityId}, localPath=${job.localPath}, storagePath=${job.storagePath})',
+            '(videoId=${_maskId(job.entityId, label: 'video-id')}, '
+            'localPath=${_redactedPathCountLabel(job.localPath)}, '
+            'storagePath=${_redactedPathCountLabel(job.storagePath)})',
           );
           skipped += 1;
           continue;
@@ -153,7 +194,8 @@ class CloudService {
         if (!await file.exists()) {
           print(
             '[CloudService] ⚠️ 복구 스킵: 로컬 파일 미존재 '
-            '(videoId=${job.entityId}, localPath=${job.localPath})',
+            '(videoId=${_maskId(job.entityId, label: 'video-id')}, '
+            'localPath=${_redactedPathCountLabel(job.localPath)})',
           );
           skipped += 1;
           continue;
@@ -174,7 +216,8 @@ class CloudService {
         )) {
           print(
             '[CloudService] 🔁 복구 큐 중복 스킵 '
-            '(videoId=${job.entityId}, dedupe=$dedupeKey)',
+            '(videoId=${_maskId(job.entityId, label: 'video-id')}, '
+            'dedupe=<redacted-dedupe-key>)',
           );
           skipped += 1;
           continue;
@@ -188,6 +231,7 @@ class CloudService {
             storagePath: job.storagePath!,
             fileSize: await file.length(),
             uid: uid,
+            albumName: p.basename(p.dirname(job.localPath!)),
             localPath: job.localPath,
             projectId: job.projectId,
             attemptCount: job.attemptCount,
@@ -413,17 +457,36 @@ class CloudService {
   bool _canStartNewCloudWrite(String operation) {
     if (_userStatusManager.canStartNewCloudWrite()) return true;
 
+    final reason = _cloudWriteBlockedReasonCode();
     print(
-      '[CloudService] ✗ 구독 만료로 신규 Cloud 작업 차단: '
-      '$operation (tier=${_userStatusManager.currentTier}, expiry=${_userStatusManager.lastKnownPaidExpiryAt})',
+      '[CloudService] ✗ 신규 Cloud 작업 차단: '
+      '$operation (reason=$reason, tier=${_userStatusManager.currentTier}, expiry=${_userStatusManager.lastKnownPaidExpiryAt}, graceEnds=${_userStatusManager.cloudReadGraceEndsAt})',
     );
     unawaited(
       _reviewFallbackMetrics.recordCloudAccessBlocked(
         operation: operation,
-        reason: 'subscription_expired',
+        reason: reason,
       ),
     );
     return false;
+  }
+
+  String _cloudWriteBlockedReasonCode() {
+    if (_userStatusManager.isStandardOrAbove()) {
+      return _errorSubscriptionExpired;
+    }
+    if (_userStatusManager.canReadExistingCloudClips()) {
+      return _errorSubscriptionExpired;
+    }
+    return _errorTierRequired;
+  }
+
+  String _cloudWriteBlockedMessage() {
+    final reason = _cloudWriteBlockedReasonCode();
+    if (reason == _errorTierRequired) {
+      return '클라우드 이동은 Standard 이상에서 사용할 수 있어요. 플랜을 확인해주세요.';
+    }
+    return subscriptionExpiredCloudWriteMessage();
   }
 
   bool _canReadExistingCloudClips(String operation) {
@@ -490,8 +553,9 @@ class CloudService {
     } catch (e) {
       final authUid = _authService.currentUser?.uid;
       print(
-        '[CloudService] ✗ 사용량 조회 실패: $e '
-        '(requestedUid=$uid, authUid=$authUid, signedIn=${_authService.isSignedIn})',
+        '[CloudService] ✗ 사용량 조회 실패: errorType=${e.runtimeType} '
+        '(requestedUid=${_maskUid(uid)}, authUid=${_maskUid(authUid)}, '
+        'signedIn=${_authService.isSignedIn})',
       );
       return 0;
     }
@@ -514,7 +578,7 @@ class CloudService {
       await _firestore.runTransaction((tx) async {
         final eventSnap = await tx.get(eventRef);
         if (eventSnap.exists) {
-          print('[CloudService] usage 이벤트 중복 스킵: $eventId');
+          print('[CloudService] usage 이벤트 중복 스킵: eventId=<redacted-id>');
           return;
         }
 
@@ -540,10 +604,14 @@ class CloudService {
 
       print(
         '[CloudService] ✓ 사용량 업데이트(멱등): '
-        'event=$eventId, delta=${delta > 0 ? '+' : ''}${(delta / (1024 * 1024)).toStringAsFixed(2)}MB',
+        'event=<redacted-id>, '
+        'delta=${delta > 0 ? '+' : ''}${(delta / (1024 * 1024)).toStringAsFixed(2)}MB',
       );
     } catch (e) {
-      print('[CloudService] ✗ 사용량 업데이트 실패(event=$eventId): $e');
+      print(
+        '[CloudService] ✗ 사용량 업데이트 실패'
+        '(event=<redacted-id>, errorType=${e.runtimeType})',
+      );
     }
   }
 
@@ -566,7 +634,7 @@ class CloudService {
   }) async {
     print('[CloudService] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     print('[CloudService] 📤 업로드 요청');
-    print('[CloudService]   - 파일: ${p.basename(videoFile.path)}');
+    print('[CloudService]   - 파일: <redacted-file>');
     print('[CloudService]   - 앨범: $albumName');
     print('[CloudService]   - 즐겨찾기: $isFavorite');
 
@@ -577,10 +645,6 @@ class CloudService {
     // 1. 보안 검증
     final uid = _getCurrentUserId();
     if (uid == null) return null;
-
-    if (!_checkStandardOrAbove()) {
-      return null;
-    }
 
     if (!_canStartNewCloudWrite('클라우드 이동')) {
       return null;
@@ -619,7 +683,10 @@ class CloudService {
         'updatedAt': FieldValue.serverTimestamp(),
       });
 
-      print('[CloudService] ✓ 메타데이터 생성: $videoId');
+      print(
+        '[CloudService] ✓ 메타데이터 생성: '
+        'videoId=${_maskId(videoId, label: 'video-id')}',
+      );
 
       // 5. 업로드 큐에 추가
       await _addToUploadQueue(
@@ -628,12 +695,16 @@ class CloudService {
         storagePath: storagePath,
         fileSize: fileSize,
         uid: uid,
+        albumName: albumName,
         localPath: localPath,
       );
 
       return videoId;
     } catch (e) {
-      print('[CloudService] ✗ 업로드 준비 실패: $e');
+      print(
+        '[CloudService] ✗ 업로드 준비 실패: '
+        'errorType=${e.runtimeType}',
+      );
       return null;
     }
   }
@@ -645,6 +716,34 @@ class CloudService {
     String? localPath,
   }) async {
     clearLastImmediateUploadError();
+    var thumbnailGenerationAttemptCount = 0;
+    var thumbnailGenerationSuccessCount = 0;
+    var thumbnailGenerationFailureCount = 0;
+    var thumbnailUploadAttemptCount = 0;
+    var thumbnailUploadSuccessCount = 0;
+    var thumbnailUploadFailureCount = 0;
+    var thumbnailMetadataCommitSuccessCount = 0;
+    var thumbnailMetadataCommitFailureCount = 0;
+    var videoUploadSucceeded = false;
+    var thumbnailGenerated = false;
+    var thumbnailUploaded = false;
+    var thumbnailMetadataCommitted = false;
+    var localCleanupExecuted = false;
+
+    void logThumbnailDiagnostics(String result) {
+      print(
+        '[CloudService][ThumbnailUpload] result=$result '
+        'thumbnail_generation_attempt_count=$thumbnailGenerationAttemptCount '
+        'thumbnail_generation_success=$thumbnailGenerationSuccessCount '
+        'thumbnail_generation_failure=$thumbnailGenerationFailureCount '
+        'thumbnail_upload_attempt_count=$thumbnailUploadAttemptCount '
+        'thumbnail_upload_success=$thumbnailUploadSuccessCount '
+        'thumbnail_upload_failure=$thumbnailUploadFailureCount '
+        'thumbnail_metadata_commit_success=$thumbnailMetadataCommitSuccessCount '
+        'thumbnail_metadata_commit_failure=$thumbnailMetadataCommitFailureCount '
+        'local_cleanup_executed=$localCleanupExecuted',
+      );
+    }
 
     if (!_ensureNotGuestForCloud('클라우드 이동')) {
       _lastImmediateUploadErrorCode = _errorGuestModeBlocked;
@@ -659,15 +758,9 @@ class CloudService {
       _lastImmediateUploadErrorCopy = '로그인이 필요해요. 다시 로그인한 뒤 클라우드 이동을 재시도해주세요.';
       return null;
     }
-    if (!_checkStandardOrAbove()) {
-      _lastImmediateUploadErrorCode = _errorTierRequired;
-      _lastImmediateUploadErrorCopy =
-          '클라우드 이동은 Standard 이상에서 사용할 수 있어요. 플랜을 확인해주세요.';
-      return null;
-    }
     if (!_canStartNewCloudWrite('클라우드 이동')) {
-      _lastImmediateUploadErrorCode = _errorSubscriptionExpired;
-      _lastImmediateUploadErrorCopy = subscriptionExpiredCloudWriteMessage();
+      _lastImmediateUploadErrorCode = _cloudWriteBlockedReasonCode();
+      _lastImmediateUploadErrorCopy = _cloudWriteBlockedMessage();
       return null;
     }
 
@@ -682,6 +775,8 @@ class CloudService {
     final videoId = _firestore.collection(_videosCollection).doc().id;
     final fileName = p.basename(videoFile.path);
     final storagePath = 'users/$uid/videos/$videoId/$fileName';
+    final thumbnailStoragePath =
+        'users/$uid/videos/$videoId/thumbnails/poster.jpg';
 
     try {
       await _firestore.collection(_videosCollection).doc(videoId).set({
@@ -695,9 +790,24 @@ class CloudService {
         'fileSize': fileSize,
         'uploadStatus': 'uploading',
         'uploadProgress': 0,
+        'thumbnailStatus': 'pending',
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       });
+
+      thumbnailGenerationAttemptCount++;
+      final poster = await _generatePosterThumbnail(videoFile);
+      if (poster == null) {
+        thumbnailGenerationFailureCount++;
+        await _safeUpdateThumbnailFailureMetadata(videoId);
+        throw const _CloudThumbnailPipelineException(
+          code: _errorThumbnailGeneration,
+          copy: '썸네일 생성에 실패해 클라우드 이동을 완료하지 못했어요. 다시 시도해주세요.',
+          phase: 'thumbnail_generation',
+        );
+      }
+      thumbnailGenerated = true;
+      thumbnailGenerationSuccessCount++;
 
       final metadata = _buildVideoMetadata(videoFile.path);
       print(
@@ -706,14 +816,50 @@ class CloudService {
       final ref = _storage.ref().child(storagePath);
       final task = await ref.putFile(videoFile, metadata);
       final downloadUrl = await task.ref.getDownloadURL();
+      videoUploadSucceeded = true;
 
-      await _firestore.collection(_videosCollection).doc(videoId).update({
-        'uploadStatus': 'completed',
-        'uploadProgress': 100,
-        'downloadUrl': downloadUrl,
-        'completedAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      try {
+        thumbnailUploadAttemptCount++;
+        await _storage
+            .ref()
+            .child(thumbnailStoragePath)
+            .putData(poster.bytes, SettableMetadata(contentType: 'image/jpeg'));
+        thumbnailUploaded = true;
+        thumbnailUploadSuccessCount++;
+      } catch (_) {
+        thumbnailUploadFailureCount++;
+        await _safeUpdateThumbnailFailureMetadata(videoId);
+        throw const _CloudThumbnailPipelineException(
+          code: _errorThumbnailUpload,
+          copy: '썸네일 업로드에 실패해 클라우드 이동을 완료하지 못했어요. 다시 시도해주세요.',
+          phase: 'thumbnail_upload',
+        );
+      }
+
+      try {
+        await _firestore.collection(_videosCollection).doc(videoId).update({
+          'uploadStatus': 'completed',
+          'uploadProgress': 100,
+          'downloadUrl': downloadUrl,
+          'thumbnailStatus': 'completed',
+          'thumbnailStoragePath': thumbnailStoragePath,
+          'thumbnailWidth': poster.width,
+          'thumbnailHeight': poster.height,
+          'durationMs': poster.durationMs,
+          'completedAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+        thumbnailMetadataCommitted = true;
+        thumbnailMetadataCommitSuccessCount++;
+      } catch (_) {
+        thumbnailMetadataCommitFailureCount++;
+        await _safeUpdateThumbnailFailureMetadata(videoId);
+        throw const _CloudThumbnailPipelineException(
+          code: _errorThumbnailMetadata,
+          copy: '클라우드 메타데이터 저장에 실패해 이동을 완료하지 못했어요. 다시 시도해주세요.',
+          phase: 'thumbnail_metadata',
+        );
+      }
 
       await _updateStorageUsageIdempotent(
         uid: uid,
@@ -721,13 +867,33 @@ class CloudService {
         delta: fileSize,
         reason: 'upload_completed',
       );
-      if (localPath != null) {
-        await VideoManager().markClipCloudSynced(localPath);
+      if (localPath != null &&
+          shouldRunLocalCleanupAfterUploadMove(
+            videoUploadSucceeded: videoUploadSucceeded,
+            thumbnailGenerated: thumbnailGenerated,
+            thumbnailUploaded: thumbnailUploaded,
+            metadataCommitted: thumbnailMetadataCommitted,
+          )) {
+        try {
+          await VideoManager().removeLocalClipAfterCloudMove(
+            path: localPath,
+            albumName: albumName,
+          );
+          localCleanupExecuted = true;
+          await VideoManager().syncCloudMetadataToLibrary(
+            trigger: 'immediate_upload_move_to_cloud',
+          );
+        } catch (_) {
+          // Local cleanup is best-effort after the Cloud upload is committed.
+        }
       }
       clearLastImmediateUploadError();
+      logThumbnailDiagnostics('success');
       return videoId;
     } catch (e) {
-      final detail = _classifySyncError(e.toString());
+      final detail = e is _CloudThumbnailPipelineException
+          ? SyncErrorDetail(code: e.code, retryable: true, copy: e.copy)
+          : _classifySyncError(e.toString());
       _lastImmediateUploadErrorCode = detail.code;
       _lastImmediateUploadErrorCopy = detail.copy;
 
@@ -735,14 +901,102 @@ class CloudService {
         videoId: videoId,
         detail: detail,
         rawError: e.toString(),
-        phase: 'immediate_upload',
+        phase: e is _CloudThumbnailPipelineException
+            ? e.phase
+            : 'immediate_upload',
       );
 
       print(
         '[CloudService] ✗ 즉시 업로드 실패 '
-        '(code=${detail.code}, retryable=${detail.retryable}): $e',
+        '(code=${detail.code}, retryable=${detail.retryable})',
       );
+      logThumbnailDiagnostics('failure');
       return null;
+    }
+  }
+
+  @visibleForTesting
+  static bool shouldRunLocalCleanupAfterUploadMove({
+    required bool videoUploadSucceeded,
+    required bool thumbnailGenerated,
+    required bool thumbnailUploaded,
+    required bool metadataCommitted,
+  }) {
+    return videoUploadSucceeded &&
+        thumbnailGenerated &&
+        thumbnailUploaded &&
+        metadataCommitted;
+  }
+
+  @visibleForTesting
+  static bool isCompletedCloudMoveMetadata(VideoMetadata metadata) {
+    return metadata.uploadStatus.toLowerCase() == 'completed' &&
+        metadata.hasCompletedThumbnail;
+  }
+
+  Future<_GeneratedPosterThumbnail?> _generatePosterThumbnail(
+    File videoFile,
+  ) async {
+    VideoPlayerController? controller;
+    try {
+      controller = VideoPlayerController.file(videoFile);
+      await controller.initialize();
+      final durationMs = controller.value.duration.inMilliseconds;
+      if (durationMs <= 0) {
+        return null;
+      }
+
+      final bytes = await thum.VideoThumbnail.thumbnailData(
+        video: videoFile.path,
+        imageFormat: thum.ImageFormat.JPEG,
+        maxWidth: 720,
+        quality: 82,
+      );
+      if (bytes == null || bytes.isEmpty) {
+        return null;
+      }
+
+      final size = await _decodeImageSize(bytes);
+      if (size == null || size.width <= 0 || size.height <= 0) {
+        return null;
+      }
+
+      return _GeneratedPosterThumbnail(
+        bytes: bytes,
+        width: size.width,
+        height: size.height,
+        durationMs: durationMs,
+      );
+    } catch (_) {
+      return null;
+    } finally {
+      await controller?.dispose();
+    }
+  }
+
+  Future<_ImageSize?> _decodeImageSize(Uint8List bytes) async {
+    ui.Codec? codec;
+    ui.FrameInfo? frame;
+    try {
+      codec = await ui.instantiateImageCodec(bytes);
+      frame = await codec.getNextFrame();
+      final image = frame.image;
+      final size = _ImageSize(width: image.width, height: image.height);
+      image.dispose();
+      return size;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _safeUpdateThumbnailFailureMetadata(String videoId) async {
+    try {
+      await _firestore.collection(_videosCollection).doc(videoId).set({
+        'thumbnailStatus': 'failed',
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (_) {
+      // Best effort only; local source remains active when this fails.
     }
   }
 
@@ -753,6 +1007,7 @@ class CloudService {
     required String storagePath,
     required int fileSize,
     required String uid,
+    required String albumName,
     String? localPath,
   }) async {
     await _ensureQueueStoreLoaded();
@@ -816,7 +1071,8 @@ class CloudService {
     if (hasQueuedTaskDuplicate) {
       print(
         '[CloudService] ⚠️ 큐 중복 삽입 스킵: '
-        '(videoId=$videoId, dedupe=$dedupeKey)',
+        '(videoId=${_maskId(videoId, label: 'video-id')}, '
+        'dedupe=<redacted-dedupe-key>)',
       );
       return;
     }
@@ -824,7 +1080,9 @@ class CloudService {
     if (hasActiveSyncDuplicate && !existing) {
       print(
         '[CloudService] ⚠️ 동기화 작업 중복 삽입 스킵: '
-        '(videoId=$videoId, storagePath=$storagePath, localPath=$localPath)',
+        '(videoId=${_maskId(videoId, label: 'video-id')}, '
+        'storagePath=${_redactedPathCountLabel(storagePath)}, '
+        'localPath=${_redactedPathCountLabel(localPath)})',
       );
       return;
     }
@@ -846,6 +1104,7 @@ class CloudService {
       storagePath: storagePath,
       fileSize: fileSize,
       uid: uid,
+      albumName: albumName,
       localPath: localPath,
       projectId: projectId,
       attemptCount: attemptCount,
@@ -918,13 +1177,45 @@ class CloudService {
   /// 실제 업로드 실행
   Future<void> _executeUpload(UploadTask task) async {
     print('[CloudService] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    print('[CloudService] ⚡ 업로드 시작: ${task.videoId}');
+    print(
+      '[CloudService] ⚡ 업로드 시작: '
+      'videoId=${_maskId(task.videoId, label: 'video-id')}',
+    );
     final authUidAtStart = _authService.currentUser?.uid;
     print(
       '[CloudService][Diag] upload context '
-      'taskUid=${task.uid}, authUid=$authUidAtStart, '
-      'signedIn=${_authService.isSignedIn}, path=${task.storagePath}',
+      'taskUid=${_maskUid(task.uid)}, authUid=${_maskUid(authUidAtStart)}, '
+      'signedIn=${_authService.isSignedIn}, path=<redacted-path>',
     );
+
+    var thumbnailGenerationAttemptCount = 0;
+    var thumbnailGenerationSuccessCount = 0;
+    var thumbnailGenerationFailureCount = 0;
+    var thumbnailUploadAttemptCount = 0;
+    var thumbnailUploadSuccessCount = 0;
+    var thumbnailUploadFailureCount = 0;
+    var thumbnailMetadataCommitSuccessCount = 0;
+    var thumbnailMetadataCommitFailureCount = 0;
+    var videoUploadSucceeded = false;
+    var thumbnailGenerated = false;
+    var thumbnailUploaded = false;
+    var thumbnailMetadataCommitted = false;
+    var localCleanupExecuted = false;
+
+    void logQueueThumbnailDiagnostics(String result) {
+      print(
+        '[CloudService][ThumbnailUpload][Queue] result=$result '
+        'thumbnail_generation_attempt_count=$thumbnailGenerationAttemptCount '
+        'thumbnail_generation_success=$thumbnailGenerationSuccessCount '
+        'thumbnail_generation_failure=$thumbnailGenerationFailureCount '
+        'thumbnail_upload_attempt_count=$thumbnailUploadAttemptCount '
+        'thumbnail_upload_success=$thumbnailUploadSuccessCount '
+        'thumbnail_upload_failure=$thumbnailUploadFailureCount '
+        'thumbnail_metadata_commit_success=$thumbnailMetadataCommitSuccessCount '
+        'thumbnail_metadata_commit_failure=$thumbnailMetadataCommitFailureCount '
+        'local_cleanup_executed=$localCleanupExecuted',
+      );
+    }
 
     try {
       if (!_canStartNewCloudWrite('백그라운드 업로드')) {
@@ -948,6 +1239,29 @@ class CloudService {
         );
         return;
       }
+
+      final thumbnailStoragePath =
+          'users/${task.uid}/videos/${task.videoId}/thumbnails/poster.jpg';
+      await _firestore.collection(_videosCollection).doc(task.videoId).set({
+        'uploadStatus': 'uploading',
+        'uploadProgress': 0,
+        'thumbnailStatus': 'pending',
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      thumbnailGenerationAttemptCount++;
+      final poster = await _generatePosterThumbnail(task.videoFile);
+      if (poster == null) {
+        thumbnailGenerationFailureCount++;
+        await _safeUpdateThumbnailFailureMetadata(task.videoId);
+        throw const _CloudThumbnailPipelineException(
+          code: _errorThumbnailGeneration,
+          copy: '썸네일 생성에 실패해 클라우드 이동을 완료하지 못했어요. 다시 시도해주세요.',
+          phase: 'queue_thumbnail_generation',
+        );
+      }
+      thumbnailGenerated = true;
+      thumbnailGenerationSuccessCount++;
 
       // Firebase Storage 업로드
       final metadata = _buildVideoMetadata(task.videoFile.path);
@@ -986,14 +1300,54 @@ class CloudService {
       // 업로드 완료 대기
       final snapshot = await uploadTask;
       final downloadUrl = await snapshot.ref.getDownloadURL();
+      videoUploadSucceeded = true;
 
-      // Firestore 업데이트 (완료)
-      await _firestore.collection(_videosCollection).doc(task.videoId).update({
-        'uploadStatus': 'completed',
-        'uploadProgress': 100,
-        'downloadUrl': downloadUrl,
-        'completedAt': FieldValue.serverTimestamp(),
-      });
+      try {
+        thumbnailUploadAttemptCount++;
+        await _storage
+            .ref()
+            .child(thumbnailStoragePath)
+            .putData(poster.bytes, SettableMetadata(contentType: 'image/jpeg'));
+        thumbnailUploaded = true;
+        thumbnailUploadSuccessCount++;
+      } catch (_) {
+        thumbnailUploadFailureCount++;
+        await _safeUpdateThumbnailFailureMetadata(task.videoId);
+        throw const _CloudThumbnailPipelineException(
+          code: _errorThumbnailUpload,
+          copy: '썸네일 업로드에 실패해 클라우드 이동을 완료하지 못했어요. 다시 시도해주세요.',
+          phase: 'queue_thumbnail_upload',
+        );
+      }
+
+      try {
+        // Firestore 업데이트 (완료)
+        await _firestore
+            .collection(_videosCollection)
+            .doc(task.videoId)
+            .update({
+              'uploadStatus': 'completed',
+              'uploadProgress': 100,
+              'downloadUrl': downloadUrl,
+              'thumbnailStatus': 'completed',
+              'thumbnailStoragePath': thumbnailStoragePath,
+              'thumbnailWidth': poster.width,
+              'thumbnailHeight': poster.height,
+              'durationMs': poster.durationMs,
+              'completedAt': FieldValue.serverTimestamp(),
+              'updatedAt': FieldValue.serverTimestamp(),
+            });
+        thumbnailMetadataCommitted = true;
+        thumbnailMetadataCommitSuccessCount++;
+      } catch (_) {
+        thumbnailMetadataCommitFailureCount++;
+        await _safeUpdateThumbnailFailureMetadata(task.videoId);
+        throw const _CloudThumbnailPipelineException(
+          code: _errorThumbnailMetadata,
+          copy: '클라우드 메타데이터 저장에 실패해 이동을 완료하지 못했어요. 다시 시도해주세요.',
+          phase: 'queue_thumbnail_metadata',
+        );
+      }
 
       // 사용량 업데이트
       await _updateStorageUsageIdempotent(
@@ -1003,8 +1357,25 @@ class CloudService {
         reason: 'upload_completed',
       );
 
-      if (task.localPath != null) {
-        await VideoManager().markClipCloudSynced(task.localPath!);
+      if (task.localPath != null &&
+          shouldRunLocalCleanupAfterUploadMove(
+            videoUploadSucceeded: videoUploadSucceeded,
+            thumbnailGenerated: thumbnailGenerated,
+            thumbnailUploaded: thumbnailUploaded,
+            metadataCommitted: thumbnailMetadataCommitted,
+          )) {
+        try {
+          await VideoManager().removeLocalClipAfterCloudMove(
+            path: task.localPath!,
+            albumName: task.albumName,
+          );
+          localCleanupExecuted = true;
+          await VideoManager().syncCloudMetadataToLibrary(
+            trigger: 'queued_upload_move_to_cloud',
+          );
+        } catch (_) {
+          // Local cleanup is best-effort after the Cloud upload is committed.
+        }
       }
 
       await _setSyncJobStateForVideo(
@@ -1014,22 +1385,30 @@ class CloudService {
       );
       await _removeSyncJobForVideo(task.videoId);
 
-      print('[CloudService] ✓ 업로드 완료: ${task.videoId}');
-      print('[CloudService]   - URL: $downloadUrl');
+      print(
+        '[CloudService] ✓ 업로드 완료: '
+        'videoId=${_maskId(task.videoId, label: 'video-id')}',
+      );
+      print('[CloudService]   - URL: <redacted-url>');
+      logQueueThumbnailDiagnostics('success');
     } catch (e) {
       final authUidOnError = _authService.currentUser?.uid;
-      final detail = _classifySyncError(e.toString());
+      final detail = e is _CloudThumbnailPipelineException
+          ? SyncErrorDetail(code: e.code, retryable: true, copy: e.copy)
+          : _classifySyncError(e.toString());
       print(
         '[CloudService] ✗ 업로드 실패 '
-        '(code=${detail.code}, retryable=${detail.retryable}, attempt=${task.attemptCount + 1}): $e '
-        '[diag taskUid=${task.uid}, authUid=$authUidOnError, signedIn=${_authService.isSignedIn}]',
+        '(code=${detail.code}, retryable=${detail.retryable}, attempt=${task.attemptCount + 1}, '
+        'errorType=${e.runtimeType}) '
+        '[diag taskUid=${_maskUid(task.uid)}, '
+        'authUid=${_maskUid(authUidOnError)}, signedIn=${_authService.isSignedIn}]',
       );
 
       await _safeUpdateFailureMetadata(
         videoId: task.videoId,
         detail: detail,
         rawError: e.toString(),
-        phase: 'queue_upload',
+        phase: e is _CloudThumbnailPipelineException ? e.phase : 'queue_upload',
       );
 
       final nextRetryAt = await _markSyncJobFailed(
@@ -1043,7 +1422,7 @@ class CloudService {
           status: SyncJobStatus.failed,
           attemptCount: task.attemptCount + 1,
           errorCode: detail.code,
-          errorMessage: e.toString(),
+          errorMessage: _redactErrorForMetadata(e.toString()),
         );
       }
       if (detail.retryable &&
@@ -1061,11 +1440,12 @@ class CloudService {
           attemptCount: task.attemptCount + 1,
           nextRetryAt: nextRetryAt,
           errorCode: detail.code,
-          errorMessage: e.toString(),
+          errorMessage: _redactErrorForMetadata(e.toString()),
         );
       } else if (!detail.retryable) {
         print('[CloudService] ⛔ 비재시도 오류로 큐 재시도 중단: ${detail.code}');
       }
+      logQueueThumbnailDiagnostics('failure');
     }
   }
 
@@ -1147,6 +1527,7 @@ class CloudService {
 
   SyncErrorDetail _classifySyncError(String rawError) {
     final normalized = rawError.toLowerCase();
+    final redactedError = _redactErrorForMetadata(rawError);
 
     if (normalized.contains('object-not-found') ||
         normalized.contains('storage/object-not-found') ||
@@ -1154,7 +1535,7 @@ class CloudService {
       return SyncErrorDetail(
         code: _errorNotFound,
         retryable: false,
-        copy: ErrorCopy.syncFailureWithAction(rawError),
+        copy: ErrorCopy.syncFailureWithAction(redactedError),
       );
     }
 
@@ -1165,7 +1546,7 @@ class CloudService {
       return SyncErrorDetail(
         code: _errorPermissionDenied,
         retryable: false,
-        copy: ErrorCopy.syncFailureWithAction(rawError),
+        copy: ErrorCopy.syncFailureWithAction(redactedError),
       );
     }
 
@@ -1176,7 +1557,7 @@ class CloudService {
       return SyncErrorDetail(
         code: _errorAuthRequired,
         retryable: false,
-        copy: ErrorCopy.syncFailureWithAction(rawError),
+        copy: ErrorCopy.syncFailureWithAction(redactedError),
       );
     }
 
@@ -1186,7 +1567,7 @@ class CloudService {
       return SyncErrorDetail(
         code: _errorCloudApiDisabled,
         retryable: false,
-        copy: ErrorCopy.syncFailureWithAction(rawError),
+        copy: ErrorCopy.syncFailureWithAction(redactedError),
       );
     }
 
@@ -1197,7 +1578,7 @@ class CloudService {
       return SyncErrorDetail(
         code: _errorNetwork,
         retryable: true,
-        copy: ErrorCopy.syncFailureWithAction(rawError),
+        copy: ErrorCopy.syncFailureWithAction(redactedError),
       );
     }
 
@@ -1209,7 +1590,7 @@ class CloudService {
         return SyncErrorDetail(
           code: _errorQuota,
           retryable: false,
-          copy: ErrorCopy.syncFailureWithAction(rawError),
+          copy: ErrorCopy.syncFailureWithAction(redactedError),
         );
       }
 
@@ -1219,7 +1600,7 @@ class CloudService {
         return SyncErrorDetail(
           code: _errorNotFound,
           retryable: false,
-          copy: ErrorCopy.syncFailureWithAction(rawError),
+          copy: ErrorCopy.syncFailureWithAction(redactedError),
         );
       }
     }
@@ -1232,7 +1613,7 @@ class CloudService {
       return SyncErrorDetail(
         code: _errorFileSystem,
         retryable: false,
-        copy: ErrorCopy.syncFailureWithAction(rawError),
+        copy: ErrorCopy.syncFailureWithAction(redactedError),
       );
     }
 
@@ -1242,14 +1623,14 @@ class CloudService {
       return SyncErrorDetail(
         code: _errorUploadFailed,
         retryable: false,
-        copy: ErrorCopy.syncFailureWithAction(rawError),
+        copy: ErrorCopy.syncFailureWithAction(redactedError),
       );
     }
 
     return SyncErrorDetail(
       code: _errorUploadFailed,
       retryable: true,
-      copy: ErrorCopy.syncFailureWithAction(rawError),
+      copy: ErrorCopy.syncFailureWithAction(redactedError),
     );
   }
 
@@ -1263,19 +1644,22 @@ class CloudService {
       final authUid = _authService.currentUser?.uid;
       print(
         '[CloudService][Diag] failure metadata write '
-        'videoId=$videoId, phase=$phase, authUid=$authUid, '
+        'videoId=<redacted-video-id>, phase=$phase, authUid=${_maskUid(authUid)}, '
         'signedIn=${_authService.isSignedIn}, code=${detail.code}',
       );
       await _firestore.collection(_videosCollection).doc(videoId).update({
         'uploadStatus': 'failed',
         'errorCode': detail.code,
-        'errorMessage': rawError,
+        'errorMessage': _redactErrorForMetadata(rawError),
         'errorCopy': detail.copy,
         'errorPhase': phase,
         'updatedAt': FieldValue.serverTimestamp(),
       });
     } catch (metaErr) {
-      print('[CloudService] ✗ 실패 메타데이터 기록 실패(videoId=$videoId): $metaErr');
+      print(
+        '[CloudService] ✗ 실패 메타데이터 기록 실패'
+        '(videoId=<redacted-video-id>, errorType=${metaErr.runtimeType})',
+      );
     }
   }
 
@@ -1286,28 +1670,62 @@ class CloudService {
     }
 
     try {
+      await _ensureQueueStoreLoaded();
+      var queued = 0;
+      var uploading = 0;
+      var failed = 0;
+
+      for (final job in _syncJobs) {
+        if (job.ownerUid != null && job.ownerUid != uid) {
+          continue;
+        }
+        if (job.entityType != SyncJobEntityType.clip ||
+            job.action != SyncJobAction.upload) {
+          continue;
+        }
+        if (job.localPath != null &&
+            job.localPath!.trim().isNotEmpty &&
+            !File(job.localPath!).existsSync()) {
+          continue;
+        }
+
+        switch (job.status) {
+          case SyncJobStatus.queued:
+            queued++;
+            break;
+          case SyncJobStatus.inProgress:
+            uploading++;
+            break;
+          case SyncJobStatus.failed:
+            failed++;
+            break;
+          case SyncJobStatus.completed:
+          case SyncJobStatus.skipped:
+          case SyncJobStatus.canceled:
+            break;
+        }
+      }
+
       final snapshot = await _firestore
           .collection(_videosCollection)
           .where('uid', isEqualTo: uid)
           .get();
 
-      var queued = 0;
-      var uploading = 0;
-      var failed = 0;
       var completed = 0;
 
       for (final doc in snapshot.docs) {
-        final status = (doc.data()['uploadStatus'] as String? ?? 'unknown')
+        final data = doc.data();
+        if (_isDeleted(data) || _isTrashOrTombstone(data)) {
+          continue;
+        }
+        final status = (data['uploadStatus'] as String? ?? 'unknown')
             .toLowerCase();
         switch (status) {
           case 'queued':
-            queued++;
-            break;
           case 'uploading':
-            uploading++;
-            break;
           case 'failed':
-            failed++;
+            // Firestore failure metadata is historical evidence. Profile only
+            // shows actionable local sync queue failures.
             break;
           case 'completed':
             completed++;
@@ -1342,7 +1760,13 @@ class CloudService {
           .where('uploadStatus', isEqualTo: 'completed')
           .get();
       return snapshot.docs
-          .where((doc) => !_isTrashOrTombstone(doc.data()))
+          .where((doc) => !_isDeleted(doc.data()))
+          .where((doc) => !_isTombstone(doc.data()))
+          .where(
+            (doc) =>
+                _readString(doc.data()['storagePath']).trim().isNotEmpty ||
+                _readString(doc.data()['downloadUrl']).trim().isNotEmpty,
+          )
           .length;
     } catch (_) {
       return 0;
@@ -1353,7 +1777,7 @@ class CloudService {
     String trigger = 'manual',
   }) async {
     final uid = _getCurrentUserId();
-    if (uid == null || !_userStatusManager.isStandardOrAbove()) {
+    if (uid == null || !_userStatusManager.canReadExistingCloudClips()) {
       final snapshot = CloudStatsSnapshot(
         cloudClipCount: 0,
         storageUsageGB: 0,
@@ -1384,17 +1808,39 @@ class CloudService {
   bool _isTrashOrTombstone(Map<String, dynamic> data) {
     final lifecycle = (data['lifecycleState'] as String? ?? '').toLowerCase();
     final cloudState = (data['cloudState'] as String? ?? '').toLowerCase();
-    final deleted = data['deleted'] == true;
     final trashed = data['trashed'] == true;
-    return deleted ||
-        trashed ||
+    return trashed ||
         lifecycle == 'trash' ||
         lifecycle == 'tombstone' ||
         cloudState == 'trash' ||
         cloudState == 'tombstone';
   }
 
-  Future<List<VideoMetadata>> getCompletedUserVideos() async {
+  bool _isDeleted(Map<String, dynamic> data) {
+    final lifecycle = (data['lifecycleState'] as String? ?? '').toLowerCase();
+    final cloudState = (data['cloudState'] as String? ?? '').toLowerCase();
+    return data['deleted'] == true ||
+        lifecycle == 'deleted' ||
+        cloudState == 'deleted';
+  }
+
+  bool _isTombstone(Map<String, dynamic> data) {
+    final lifecycle = (data['lifecycleState'] as String? ?? '').toLowerCase();
+    final cloudState = (data['cloudState'] as String? ?? '').toLowerCase();
+    return lifecycle == 'tombstone' || cloudState == 'tombstone';
+  }
+
+  bool _isTrash(Map<String, dynamic> data) {
+    final lifecycle = (data['lifecycleState'] as String? ?? '').toLowerCase();
+    final cloudState = (data['cloudState'] as String? ?? '').toLowerCase();
+    return data['trashed'] == true ||
+        lifecycle == 'trash' ||
+        cloudState == 'trash';
+  }
+
+  Future<List<VideoMetadata>> getCompletedUserVideos({
+    bool includeTrash = false,
+  }) async {
     if (!_ensureNotGuestForCloud('클라우드 보관함 목록 조회')) {
       return const <VideoMetadata>[];
     }
@@ -1416,7 +1862,9 @@ class CloudService {
           .map(VideoMetadata.fromFirestore)
           .where(
             (video) =>
-                !video.isTrashOrTombstone &&
+                !video.isDeleted &&
+                !video.isTombstone &&
+                (includeTrash || !video.isTrash) &&
                 (video.storagePath.trim().isNotEmpty ||
                     (video.downloadUrl?.trim().isNotEmpty ?? false)),
           )
@@ -1428,7 +1876,10 @@ class CloudService {
       });
       return videos;
     } catch (e) {
-      print('[CloudService] ✗ 클라우드 보관함 목록 조회 실패: $e');
+      print(
+        '[CloudService] ✗ 클라우드 보관함 목록 조회 실패: '
+        'errorType=${e.runtimeType}',
+      );
       return const <VideoMetadata>[];
     }
   }
@@ -1480,7 +1931,10 @@ class CloudService {
     if (!_ensureNotGuestForCloud('Cloud 복원')) return false;
 
     print('[CloudService] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    print('[CloudService] 📥 다운로드 요청: $videoId');
+    print(
+      '[CloudService] 📥 다운로드 요청: '
+      'videoId=${_maskId(videoId, label: 'video-id')}',
+    );
 
     // 1. 보안 검증
     final uid = _getCurrentUserId();
@@ -1576,10 +2030,10 @@ class CloudService {
         rethrow;
       }
 
-      print('[CloudService] ✓ 다운로드 완료: $localPath');
+      print('[CloudService] ✓ 다운로드 완료: localPath=<redacted-path>');
       return true;
     } catch (e) {
-      print('[CloudService] ✗ 다운로드 실패: $e');
+      print('[CloudService] ✗ 다운로드 실패: errorType=${e.runtimeType}');
       return false;
     }
   }
@@ -1595,6 +2049,7 @@ class CloudService {
     bool? isFavorite,
   }) async {
     if (!_ensureNotGuestForCloud('클라우드 메타데이터 업데이트')) return false;
+    if (!_canStartNewCloudWrite('클라우드 메타데이터 업데이트')) return false;
 
     final uid = _getCurrentUserId();
     if (uid == null) return false;
@@ -1612,10 +2067,13 @@ class CloudService {
           .doc(videoId)
           .update(updateData);
 
-      print('[CloudService] ✓ 메타데이터 업데이트: $videoId');
+      print(
+        '[CloudService] ✓ 메타데이터 업데이트: '
+        'videoId=${_maskId(videoId, label: 'video-id')}',
+      );
       return true;
     } catch (e) {
-      print('[CloudService] ✗ 메타데이터 업데이트 실패: $e');
+      print('[CloudService] ✗ 메타데이터 업데이트 실패: errorType=${e.runtimeType}');
       return false;
     }
   }
@@ -1626,6 +2084,7 @@ class CloudService {
     String? localPath,
   }) async {
     if (!_ensureNotGuestForCloud('클라우드 이동 메타데이터 업데이트')) return false;
+    if (!_canStartNewCloudWrite('클라우드 이동 메타데이터 업데이트')) return false;
     final uid = _getCurrentUserId();
     if (uid == null) return false;
 
@@ -1644,7 +2103,10 @@ class CloudService {
       }, SetOptions(merge: true));
       return true;
     } catch (e) {
-      print('[CloudService] ✗ 클립 이동 메타데이터 업데이트 실패: $e');
+      print(
+        '[CloudService] ✗ 클립 이동 메타데이터 업데이트 실패: '
+        'errorType=${e.runtimeType}',
+      );
       return false;
     }
   }
@@ -1669,6 +2131,7 @@ class CloudService {
     String? trashLocalPath,
   }) async {
     if (!_ensureNotGuestForCloud('클라우드 휴지통 표시')) return false;
+    if (!_canStartNewCloudWrite('클라우드 휴지통 표시')) return false;
     final uid = _getCurrentUserId();
     if (uid == null) return false;
 
@@ -1694,7 +2157,7 @@ class CloudService {
       }, SetOptions(merge: true));
       return true;
     } catch (e) {
-      print('[CloudService] ✗ 클라우드 휴지통 표시 실패: $e');
+      print('[CloudService] ✗ 클라우드 휴지통 표시 실패: errorType=${e.runtimeType}');
       return false;
     }
   }
@@ -1705,6 +2168,7 @@ class CloudService {
     String? localPath,
   }) async {
     if (!_ensureNotGuestForCloud('클라우드 휴지통 복원')) return false;
+    if (!_canStartNewCloudWrite('클라우드 휴지통 복원')) return false;
     final uid = _getCurrentUserId();
     if (uid == null) return false;
 
@@ -1725,7 +2189,7 @@ class CloudService {
       }, SetOptions(merge: true));
       return true;
     } catch (e) {
-      print('[CloudService] ✗ 클라우드 휴지통 복원 실패: $e');
+      print('[CloudService] ✗ 클라우드 휴지통 복원 실패: errorType=${e.runtimeType}');
       return false;
     }
   }
@@ -1739,6 +2203,9 @@ class CloudService {
 
     final uid = _getCurrentUserId();
     if (uid == null) {
+      return Stream.value([]);
+    }
+    if (!_canReadExistingCloudClips('클라우드 영상 목록 조회')) {
       return Stream.value([]);
     }
 
@@ -1762,17 +2229,20 @@ class CloudService {
     });
   }
 
-  /// 영상 삭제 (Storage + Firestore)
-  Future<bool> deleteVideo(String videoId) async {
-    if (!_ensureNotGuestForCloud('클라우드 영상 삭제')) return false;
-
-    print('[CloudService] 🗑️ 삭제 요청: $videoId');
+  Future<bool> _markVideoTombstoned({
+    required String videoId,
+    required String operationLabel,
+  }) async {
+    print(
+      '[CloudService] Cloud tombstone requested: '
+      'operation=$operationLabel '
+      'videoId=${_maskId(videoId, label: 'video-id')}',
+    );
 
     final uid = _getCurrentUserId();
     if (uid == null) return false;
 
     try {
-      // 1. Firestore 메타데이터 조회
       final doc = await _firestore
           .collection(_videosCollection)
           .doc(videoId)
@@ -1782,18 +2252,16 @@ class CloudService {
 
       final data = doc.data()!;
 
-      // 2. 소유권 확인
       if (data['uid'] != uid) {
-        print('[CloudService] ✗ 접근 권한 없음');
+        print('[CloudService] Cloud tombstone denied: reason=owner_mismatch');
         return false;
       }
 
-      // 기본 삭제는 물리 삭제가 아니라 Cloud tombstone/Trash로 보존한다.
       await doc.reference.set({
-        'lifecycleState': 'trash',
-        'cloudState': 'trash',
-        'trashed': true,
-        'trashedAt': FieldValue.serverTimestamp(),
+        'lifecycleState': 'tombstone',
+        'cloudState': 'tombstone',
+        'trashed': false,
+        'movedToDeviceAt': FieldValue.serverTimestamp(),
         'originalAlbumName': data['originalAlbumName'] ?? data['albumName'],
         'originalStoragePath':
             data['originalStoragePath'] ?? data['storagePath'],
@@ -1801,12 +2269,95 @@ class CloudService {
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
-      print('[CloudService] ✓ 휴지통/tombstone 표시 완료: $videoId');
+      print(
+        '[CloudService] Cloud tombstone completed: '
+        'operation=$operationLabel '
+        'videoId=${_maskId(videoId, label: 'video-id')}',
+      );
       return true;
     } catch (e) {
-      print('[CloudService] ✗ 삭제 실패: $e');
+      print(
+        '[CloudService] Cloud tombstone failed: '
+        'operation=$operationLabel errorType=${e.runtimeType}',
+      );
       return false;
     }
+  }
+
+  Future<bool> _markVideoDeleted({
+    required String videoId,
+    required String operationLabel,
+  }) async {
+    print(
+      '[CloudService] Cloud logical delete requested: '
+      'operation=$operationLabel '
+      'videoId=${_maskId(videoId, label: 'video-id')}',
+    );
+
+    final uid = _getCurrentUserId();
+    if (uid == null) return false;
+
+    try {
+      final doc = await _firestore
+          .collection(_videosCollection)
+          .doc(videoId)
+          .get();
+
+      if (!doc.exists) return false;
+
+      final data = doc.data()!;
+
+      if (data['uid'] != uid) {
+        print(
+          '[CloudService] Cloud logical delete denied: reason=owner_mismatch',
+        );
+        return false;
+      }
+
+      await doc.reference.set({
+        'deleted': true,
+        'deletedAt': FieldValue.serverTimestamp(),
+        'lifecycleState': 'deleted',
+        'cloudState': 'deleted',
+        'trashed': false,
+        'originalAlbumName': data['originalAlbumName'] ?? data['albumName'],
+        'originalStoragePath':
+            data['originalStoragePath'] ?? data['storagePath'],
+        'originalStorageTier': data['originalStorageTier'] ?? 'cloud',
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      print(
+        '[CloudService] Cloud logical delete completed: '
+        'operation=$operationLabel '
+        'videoId=${_maskId(videoId, label: 'video-id')}',
+      );
+      return true;
+    } catch (e) {
+      print(
+        '[CloudService] Cloud logical delete failed: '
+        'operation=$operationLabel errorType=${e.runtimeType}',
+      );
+      return false;
+    }
+  }
+
+  /// 영상 영구 삭제 표시. Storage object는 물리 삭제하지 않는다.
+  Future<bool> deleteVideo(String videoId) async {
+    if (!_ensureNotGuestForCloud('클라우드 영상 삭제')) return false;
+    if (!_canStartNewCloudWrite('클라우드 영상 삭제')) return false;
+
+    return _markVideoDeleted(videoId: videoId, operationLabel: 'delete');
+  }
+
+  Future<bool> markVideoMovedToDevice(String videoId) async {
+    if (!_ensureNotGuestForCloud('클라우드 영상 기기 이동')) return false;
+    if (!_canReadExistingCloudClips('클라우드 영상 기기 이동')) return false;
+
+    return _markVideoTombstoned(
+      videoId: videoId,
+      operationLabel: 'move_to_device',
+    );
   }
 
   Future<VideoMetadata?> findUserVideoByLocalPath(String localPath) async {
@@ -1885,7 +2436,8 @@ class CloudService {
     final inFlight = _purgeInFlightByUid[uid];
     if (inFlight != null) {
       print(
-        '[CloudService] purgeCurrentUserCloudData 중복 호출 감지: uid=$uid, 기존 작업 완료 대기',
+        '[CloudService] purgeCurrentUserCloudData 중복 호출 감지: '
+        'uid=${_maskUid(uid)}, 기존 작업 완료 대기',
       );
       return inFlight;
     }
@@ -1939,27 +2491,36 @@ class CloudService {
               skippedStorageDeletes++;
               print(
                 '[CloudService] Storage 파일 미존재로 삭제 스킵: '
-                'uid=$uid videoId=${doc.id} path=$storagePath code=${e.code} message=${e.message}',
+                'uid=${_maskUid(uid)} '
+                'videoId=${_maskId(doc.id, label: 'video-id')} '
+                'path=<redacted-path> code=${e.code} message=<redacted-error>',
               );
             } else {
               failedStorageDeletes++;
               print(
                 '[CloudService] Storage 삭제 실패(비차단, 계속 진행): '
-                'uid=$uid videoId=${doc.id} path=$storagePath code=${e.code} message=${e.message}',
+                'uid=${_maskUid(uid)} '
+                'videoId=${_maskId(doc.id, label: 'video-id')} '
+                'path=<redacted-path> code=${e.code} message=<redacted-error>',
               );
             }
           } catch (e) {
             failedStorageDeletes++;
             print(
               '[CloudService] Storage 삭제 실패(비차단, 계속 진행): '
-              'uid=$uid videoId=${doc.id} path=$storagePath error=$e',
+              'uid=${_maskUid(uid)} '
+              'videoId=${_maskId(doc.id, label: 'video-id')} '
+              'path=<redacted-path> errorType=${e.runtimeType}',
             );
           }
         } else if (storagePath != null && storagePath.isNotEmpty) {
           skippedStorageDeletes++;
           print(
             '[CloudService] 업로드 미완료 메타데이터로 Storage 삭제 스킵: '
-            'uid=$uid videoId=${doc.id} status=${uploadStatus.isEmpty ? 'unknown' : uploadStatus} path=$storagePath',
+            'uid=${_maskUid(uid)} '
+            'videoId=${_maskId(doc.id, label: 'video-id')} '
+            'status=${uploadStatus.isEmpty ? 'unknown' : uploadStatus} '
+            'path=<redacted-path>',
           );
         }
 
@@ -2008,7 +2569,7 @@ class CloudService {
     } catch (e) {
       return CloudPurgeResult(
         success: false,
-        message: 'Cloud 데이터 삭제 실패: $e',
+        message: 'Cloud 데이터 삭제 실패: <redacted-error>',
         failedPhase: 'firestore',
         deletedVideoDocs: deletedVideoDocs,
         deletedStorageFiles: deletedStorageFiles,
@@ -2039,8 +2600,9 @@ class CloudService {
       print(
         '[CloudService][Diag][vlogMeta][upsert][start] '
         'collection=$_vlogProjectsCollection '
-        'authUid=$authUid targetUid=$uid '
-        'projectDocId=$projectDocId localProjectId=${project.id} '
+        'authUid=${_maskUid(authUid)} targetUid=${_maskUid(uid)} '
+        'projectDocId=${_maskId(projectDocId, label: 'project-id')} '
+        'localProjectId=${_maskId(project.id, label: 'local-project-id')} '
         'clipCount=${project.clips.length} deleted=false',
       );
 
@@ -2064,8 +2626,9 @@ class CloudService {
       print(
         '[CloudService][Diag][vlogMeta][upsert][ok] '
         'collection=$_vlogProjectsCollection '
-        'authUid=$authUid targetUid=$uid '
-        'projectDocId=$projectDocId localProjectId=${project.id}',
+        'authUid=${_maskUid(authUid)} targetUid=${_maskUid(uid)} '
+        'projectDocId=${_maskId(projectDocId, label: 'project-id')} '
+        'localProjectId=${_maskId(project.id, label: 'local-project-id')}',
       );
 
       return ProjectCloudMetadata(
@@ -2079,22 +2642,30 @@ class CloudService {
       print(
         '[CloudService][Diag][vlogMeta][upsert][fail] '
         'collection=$_vlogProjectsCollection '
-        'authUid=$authUid targetUid=$uid '
-        'projectDocId=${project.cloudProjectId ?? '(new)'} localProjectId=${project.id} '
-        'code=${e.code} message=${e.message}',
+        'authUid=${_maskUid(authUid)} targetUid=${_maskUid(uid)} '
+        'projectDocId=${_maskId(project.cloudProjectId, label: 'project-id')} '
+        'localProjectId=${_maskId(project.id, label: 'local-project-id')} '
+        'code=${e.code} message=<redacted-error>',
       );
-      print('[CloudService] ✗ vlog 프로젝트 메타데이터 업서트 실패: $e');
+      print(
+        '[CloudService] ✗ vlog 프로젝트 메타데이터 업서트 실패: '
+        'errorType=${e.runtimeType}',
+      );
       return null;
     } catch (e) {
       final authUid = _authService.currentUser?.uid;
       print(
         '[CloudService][Diag][vlogMeta][upsert][fail] '
         'collection=$_vlogProjectsCollection '
-        'authUid=$authUid targetUid=$uid '
-        'projectDocId=${project.cloudProjectId ?? '(new)'} localProjectId=${project.id} '
-        'code=non_firebase_exception error=$e',
+        'authUid=${_maskUid(authUid)} targetUid=${_maskUid(uid)} '
+        'projectDocId=${_maskId(project.cloudProjectId, label: 'project-id')} '
+        'localProjectId=${_maskId(project.id, label: 'local-project-id')} '
+        'code=non_firebase_exception errorType=${e.runtimeType}',
       );
-      print('[CloudService] ✗ vlog 프로젝트 메타데이터 업서트 실패: $e');
+      print(
+        '[CloudService] ✗ vlog 프로젝트 메타데이터 업서트 실패: '
+        'errorType=${e.runtimeType}',
+      );
       return null;
     }
   }
@@ -2113,8 +2684,8 @@ class CloudService {
       print(
         '[CloudService][Diag][vlogMeta][get][start] '
         'collection=$_vlogProjectsCollection '
-        'authUid=$authUid targetUid=$uid '
-        'filters=uid==$uid,deleted==false',
+        'authUid=${_maskUid(authUid)} targetUid=${_maskUid(uid)} '
+        'filters=uid==${_maskUid(uid)},deleted==false',
       );
 
       final snapshot = await _firestore
@@ -2126,7 +2697,7 @@ class CloudService {
       print(
         '[CloudService][Diag][vlogMeta][get][ok] '
         'collection=$_vlogProjectsCollection '
-        'authUid=$authUid targetUid=$uid '
+        'authUid=${_maskUid(authUid)} targetUid=${_maskUid(uid)} '
         'docs=${snapshot.docs.length}',
       );
 
@@ -2142,20 +2713,26 @@ class CloudService {
       print(
         '[CloudService][Diag][vlogMeta][get][fail] '
         'collection=$_vlogProjectsCollection '
-        'authUid=$authUid targetUid=$uid '
-        'code=${e.code} message=${e.message}',
+        'authUid=${_maskUid(authUid)} targetUid=${_maskUid(uid)} '
+        'code=${e.code} message=<redacted-error>',
       );
-      print('[CloudService] ✗ vlog 프로젝트 메타데이터 조회 실패: $e');
+      print(
+        '[CloudService] ✗ vlog 프로젝트 메타데이터 조회 실패: '
+        'errorType=${e.runtimeType}',
+      );
       return <String, ProjectCloudMetadata>{};
     } catch (e) {
       final authUid = _authService.currentUser?.uid;
       print(
         '[CloudService][Diag][vlogMeta][get][fail] '
         'collection=$_vlogProjectsCollection '
-        'authUid=$authUid targetUid=$uid '
-        'code=non_firebase_exception error=$e',
+        'authUid=${_maskUid(authUid)} targetUid=${_maskUid(uid)} '
+        'code=non_firebase_exception errorType=${e.runtimeType}',
       );
-      print('[CloudService] ✗ vlog 프로젝트 메타데이터 조회 실패: $e');
+      print(
+        '[CloudService] ✗ vlog 프로젝트 메타데이터 조회 실패: '
+        'errorType=${e.runtimeType}',
+      );
       return <String, ProjectCloudMetadata>{};
     }
   }
@@ -2174,8 +2751,9 @@ class CloudService {
       print(
         '[CloudService][Diag][vlogMeta][delete][start] '
         'collection=$_vlogProjectsCollection '
-        'authUid=$authUid targetUid=$uid '
-        'cloudProjectId=${cloudProjectId ?? ''} localProjectId=$localProjectId',
+        'authUid=${_maskUid(authUid)} targetUid=${_maskUid(uid)} '
+        'cloudProjectId=${_maskId(cloudProjectId, label: 'project-id')} '
+        'localProjectId=${_maskId(localProjectId, label: 'local-project-id')}',
       );
 
       if (cloudProjectId != null && cloudProjectId.isNotEmpty) {
@@ -2186,8 +2764,9 @@ class CloudService {
         print(
           '[CloudService][Diag][vlogMeta][delete][ok] '
           'collection=$_vlogProjectsCollection '
-          'authUid=$authUid targetUid=$uid '
-          'cloudProjectId=$cloudProjectId localProjectId=$localProjectId '
+          'authUid=${_maskUid(authUid)} targetUid=${_maskUid(uid)} '
+          'cloudProjectId=${_maskId(cloudProjectId, label: 'project-id')} '
+          'localProjectId=${_maskId(localProjectId, label: 'local-project-id')} '
           'mode=direct_doc_delete',
         );
         return true;
@@ -2206,8 +2785,9 @@ class CloudService {
       print(
         '[CloudService][Diag][vlogMeta][delete][ok] '
         'collection=$_vlogProjectsCollection '
-        'authUid=$authUid targetUid=$uid '
-        'cloudProjectId=(lookup) localProjectId=$localProjectId '
+        'authUid=${_maskUid(authUid)} targetUid=${_maskUid(uid)} '
+        'cloudProjectId=<lookup> '
+        'localProjectId=${_maskId(localProjectId, label: 'local-project-id')} '
         'deletedDocs=${snapshot.docs.length}',
       );
       return true;
@@ -2216,22 +2796,30 @@ class CloudService {
       print(
         '[CloudService][Diag][vlogMeta][delete][fail] '
         'collection=$_vlogProjectsCollection '
-        'authUid=$authUid targetUid=$uid '
-        'cloudProjectId=${cloudProjectId ?? ''} localProjectId=$localProjectId '
-        'code=${e.code} message=${e.message}',
+        'authUid=${_maskUid(authUid)} targetUid=${_maskUid(uid)} '
+        'cloudProjectId=${_maskId(cloudProjectId, label: 'project-id')} '
+        'localProjectId=${_maskId(localProjectId, label: 'local-project-id')} '
+        'code=${e.code} message=<redacted-error>',
       );
-      print('[CloudService] ✗ vlog 프로젝트 메타데이터 삭제 실패: $e');
+      print(
+        '[CloudService] ✗ vlog 프로젝트 메타데이터 삭제 실패: '
+        'errorType=${e.runtimeType}',
+      );
       return false;
     } catch (e) {
       final authUid = _authService.currentUser?.uid;
       print(
         '[CloudService][Diag][vlogMeta][delete][fail] '
         'collection=$_vlogProjectsCollection '
-        'authUid=$authUid targetUid=$uid '
-        'cloudProjectId=${cloudProjectId ?? ''} localProjectId=$localProjectId '
-        'code=non_firebase_exception error=$e',
+        'authUid=${_maskUid(authUid)} targetUid=${_maskUid(uid)} '
+        'cloudProjectId=${_maskId(cloudProjectId, label: 'project-id')} '
+        'localProjectId=${_maskId(localProjectId, label: 'local-project-id')} '
+        'code=non_firebase_exception errorType=${e.runtimeType}',
       );
-      print('[CloudService] ✗ vlog 프로젝트 메타데이터 삭제 실패: $e');
+      print(
+        '[CloudService] ✗ vlog 프로젝트 메타데이터 삭제 실패: '
+        'errorType=${e.runtimeType}',
+      );
       return false;
     }
   }
@@ -2247,8 +2835,78 @@ class CloudService {
     final uid = _getCurrentUserId();
     if (uid == null) return 0.0;
 
-    final usage = await _getCurrentStorageUsage(uid);
+    final derivedUsage = await _getCompletedVideoStorageUsage(uid);
+    final usage = derivedUsage ?? await _getCurrentStorageUsage(uid);
     return usage / (1024 * 1024 * 1024);
+  }
+
+  Future<int?> _getCompletedVideoStorageUsage(String uid) async {
+    try {
+      final snapshot = await _firestore
+          .collection(_videosCollection)
+          .where('uid', isEqualTo: uid)
+          .where('uploadStatus', isEqualTo: 'completed')
+          .get();
+
+      var total = 0;
+      var includedCount = 0;
+      var skippedDeletedCount = 0;
+      var skippedTombstoneCount = 0;
+      var skippedMissingCloudRefCount = 0;
+      var trashCount = 0;
+      var activeCount = 0;
+      var missingFileSizeCount = 0;
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        if (_isDeleted(data)) {
+          skippedDeletedCount++;
+          continue;
+        }
+        if (_isTombstone(data)) {
+          skippedTombstoneCount++;
+          continue;
+        }
+        final hasCloudRef =
+            _readString(data['storagePath']).trim().isNotEmpty ||
+            _readString(data['downloadUrl']).trim().isNotEmpty;
+        if (!hasCloudRef) {
+          skippedMissingCloudRefCount++;
+          continue;
+        }
+
+        includedCount++;
+        if (_isTrash(data)) {
+          trashCount++;
+        } else {
+          activeCount++;
+        }
+        final fileSize = _readInt(data['fileSize']);
+        if (fileSize == null || fileSize <= 0) {
+          missingFileSizeCount++;
+          continue;
+        }
+        total += fileSize;
+      }
+      print(
+        '[CloudService][StorageUsage] derived '
+        'query_count=${snapshot.docs.length} '
+        'included_count=$includedCount '
+        'active_count=$activeCount '
+        'trash_count=$trashCount '
+        'skipped_deleted=$skippedDeletedCount '
+        'skipped_tombstone=$skippedTombstoneCount '
+        'skipped_missing_cloud_ref=$skippedMissingCloudRefCount '
+        'missing_file_size=$missingFileSizeCount '
+        'derived_bytes=$total',
+      );
+      return total;
+    } catch (e) {
+      print(
+        '[CloudService] storage usage derive failed: '
+        'errorType=${e.runtimeType}',
+      );
+      return null;
+    }
   }
 
   /// 저장 용량 제한 조회 (GB)
@@ -2331,7 +2989,7 @@ class CloudService {
         // - [업그레이드] 버튼 → PaywallScreen
       }
     } catch (e) {
-      print('[CloudService] ✗ 용량 체크 실패: $e');
+      print('[CloudService] ✗ 용량 체크 실패: errorType=${e.runtimeType}');
     }
   }
 }
@@ -2347,6 +3005,7 @@ class UploadTask {
   final String storagePath;
   final int fileSize;
   final String uid;
+  final String albumName;
   final String? localPath;
   final String? projectId;
   final DateTime createdAt;
@@ -2359,6 +3018,7 @@ class UploadTask {
     required this.storagePath,
     required this.fileSize,
     required this.uid,
+    required this.albumName,
     this.localPath,
     this.projectId,
     required this.createdAt,
@@ -2373,6 +3033,7 @@ class UploadTask {
       storagePath: storagePath,
       fileSize: fileSize,
       uid: uid,
+      albumName: albumName,
       localPath: localPath,
       projectId: projectId,
       createdAt: createdAt,
@@ -2392,6 +3053,42 @@ class SyncErrorDetail {
     required this.retryable,
     required this.copy,
   });
+}
+
+class _GeneratedPosterThumbnail {
+  final Uint8List bytes;
+  final int width;
+  final int height;
+  final int durationMs;
+
+  const _GeneratedPosterThumbnail({
+    required this.bytes,
+    required this.width,
+    required this.height,
+    required this.durationMs,
+  });
+}
+
+class _ImageSize {
+  final int width;
+  final int height;
+
+  const _ImageSize({required this.width, required this.height});
+}
+
+class _CloudThumbnailPipelineException implements Exception {
+  final String code;
+  final String copy;
+  final String phase;
+
+  const _CloudThumbnailPipelineException({
+    required this.code,
+    required this.copy,
+    required this.phase,
+  });
+
+  @override
+  String toString() => code;
 }
 
 class CloudPurgeResult {
@@ -2487,8 +3184,14 @@ class VideoMetadata {
   final String lifecycleState;
   final String cloudState;
   final bool trashed;
+  final bool deleted;
   final String? originalAlbumName;
   final String storageTier;
+  final String? thumbnailStoragePath;
+  final String? thumbnailStatus;
+  final int? thumbnailWidth;
+  final int? thumbnailHeight;
+  final int? durationMs;
 
   VideoMetadata({
     required this.videoId,
@@ -2508,48 +3211,103 @@ class VideoMetadata {
     this.lifecycleState = 'active',
     this.cloudState = 'active',
     this.trashed = false,
+    this.deleted = false,
     this.originalAlbumName,
     this.storageTier = 'cloud',
+    this.thumbnailStoragePath,
+    this.thumbnailStatus,
+    this.thumbnailWidth,
+    this.thumbnailHeight,
+    this.durationMs,
   });
 
   factory VideoMetadata.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
+    return VideoMetadata.fromMap(doc.id, data);
+  }
 
+  factory VideoMetadata.fromMap(String id, Map<String, dynamic> data) {
     return VideoMetadata(
-      videoId: doc.id,
-      uid: data['uid'] ?? '',
-      fileName: data['fileName'] ?? '',
-      storagePath: data['storagePath'] ?? '',
-      albumName: data['albumName'] ?? '',
+      videoId: id,
+      uid: _readString(data['uid']),
+      fileName: _readString(data['fileName']),
+      storagePath: _readString(data['storagePath']),
+      albumName: _readString(data['albumName']),
       isFavorite: data['isFavorite'] ?? false,
-      fileSize: data['fileSize'] ?? 0,
-      uploadStatus: data['uploadStatus'] ?? 'unknown',
-      uploadProgress: data['uploadProgress'] ?? 0,
-      downloadUrl: data['downloadUrl'],
+      fileSize: _readInt(data['fileSize']) ?? 0,
+      uploadStatus: _readString(data['uploadStatus'], fallback: 'unknown'),
+      uploadProgress: _readInt(data['uploadProgress']) ?? 0,
+      downloadUrl: _readNullableString(data['downloadUrl']),
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
       updatedAt: (data['updatedAt'] as Timestamp?)?.toDate(),
       completedAt: (data['completedAt'] as Timestamp?)?.toDate(),
       errorCopy: data['errorCopy'] as String?,
-      lifecycleState: data['lifecycleState'] as String? ?? 'active',
-      cloudState: data['cloudState'] as String? ?? 'active',
+      lifecycleState: _readString(data['lifecycleState'], fallback: 'active'),
+      cloudState: _readString(data['cloudState'], fallback: 'active'),
       trashed: data['trashed'] == true,
+      deleted:
+          data['deleted'] == true ||
+          _readString(data['lifecycleState']).toLowerCase() == 'deleted' ||
+          _readString(data['cloudState']).toLowerCase() == 'deleted',
       originalAlbumName: data['originalAlbumName'] as String?,
       storageTier:
           data['storageTier'] as String? ??
           data['originalStorageTier'] as String? ??
           'cloud',
+      thumbnailStoragePath: _readNullableString(data['thumbnailStoragePath']),
+      thumbnailStatus: _readNullableString(data['thumbnailStatus']),
+      thumbnailWidth: _readInt(data['thumbnailWidth']),
+      thumbnailHeight: _readInt(data['thumbnailHeight']),
+      durationMs: _readInt(data['durationMs']),
     );
   }
 
   String get fileSizeText =>
       '${(fileSize / (1024 * 1024)).toStringAsFixed(2)}MB';
 
-  bool get isTrashOrTombstone =>
+  bool get hasCompletedThumbnail {
+    final status = thumbnailStatus?.trim().toLowerCase();
+    return status == 'completed' &&
+        (thumbnailStoragePath?.trim().isNotEmpty ?? false);
+  }
+
+  bool get hasFailedThumbnail =>
+      thumbnailStatus?.trim().toLowerCase() == 'failed';
+
+  bool get isTrashOrTombstone => isTrash || isTombstone;
+
+  bool get isTrash =>
       trashed ||
       lifecycleState.toLowerCase() == 'trash' ||
+      cloudState.toLowerCase() == 'trash';
+
+  bool get isTombstone =>
       lifecycleState.toLowerCase() == 'tombstone' ||
-      cloudState.toLowerCase() == 'trash' ||
       cloudState.toLowerCase() == 'tombstone';
+
+  bool get isDeleted =>
+      deleted ||
+      lifecycleState.toLowerCase() == 'deleted' ||
+      cloudState.toLowerCase() == 'deleted';
+}
+
+String _readString(Object? value, {String fallback = ''}) {
+  if (value is String) return value;
+  if (value == null) return fallback;
+  return '$value';
+}
+
+String? _readNullableString(Object? value) {
+  if (value == null) return null;
+  final text = _readString(value).trim();
+  return text.isEmpty ? null : text;
+}
+
+int? _readInt(Object? value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  if (value is String) return int.tryParse(value);
+  return null;
 }
 
 class ProjectCloudMetadata {

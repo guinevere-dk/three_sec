@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -27,6 +28,15 @@ import '../utils/quality_policy.dart';
 enum ClipTransferUiState {
   pendingUpload,
   pendingDownload,
+  failedUpload,
+  failedDownload,
+}
+
+enum ClipStorageState {
+  localOnly,
+  pendingUpload,
+  cloudSyncedLocal,
+  cloudOnly,
   failedUpload,
   failedDownload,
 }
@@ -88,13 +98,23 @@ class VideoManager extends ChangeNotifier {
   List<String> vlogProjectPaths = [];
   Set<String> favorites = {};
   final Map<String, Uint8List> thumbnailCache = {};
+  final Map<String, Uint8List> _cloudThumbnailMemoryCache = {};
   Map<String, int> albumCounts = {}; // Public variable for UI
+  Map<String, int> albumLocalCounts = {};
   final Map<String, List<Uint8List>> _timelineCache =
       {}; // Cache for timeline thumbnails
   final Map<String, Duration> _durationCache = {}; // Cache for video durations
   final Map<String, int> _persistedDurationMs = {};
   final Set<String> _cloudSyncedPaths = {};
   final Map<String, VideoMetadata> _cloudMetadataByPath = {};
+  Future<Uint8List?> Function(String storagePath)? _debugCloudThumbnailFetcher;
+  final Map<String, int> _cloudThumbnailRuntimeCounts = {
+    'cloud_thumbnail_fetch_attempt_count': 0,
+    'cloud_thumbnail_fetch_success_count': 0,
+    'cloud_thumbnail_fetch_failure_count': 0,
+    'cloud_thumbnail_cache_hit_count': 0,
+    'cloud_thumbnail_cache_miss_count': 0,
+  };
   final Map<String, ClipTransferUiState> _clipTransferUiStateByPath = {};
   final Map<String, String?> _clipOwnerAccountByPath = {};
   final LocalIndexService _localIndexService = LocalIndexService();
@@ -926,7 +946,7 @@ class VideoManager extends ChangeNotifier {
                 final jsonStr = file.readAsStringSync();
                 return VlogProject.fromJson(jsonDecode(jsonStr));
               } catch (e) {
-                print("Error parsing project: ${file.path}");
+                print("Error parsing project: path=<redacted-path>");
                 return null;
               }
             })
@@ -1102,7 +1122,7 @@ class VideoManager extends ChangeNotifier {
       final Stopwatch clipStopwatch = Stopwatch()..start();
       debugPrint(
         '[VideoManager][CreateProject][Clip] start '
-        'clipIndex=$clipIndex totalClips=${clips.length} path=${clip.path}',
+        'clipIndex=$clipIndex totalClips=${clips.length} path=<redacted-path>',
       );
 
       try {
@@ -1112,7 +1132,7 @@ class VideoManager extends ChangeNotifier {
         clip.originalDuration = duration; // Store original duration
         debugPrint(
           '[VideoManager][CreateProject][Clip] duration_done '
-          'clipIndex=$clipIndex path=${clip.path} '
+          'clipIndex=$clipIndex path=<redacted-path> '
           'durationMs=$durationMs startMs=$clipDurationStartMs '
           'elapsedMs=${DateTime.now().millisecondsSinceEpoch - clipDurationStartMs}',
         );
@@ -1132,7 +1152,7 @@ class VideoManager extends ChangeNotifier {
           final thumbElapsed = thumbStopwatch.elapsedMilliseconds;
           debugPrint(
             '[VideoManager][CreateProject][Clip] thumbnail_done '
-            'clipIndex=$clipIndex path=${clip.path} '
+            'clipIndex=$clipIndex path=<redacted-path> '
             'durationMs=$durationMs thumbUpdated=$thumbUpdated '
             'thumbElapsedMs=$thumbElapsed',
           );
@@ -1140,14 +1160,14 @@ class VideoManager extends ChangeNotifier {
           failedClipPrecacheCount++;
           debugPrint(
             '[VideoManager][CreateProject][Clip] duration_zero clipIndex=$clipIndex '
-            'path=${clip.path}',
+            'path=<redacted-path>',
           );
         }
       } catch (e) {
         failedClipPrecacheCount++;
         debugPrint(
           '[VideoManager][CreateProject][Clip] failure '
-          'clipIndex=$clipIndex path=${clip.path} '
+          'clipIndex=$clipIndex path=<redacted-path> '
           'type=${e.runtimeType} message=$e',
         );
       }
@@ -1156,7 +1176,7 @@ class VideoManager extends ChangeNotifier {
       final int durationMs = clip.originalDuration.inMilliseconds;
       debugPrint(
         '[VideoManager][CreateProject][Clip] end '
-        'clipIndex=$clipIndex path=${clip.path} '
+        'clipIndex=$clipIndex path=<redacted-path> '
         'durationMs=$durationMs '
         'totalElapsedMs=$clipElapsedMs',
       );
@@ -1164,7 +1184,7 @@ class VideoManager extends ChangeNotifier {
       onClipPrepared?.call(clipIndex, clips.length, clip.path);
       debugPrint(
         '[VideoManager][CreateProject][Progress] '
-        'current=$clipIndex total=${clips.length} path=${clip.path}',
+        'current=$clipIndex total=${clips.length} path=<redacted-path>',
       );
     }
 
@@ -1300,7 +1320,20 @@ class VideoManager extends ChangeNotifier {
   }
 
   void _logJson(String prefix, Map<String, Object?> payload) {
-    debugPrint('$prefix ${jsonEncode(payload)}');
+    debugPrint('$prefix ${jsonEncode(_redactLogPayload(payload))}');
+  }
+
+  Map<String, Object?> _redactLogPayload(Map<String, Object?> payload) {
+    return payload.map((key, value) {
+      final lowerKey = key.toLowerCase();
+      if (lowerKey.contains('path') || lowerKey.contains('paths')) {
+        if (value is Iterable) {
+          return MapEntry(key, '<redacted-path-list:${value.length}>');
+        }
+        return MapEntry(key, '<redacted-path>');
+      }
+      return MapEntry(key, value);
+    });
   }
 
   void _logThumbnailEvent({
@@ -1456,24 +1489,85 @@ class VideoManager extends ChangeNotifier {
   Future<void> _updateAlbumClipCounts() async {
     final rawBase = await _rawBaseDir();
     final newCounts = <String, int>{};
+    final newLocalCounts = <String, int>{};
 
-    // 전체 앨범 순회
     for (final albumName in clipAlbums) {
       final albumDir = Directory(p.join(rawBase.path, albumName));
+      final localPaths = <String>[];
       if (await albumDir.exists()) {
-        final count = albumDir
-            .listSync()
-            .whereType<File>()
-            .where((file) => file.path.toLowerCase().endsWith('.mp4'))
-            .length;
-        newCounts[albumName] = count;
-      } else {
-        newCounts[albumName] = 0;
+        localPaths.addAll(
+          albumDir
+              .listSync()
+              .whereType<File>()
+              .where((file) => file.path.toLowerCase().endsWith('.mp4'))
+              .map((file) => file.path),
+        );
       }
+
+      newLocalCounts[albumName] = localPaths.length;
+      newCounts[albumName] =
+          localPaths.length +
+          _cloudOnlyCountForAlbum(albumName, localPaths: localPaths);
     }
 
     albumCounts = newCounts;
+    albumLocalCounts = newLocalCounts;
     notifyListeners();
+  }
+
+  int _cloudOnlyCountForAlbum(
+    String albumName, {
+    required List<String> localPaths,
+  }) {
+    final normalizedAlbumName = _normalizeCloudAlbumName(albumName);
+    var count = 0;
+
+    for (final entry in _cloudMetadataByPath.entries) {
+      final video = entry.value;
+      if (video.isDeleted || video.isTombstone) {
+        continue;
+      }
+      final entryAlbumName = _cloudAlbumNameForLibraryEntry(entry);
+      if (entryAlbumName != normalizedAlbumName) {
+        continue;
+      }
+      if (_hasLocalPathMatchingCloudVideo(localPaths, video)) {
+        continue;
+      }
+      count++;
+    }
+
+    return count;
+  }
+
+  bool _hasLocalPathMatchingCloudVideo(
+    Iterable<String> localPaths,
+    VideoMetadata video,
+  ) {
+    return localPaths.any((path) {
+      if (_isCloudOnlyPlaceholderPath(path)) return false;
+      if (p.basename(path) != video.fileName) return false;
+      final file = File(path);
+      return file.existsSync() && file.lengthSync() == video.fileSize;
+    });
+  }
+
+  String _normalizeCloudAlbumName(String albumName) {
+    final trimmed = albumName.trim();
+    return trimmed.isEmpty ? '일상' : trimmed;
+  }
+
+  String _cloudAlbumNameForLibraryEntry(MapEntry<String, VideoMetadata> entry) {
+    if (_isCloudOnlyPlaceholderPath(entry.key)) {
+      final placeholderAlbum = _cloudPlaceholderAlbum(entry.key).trim();
+      if (placeholderAlbum.isNotEmpty) return placeholderAlbum;
+    }
+    return _cloudAlbumNameForLibrary(entry.value);
+  }
+
+  String _cloudAlbumNameForLibrary(VideoMetadata video) {
+    if (video.isTrash) return '휴지통';
+    return _normalizeCloudAlbumName(video.albumName);
   }
 
   Future<List<String>> _listProjectFiles() async {
@@ -1593,6 +1687,106 @@ class VideoManager extends ChangeNotifier {
     return data;
   }
 
+  Future<Uint8List?> getCloudThumbnail(String path) async {
+    if (!_isCloudOnlyPlaceholderPath(path)) return null;
+
+    final metadata = _cloudMetadataByPath[path];
+    final thumbnailPath = metadata?.thumbnailStoragePath?.trim();
+    if (metadata == null ||
+        !metadata.hasCompletedThumbnail ||
+        thumbnailPath == null ||
+        thumbnailPath.isEmpty) {
+      return null;
+    }
+
+    final cacheKey = _cloudThumbnailCacheKey(metadata);
+    final cached = _cloudThumbnailMemoryCache[cacheKey];
+    if (cached != null) {
+      _incrementCloudThumbnailRuntimeCount('cloud_thumbnail_cache_hit_count');
+      return cached;
+    }
+
+    _incrementCloudThumbnailRuntimeCount('cloud_thumbnail_cache_miss_count');
+    final cachedFile = await _readCloudThumbnailCacheFile(cacheKey);
+    if (cachedFile != null) {
+      _cloudThumbnailMemoryCache[cacheKey] = cachedFile;
+      _incrementCloudThumbnailRuntimeCount('cloud_thumbnail_cache_hit_count');
+      return cachedFile;
+    }
+
+    _incrementCloudThumbnailRuntimeCount('cloud_thumbnail_fetch_attempt_count');
+    try {
+      final bytes = await _fetchCloudThumbnailBytes(thumbnailPath);
+      if (bytes == null || bytes.isEmpty) {
+        _incrementCloudThumbnailRuntimeCount(
+          'cloud_thumbnail_fetch_failure_count',
+        );
+        return null;
+      }
+
+      _cloudThumbnailMemoryCache[cacheKey] = bytes;
+      unawaited(_writeCloudThumbnailCacheFile(cacheKey, bytes));
+      _incrementCloudThumbnailRuntimeCount(
+        'cloud_thumbnail_fetch_success_count',
+      );
+      return bytes;
+    } catch (_) {
+      _incrementCloudThumbnailRuntimeCount(
+        'cloud_thumbnail_fetch_failure_count',
+      );
+      return null;
+    }
+  }
+
+  Future<Uint8List?> _fetchCloudThumbnailBytes(String storagePath) {
+    final fetcher = _debugCloudThumbnailFetcher;
+    if (fetcher != null) {
+      return fetcher(storagePath);
+    }
+    return FirebaseStorage.instance
+        .ref()
+        .child(storagePath)
+        .getData(10 * 1024 * 1024);
+  }
+
+  String _cloudThumbnailCacheKey(VideoMetadata metadata) {
+    final source = '${metadata.videoId}_${metadata.thumbnailStatus ?? ''}';
+    return base64Url.encode(utf8.encode(source)).replaceAll('=', '');
+  }
+
+  Future<File> _cloudThumbnailCacheFile(String cacheKey) async {
+    final dir = Directory(
+      p.join((await _docDir()).path, 'thumbnails', 'cloud'),
+    );
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    return File(p.join(dir.path, '$cacheKey.jpg'));
+  }
+
+  Future<Uint8List?> _readCloudThumbnailCacheFile(String cacheKey) async {
+    try {
+      final file = await _cloudThumbnailCacheFile(cacheKey);
+      if (!await file.exists()) return null;
+      final bytes = await file.readAsBytes();
+      return bytes.isEmpty ? null : bytes;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _writeCloudThumbnailCacheFile(
+    String cacheKey,
+    Uint8List bytes,
+  ) async {
+    try {
+      final file = await _cloudThumbnailCacheFile(cacheKey);
+      await file.writeAsBytes(bytes, flush: false);
+    } catch (_) {
+      // Local cache is best-effort only; Cloud Storage remains canonical.
+    }
+  }
+
   Future<String> _thumbnailFilePathFor(String videoPath) async {
     final docDir = await getApplicationDocumentsDirectory();
     final thumbDir = Directory(p.join(docDir.path, 'thumbnails'));
@@ -1707,7 +1901,7 @@ class VideoManager extends ChangeNotifier {
       final duration = controller.value.duration;
       await _setDurationCacheForPath(videoPath, duration);
       debugPrint(
-        '[VideoManager] Cached duration for ${videoPath.split('/').last}: $duration',
+        '[VideoManager] Cached duration for <redacted-path>: $duration',
       );
       return duration;
     } catch (e) {
@@ -2167,7 +2361,7 @@ class VideoManager extends ChangeNotifier {
         '[VideoManager][Export][State] phase=$phase state=$state '
         'sessionId=$resolvedMergeSessionId traceId=$mergeTraceId '
         'attempt=$attempt status=$status reason=$reason '
-        'outputPath=$outputPath resultBytes=$resultBytes '
+        'outputPath=<redacted-path> resultBytes=$resultBytes '
         'errorCode=$errorCode details=$details',
       );
     }
@@ -2405,7 +2599,7 @@ class VideoManager extends ChangeNotifier {
       }
 
       print("🚀 Start Exporting... (Count: ${clips.length})");
-      print("   - Output: $outputPath");
+      print("   - Output: <redacted-path>");
       print("   - Quality: $clampedQuality");
       print("   - User Tier: $normalizedTier");
 
@@ -2450,7 +2644,7 @@ class VideoManager extends ChangeNotifier {
           'targetBitrate=${videoQualityProfile(qualityValue).targetBitrate} '
           'attempt=$attempt retryPlan=$retryPlan audioSimplify=$audioSimplify '
           'abGroup=$abGroup qualityPreset=$qualityValue '
-          'outputPath=$outputPath sessionId=$resolvedMergeSessionId traceId=$mergeTraceId '
+          'outputPath=<redacted-path> sessionId=$resolvedMergeSessionId traceId=$mergeTraceId '
           'caller=${callerTag ?? "unknown"}',
         );
 
@@ -2974,6 +3168,24 @@ class VideoManager extends ChangeNotifier {
     return count;
   }
 
+  int get totalDeviceClipCount {
+    int count = 0;
+    for (var c in albumLocalCounts.values) {
+      count += c;
+    }
+    return count;
+  }
+
+  int get totalCloudClipCount {
+    var count = 0;
+    for (final entry in albumCounts.entries) {
+      final localCount = albumLocalCounts[entry.key] ?? 0;
+      final cloudCount = entry.value - localCount;
+      if (cloudCount > 0) count += cloudCount;
+    }
+    return count;
+  }
+
   int get totalVlogCount => _vlogProjectCountCache;
   int _vlogProjectCountCache = 0;
 
@@ -3130,12 +3342,13 @@ class VideoManager extends ChangeNotifier {
     }
 
     try {
-      final videos = await CloudService().getCompletedUserVideos();
+      final videos = await CloudService().getCompletedUserVideos(
+        includeTrash: true,
+      );
       _cloudMetadataByPath.clear();
       for (final video in videos) {
-        final albumName = video.albumName.trim().isEmpty
-            ? '일상'
-            : video.albumName.trim();
+        if (video.isDeleted || video.isTombstone) continue;
+        final albumName = _cloudAlbumNameForLibrary(video);
         final placeholder = _cloudPlaceholderPath(albumName, video);
         _cloudMetadataByPath[placeholder] = video;
         _cloudSyncedPaths.add(placeholder);
@@ -3147,8 +3360,14 @@ class VideoManager extends ChangeNotifier {
       }
       await _persistCloudSyncedPaths();
       await _mergeCloudOnlyPlaceholdersForCurrentAlbum();
+      await _updateAlbumClipCounts();
+      final thumbnailCounts = getCloudThumbnailDebugCounts();
       debugPrint(
-        '[VideoManager][CloudSync] metadata_pull trigger=$trigger count=${videos.length}',
+        '[VideoManager][CloudSync] metadata_pull trigger=$trigger '
+        'count=${videos.length} '
+        'thumbnailReady=${thumbnailCounts['thumbnailReadyCount'] ?? 0} '
+        'thumbnailMissing=${thumbnailCounts['thumbnailMissingCount'] ?? 0} '
+        'thumbnailFailed=${thumbnailCounts['thumbnailFailedCount'] ?? 0}',
       );
       notifyListeners();
     } catch (e) {
@@ -3162,16 +3381,18 @@ class VideoManager extends ChangeNotifier {
     if (_cloudMetadataByPath.isEmpty &&
         !AuthService().isGuest &&
         UserStatusManager().canReadExistingCloudClips()) {
-      final videos = await CloudService().getCompletedUserVideos();
+      final videos = await CloudService().getCompletedUserVideos(
+        includeTrash: true,
+      );
       for (final video in videos) {
-        final albumName = video.albumName.trim().isEmpty
-            ? '일상'
-            : video.albumName.trim();
+        if (video.isDeleted || video.isTombstone) continue;
+        final albumName = _cloudAlbumNameForLibrary(video);
         _cloudMetadataByPath[_cloudPlaceholderPath(albumName, video)] = video;
       }
     }
 
     final placeholders = _cloudMetadataByPath.entries
+        .where((entry) => !entry.value.isDeleted && !entry.value.isTombstone)
         .where((entry) => _cloudPlaceholderAlbum(entry.key) == currentAlbum)
         .where((entry) => !recordedVideoPaths.contains(entry.key))
         .where((entry) => !_hasLocalClipMatchingCloudVideo(entry.value))
@@ -3182,12 +3403,7 @@ class VideoManager extends ChangeNotifier {
   }
 
   bool _hasLocalClipMatchingCloudVideo(VideoMetadata video) {
-    return recordedVideoPaths.any((path) {
-      if (_isCloudOnlyPlaceholderPath(path)) return false;
-      if (p.basename(path) != video.fileName) return false;
-      final file = File(path);
-      return file.existsSync() && file.lengthSync() == video.fileSize;
-    });
+    return _hasLocalPathMatchingCloudVideo(recordedVideoPaths, video);
   }
 
   String _cloudPlaceholderPath(String albumName, VideoMetadata video) {
@@ -3212,6 +3428,92 @@ class VideoManager extends ChangeNotifier {
       _cloudMetadataByPath[path];
 
   bool isCloudOnlyPlaceholder(String path) => _isCloudOnlyPlaceholderPath(path);
+
+  bool hasCompletedCloudThumbnail(String path) =>
+      _cloudMetadataByPath[path]?.hasCompletedThumbnail ?? false;
+
+  bool isCloudThumbnailRepairNeeded(String path) {
+    final state = getClipStorageState(path);
+    if (state != ClipStorageState.cloudOnly &&
+        state != ClipStorageState.failedDownload) {
+      return false;
+    }
+    final metadata = _cloudMetadataByPath[path];
+    return metadata == null || !metadata.hasCompletedThumbnail;
+  }
+
+  Map<String, int> getCloudThumbnailDebugCounts({Iterable<String>? paths}) {
+    final source = paths ?? recordedVideoPaths;
+    final counts = <String, int>{
+      'completedCloudCount': 0,
+      'thumbnailReadyCount': 0,
+      'thumbnailMissingCount': 0,
+      'thumbnailFailedCount': 0,
+      'fallbackCloudCardCount': 0,
+    };
+
+    for (final path in source) {
+      final state = getClipStorageState(path);
+      if (state != ClipStorageState.cloudOnly &&
+          state != ClipStorageState.failedDownload) {
+        continue;
+      }
+
+      final metadata = _cloudMetadataByPath[path];
+      if (metadata?.isDeleted ?? false) {
+        continue;
+      }
+      counts['completedCloudCount'] = counts['completedCloudCount']! + 1;
+      if (metadata?.hasCompletedThumbnail ?? false) {
+        counts['thumbnailReadyCount'] = counts['thumbnailReadyCount']! + 1;
+        continue;
+      }
+
+      if (metadata?.hasFailedThumbnail ?? false) {
+        counts['thumbnailFailedCount'] = counts['thumbnailFailedCount']! + 1;
+      } else {
+        counts['thumbnailMissingCount'] = counts['thumbnailMissingCount']! + 1;
+      }
+      counts['fallbackCloudCardCount'] = counts['fallbackCloudCardCount']! + 1;
+    }
+
+    return Map<String, int>.unmodifiable(counts);
+  }
+
+  Map<String, int> getCloudThumbnailRuntimeDebugCounts() =>
+      Map<String, int>.unmodifiable(_cloudThumbnailRuntimeCounts);
+
+  void _incrementCloudThumbnailRuntimeCount(String key) {
+    _cloudThumbnailRuntimeCounts[key] =
+        (_cloudThumbnailRuntimeCounts[key] ?? 0) + 1;
+  }
+
+  @visibleForTesting
+  void debugSetCloudMetadataForPath(String path, VideoMetadata metadata) {
+    _cloudMetadataByPath[path] = metadata;
+  }
+
+  @visibleForTesting
+  Future<void> debugRefreshAlbumClipCounts() => _updateAlbumClipCounts();
+
+  @visibleForTesting
+  void debugSetCloudThumbnailFetcher(
+    Future<Uint8List?> Function(String storagePath)? fetcher,
+  ) {
+    _debugCloudThumbnailFetcher = fetcher;
+  }
+
+  @visibleForTesting
+  void debugResetCloudThumbnailRuntimeDebugCounts() {
+    for (final key in _cloudThumbnailRuntimeCounts.keys.toList()) {
+      _cloudThumbnailRuntimeCounts[key] = 0;
+    }
+  }
+
+  @visibleForTesting
+  void debugClearCloudThumbnailMemoryCache() {
+    _cloudThumbnailMemoryCache.clear();
+  }
 
   Future<List<String>> ensureTutorialSampleClips({
     String targetAlbum = '일상',
@@ -3541,7 +3843,7 @@ class VideoManager extends ChangeNotifier {
       'jobId=${job.jobId} album=${job.albumName} aspect=${job.aspectPreset} '
       'captureQuality=${captureProfile.quality} captureMode=$captureQualityMode '
       'targetFps=${captureProfile.targetFps} targetBitrate=${captureProfile.targetBitrate} '
-      'source=${job.sourceStagingPath}',
+      'source=<redacted-path>',
     );
     unawaited(startRecordedClipSaveQueueWorker());
   }
@@ -3606,7 +3908,7 @@ class VideoManager extends ChangeNotifier {
     );
     debugPrint(
       '[VideoManager][RecordedClipQueue] job_start '
-      'jobId=${job.jobId} source=${job.sourceStagingPath} album=${job.albumName} aspect=${job.aspectPreset}',
+      'jobId=${job.jobId} source=<redacted-path> album=${job.albumName} aspect=${job.aspectPreset}',
     );
 
     try {
@@ -3651,7 +3953,7 @@ class VideoManager extends ChangeNotifier {
       }
       debugPrint(
         '[VideoManager][RecordedClipQueue] job_success '
-        'jobId=${job.jobId} output=$outputPath',
+        'jobId=${job.jobId} output=<redacted-path>',
       );
     } catch (e) {
       await _markRecordedClipSaveJob(
@@ -3798,8 +4100,8 @@ class VideoManager extends ChangeNotifier {
 
     debugPrint(
       '[VideoManager] saveRecordedVideo_paths '
-      'sourcePath=$sourcePath '
-      'outputPath=$currentPath '
+      'sourcePath=<redacted-path> '
+      'outputPath=<redacted-path> '
       'album=$albumName '
       'aspectPreset=$normalizedAspectPreset '
       'captureQualityMode=$captureQualityMode '
@@ -3822,8 +4124,8 @@ class VideoManager extends ChangeNotifier {
       'targetDurationMs': _targetRecordingDurationMs,
       'targetCaptureMs': _targetCaptureDurationMs,
       'trimMode': _recordingTrimMode,
-      'sourcePath': sourcePath,
-      'outputPath': currentPath,
+      'sourcePath': '<redacted-path>',
+      'outputPath': '<redacted-path>',
     });
 
     final sourceDurationMs = await _getVideoDurationMsNative(sourcePath);
@@ -4242,7 +4544,7 @@ class VideoManager extends ChangeNotifier {
         'padAppliedMs=$padAppliedMs '
         'fallbackPolicyName=$_recordingFallbackPolicyName '
         'finalDecision=success '
-        'outputPath=$outputPath',
+        'outputPath=<redacted-path>',
       );
 
       await _setClipOwnership(
@@ -4322,8 +4624,8 @@ class VideoManager extends ChangeNotifier {
       }
       debugPrint(
         '[VideoManager] normalizeRecordedVideo_request '
-        'sourcePath=$sourcePath '
-        'outputPath=$outputPath '
+        'sourcePath=<redacted-path> '
+        'outputPath=<redacted-path> '
         'targetDurationMs=$effectiveTargetDurationMs '
         'aspectPreset=${_normalizeRecordedAspectPreset(aspectPreset)} '
         'quality=${qualityProfile.quality} '
@@ -4403,20 +4705,148 @@ class VideoManager extends ChangeNotifier {
 
   bool isClipCloudSynced(String path) => _cloudSyncedPaths.contains(path);
 
+  ClipStorageState getClipStorageState(String path) {
+    final transferState = getClipTransferUiState(path);
+    switch (transferState) {
+      case ClipTransferUiState.pendingUpload:
+        return ClipStorageState.pendingUpload;
+      case ClipTransferUiState.failedUpload:
+        return ClipStorageState.failedUpload;
+      case ClipTransferUiState.failedDownload:
+        return ClipStorageState.failedDownload;
+      case ClipTransferUiState.pendingDownload:
+      case null:
+        break;
+    }
+
+    if (_isCloudOnlyPlaceholderPath(path)) {
+      return ClipStorageState.cloudOnly;
+    }
+
+    final localExists = File(path).existsSync();
+    final hasCloudLink = _hasCompletedCloudLink(path);
+
+    if (localExists && hasCloudLink) {
+      return ClipStorageState.cloudSyncedLocal;
+    }
+    if (localExists) {
+      return ClipStorageState.localOnly;
+    }
+    if (hasCloudLink) {
+      return ClipStorageState.cloudOnly;
+    }
+
+    return ClipStorageState.localOnly;
+  }
+
+  bool isLocalOnlyClip(String path) =>
+      getClipStorageState(path) == ClipStorageState.localOnly;
+
+  bool isCloudSyncedLocalClip(String path) =>
+      getClipStorageState(path) == ClipStorageState.cloudSyncedLocal;
+
+  bool isCloudOnlyClip(String path) =>
+      getClipStorageState(path) == ClipStorageState.cloudOnly;
+
+  bool isUploadableClip(String path) {
+    final state = getClipStorageState(path);
+    return state == ClipStorageState.localOnly ||
+        state == ClipStorageState.failedUpload;
+  }
+
+  Map<String, int> getStorageStateDebugCounts({Iterable<String>? paths}) {
+    final source = paths ?? recordedVideoPaths;
+    final counts = <String, int>{
+      'localFileCount': 0,
+      'localOnlyCount': 0,
+      'cloudSyncedLocalCount': 0,
+      'cloudOnlyCount': 0,
+      'pendingUploadCount': 0,
+      'failedUploadCount': 0,
+      'failedDownloadCount': 0,
+      'uploadableCount': 0,
+    };
+
+    for (final path in source) {
+      if (!_isCloudOnlyPlaceholderPath(path) && File(path).existsSync()) {
+        counts['localFileCount'] = counts['localFileCount']! + 1;
+      }
+
+      final state = getClipStorageState(path);
+      switch (state) {
+        case ClipStorageState.localOnly:
+          counts['localOnlyCount'] = counts['localOnlyCount']! + 1;
+          counts['uploadableCount'] = counts['uploadableCount']! + 1;
+          break;
+        case ClipStorageState.pendingUpload:
+          counts['pendingUploadCount'] = counts['pendingUploadCount']! + 1;
+          break;
+        case ClipStorageState.cloudSyncedLocal:
+          counts['cloudSyncedLocalCount'] =
+              counts['cloudSyncedLocalCount']! + 1;
+          break;
+        case ClipStorageState.cloudOnly:
+          counts['cloudOnlyCount'] = counts['cloudOnlyCount']! + 1;
+          break;
+        case ClipStorageState.failedUpload:
+          counts['failedUploadCount'] = counts['failedUploadCount']! + 1;
+          counts['uploadableCount'] = counts['uploadableCount']! + 1;
+          break;
+        case ClipStorageState.failedDownload:
+          counts['failedDownloadCount'] = counts['failedDownloadCount']! + 1;
+          break;
+      }
+    }
+
+    return Map<String, int>.unmodifiable(counts);
+  }
+
+  bool _hasCompletedCloudLink(String path) {
+    if (_isCloudOnlyPlaceholderPath(path)) {
+      return _cloudMetadataByPath.containsKey(path) ||
+          _cloudSyncedPaths.contains(path);
+    }
+
+    final metadata = _cloudMetadataByPath[path];
+    if (metadata != null &&
+        metadata.uploadStatus.toLowerCase() == 'completed' &&
+        !metadata.isTrashOrTombstone) {
+      return true;
+    }
+
+    // Legacy compatibility input. This preserves existing user state without
+    // treating cloud_only placeholders and real local paths as the same concept.
+    return _cloudSyncedPaths.contains(path);
+  }
+
   Future<void> _enqueueAutoCloudUploadAfterLocalSave(
     String path,
     String albumName,
   ) async {
-    if (AuthService().isGuest || !UserStatusManager().isStandardOrAbove()) {
+    final userStatus = UserStatusManager();
+    if (AuthService().isGuest || !userStatus.canStartNewCloudWrite()) {
       return;
     }
-    if (isClipCloudSynced(path)) return;
+
+    final preUploadState = getClipStorageState(path);
+    if (preUploadState != ClipStorageState.localOnly &&
+        preUploadState != ClipStorageState.failedUpload) {
+      debugPrint(
+        '[VideoManager][AutoCloudUpload] skipped '
+        'reason=state_not_uploadable state=${preUploadState.name}',
+      );
+      return;
+    }
 
     try {
       final file = File(path);
       if (!await file.exists()) return;
       markClipTransferPendingUpload(path);
-      final videoId = await CloudService().uploadVideo(
+      debugPrint(
+        '[VideoManager][AutoCloudUpload] immediate_start '
+        'state=${preUploadState.name} album=$albumName',
+      );
+      final videoId = await CloudService().uploadVideoImmediate(
         videoFile: file,
         albumName: albumName,
         isFavorite: favorites.contains(path),
@@ -4427,12 +4857,15 @@ class VideoManager extends ChangeNotifier {
         return;
       }
       debugPrint(
-        '[VideoManager][AutoCloudUpload] queued path=$path videoId=$videoId',
+        '[VideoManager][AutoCloudUpload] immediate_success '
+        'path=<redacted-path> '
+        'video_id_present=${videoId.trim().isNotEmpty}',
       );
     } catch (e) {
       markClipTransferUploadFailed(path);
       debugPrint(
-        '[VideoManager][AutoCloudUpload] enqueue_failed path=$path error=$e',
+        '[VideoManager][AutoCloudUpload] enqueue_failed '
+        'path=<redacted-path> errorType=${e.runtimeType}',
       );
     }
   }
@@ -4469,6 +4902,9 @@ class VideoManager extends ChangeNotifier {
   /// 사용자 전환(로그아웃/계정 변경) 시 사용자 종속 로컬 캐시 초기화
   Future<void> clearUserScopedLocalCache() async {
     _cloudSyncedPaths.clear();
+    _cloudMetadataByPath.clear();
+    _cloudThumbnailMemoryCache.clear();
+    _cloudThumbnailRuntimeCounts.updateAll((key, value) => 0);
     await _persistCloudSyncedPaths();
     notifyListeners();
   }
@@ -4798,24 +5234,32 @@ class VideoManager extends ChangeNotifier {
     required String fileName,
     required int fileSize,
   }) async {
+    return await findExistingCloudRestoredClipPath(
+          fileName: fileName,
+          fileSize: fileSize,
+        ) !=
+        null;
+  }
+
+  Future<String?> findExistingCloudRestoredClipPath({
+    required String fileName,
+    required int fileSize,
+  }) async {
     final safeFileName = fileName.trim();
     if (safeFileName.isEmpty || fileSize <= 0) {
-      return false;
+      return null;
     }
     final allClips = await _listAllClipPaths();
     for (final path in allClips) {
-      if (!isClipCloudSynced(path)) {
-        continue;
-      }
       if (p.basename(path) != safeFileName) {
         continue;
       }
       final file = File(path);
       if (await file.exists() && await file.length() == fileSize) {
-        return true;
+        return path;
       }
     }
-    return false;
+    return null;
   }
 
   Future<void> registerCloudRestoredClip({
@@ -4846,17 +5290,84 @@ class VideoManager extends ChangeNotifier {
         video: cloudMetadata,
         albumName: albumName,
       );
-      await CloudService().markVideoMovedToAlbum(
-        videoId: cloudMetadata.videoId,
-        albumName: albumName,
-        localPath: path,
-      );
+      if (UserStatusManager().canStartNewCloudWrite()) {
+        await CloudService().markVideoMovedToAlbum(
+          videoId: cloudMetadata.videoId,
+          albumName: albumName,
+          localPath: path,
+        );
+      }
     }
     await _updateAlbumClipCounts();
     if (currentAlbum == albumName) {
       await loadClipsFromCurrentAlbum();
     }
     notifyListeners();
+  }
+
+  Future<void> removeLocalClipAfterCloudMove({
+    required String path,
+    required String albumName,
+  }) async {
+    if (_isCloudOnlyPlaceholderPath(path)) return;
+
+    final file = File(path);
+    if (await file.exists()) {
+      await file.delete();
+    }
+
+    _cloudMetadataByPath.remove(path);
+    _clipTransferUiStateByPath.remove(path);
+    recordedVideoPaths.remove(path);
+    favorites.remove(path);
+    _cloudSyncedPaths.remove(path);
+    await _removeClipOwnershipForPath(path);
+    await _removeLocalIndexByKey(path);
+    await _removeDurationCacheForPath(path);
+    await _persistCloudSyncedPaths();
+    await _updateAlbumClipCounts();
+    if (currentAlbum == albumName) {
+      await loadClipsFromCurrentAlbum();
+    }
+    notifyListeners();
+  }
+
+  Future<void> registerCloudMovedToDeviceClip({
+    required String path,
+    required String albumName,
+    required VideoMetadata cloudMetadata,
+  }) async {
+    await _setClipOwnership(path, ownerAccountId: UserStatusManager().userId);
+    await _removeDurationCacheForPath(path);
+    await _upsertLocalIndexClip(path);
+    if (!recordedVideoPaths.contains(path) && currentAlbum == albumName) {
+      recordedVideoPaths.add(path);
+    }
+    await _removeCloudPlaceholdersForVideo(cloudMetadata.videoId);
+    _cloudMetadataByPath.remove(path);
+    _cloudSyncedPaths.remove(path);
+    _clipTransferUiStateByPath.remove(path);
+    await _persistCloudSyncedPaths();
+    await _updateAlbumClipCounts();
+    if (currentAlbum == albumName) {
+      await loadClipsFromCurrentAlbum();
+    }
+    notifyListeners();
+  }
+
+  Future<void> _removeCloudPlaceholdersForVideo(String videoId) async {
+    final placeholders = _cloudMetadataByPath.entries
+        .where((entry) => entry.value.videoId == videoId)
+        .map((entry) => entry.key)
+        .toList(growable: false);
+    for (final placeholder in placeholders) {
+      _cloudMetadataByPath.remove(placeholder);
+      recordedVideoPaths.remove(placeholder);
+      favorites.remove(placeholder);
+      _cloudSyncedPaths.remove(placeholder);
+      _clipTransferUiStateByPath.remove(placeholder);
+      await _removeLocalIndexByKey(placeholder);
+    }
   }
 
   Future<String?> getFirstClipPath(String n) async {
@@ -4895,12 +5406,18 @@ class VideoManager extends ChangeNotifier {
       return vlogProjectPaths.length;
     }
     final dir = Directory(p.join((await _rawBaseDir()).path, name));
-    if (!await dir.exists()) return 0;
-    return dir
-        .listSync()
-        .whereType<File>()
-        .where((file) => file.path.toLowerCase().endsWith('.mp4'))
-        .length;
+    final localPaths = <String>[];
+    if (await dir.exists()) {
+      localPaths.addAll(
+        dir
+            .listSync()
+            .whereType<File>()
+            .where((file) => file.path.toLowerCase().endsWith('.mp4'))
+            .map((file) => file.path),
+      );
+    }
+    return localPaths.length +
+        _cloudOnlyCountForAlbum(name, localPaths: localPaths);
   }
 
   Future<void> deletePermanently(String path) async {
@@ -4959,30 +5476,33 @@ class VideoManager extends ChangeNotifier {
   bool isClipLocked(String path) => false;
 
   String getClipStatusBadge(String path) {
-    if (_isCloudOnlyPlaceholderPath(path)) return 'Cloud';
-
     final transferState = getClipTransferUiState(path);
-    switch (transferState) {
-      case ClipTransferUiState.pendingUpload:
-      case ClipTransferUiState.pendingDownload:
-        return '로딩중';
-      case ClipTransferUiState.failedUpload:
-      case ClipTransferUiState.failedDownload:
-        return '동기화 실패';
-      case null:
-        break;
+    if (transferState == ClipTransferUiState.pendingUpload ||
+        transferState == ClipTransferUiState.pendingDownload) {
+      return '로딩중';
     }
 
-    if (isClipCloudSynced(path)) return '동기화됨';
-    return '기기';
+    switch (getClipStorageState(path)) {
+      case ClipStorageState.localOnly:
+      case ClipStorageState.pendingUpload:
+      case ClipStorageState.cloudSyncedLocal:
+      case ClipStorageState.failedUpload:
+        return '기기';
+      case ClipStorageState.cloudOnly:
+      case ClipStorageState.failedDownload:
+        return 'Cloud';
+    }
   }
 
   bool isClipVisibleByStorageFilter(String path, String filter) {
+    final state = getClipStorageState(path);
     switch (filter) {
       case 'device':
-        return !isClipCloudSynced(path) && !_isCloudOnlyPlaceholderPath(path);
+        return state != ClipStorageState.cloudOnly &&
+            state != ClipStorageState.failedDownload;
       case 'cloud':
-        return isClipCloudSynced(path);
+        return state == ClipStorageState.cloudOnly ||
+            state == ClipStorageState.failedDownload;
       case 'all':
       default:
         return true;
@@ -5241,6 +5761,11 @@ class VideoManager extends ChangeNotifier {
       cloudFileName: video.fileName,
       cloudFileSize: video.fileSize,
       albumName: albumName,
+      thumbnailStoragePath: video.thumbnailStoragePath,
+      thumbnailStatus: video.thumbnailStatus,
+      thumbnailWidth: video.thumbnailWidth,
+      thumbnailHeight: video.thumbnailHeight,
+      durationMs: video.durationMs,
     );
 
     final index = entries.indexWhere(

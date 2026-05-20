@@ -62,7 +62,9 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
     });
 
     try {
-      final videos = await _cloudService.getCompletedUserVideos();
+      final videos = await _cloudService.getCompletedUserVideos(
+        includeTrash: true,
+      );
       if (!mounted) return;
       setState(() {
         _videos = videos;
@@ -119,7 +121,6 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
 
     var success = 0;
     var failed = 0;
-    var skipped = 0;
     final videoManager = context.read<VideoManager>();
 
     setState(() {
@@ -134,14 +135,25 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
         final fileName = video.fileName.trim().isEmpty
             ? '${video.videoId}.mp4'
             : video.fileName.trim();
-        // 현재 schema에는 Cloud 문서 id를 로컬 인덱스에 저장하는 계약이 없으므로,
-        // 파일명+크기+cloud marker 기반으로 이미 복원된 항목만 방어적으로 건너뛴다.
-        final alreadyRestored = await videoManager.hasExistingCloudRestoredClip(
-          fileName: fileName,
-          fileSize: video.fileSize,
-        );
-        if (alreadyRestored) {
-          skipped++;
+        final restoredPath = await videoManager
+            .findExistingCloudRestoredClipPath(
+              fileName: fileName,
+              fileSize: video.fileSize,
+            );
+        if (restoredPath != null) {
+          final movedFromCloud = await _cloudService.markVideoMovedToDevice(
+            video.videoId,
+          );
+          if (!movedFromCloud) {
+            failed++;
+            continue;
+          }
+          await videoManager.registerCloudMovedToDeviceClip(
+            path: restoredPath,
+            albumName: albumName,
+            cloudMetadata: video,
+          );
+          success++;
           continue;
         }
 
@@ -159,7 +171,19 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
           continue;
         }
 
-        await videoManager.registerCloudRestoredClip(
+        final movedFromCloud = await _cloudService.markVideoMovedToDevice(
+          video.videoId,
+        );
+        if (!movedFromCloud) {
+          final downloadedFile = File(localPath);
+          if (await downloadedFile.exists()) {
+            await downloadedFile.delete();
+          }
+          failed++;
+          continue;
+        }
+
+        await videoManager.registerCloudMovedToDeviceClip(
           path: localPath,
           albumName: albumName,
           cloudMetadata: video,
@@ -181,13 +205,11 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
       _selectedVideoIds.clear();
       _downloadingVideoIds.clear();
     });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          '복원 완료 $success개, 실패 $failed개, 건너뜀 $skipped개${skipped > 0 ? ' · 이미 있는 항목은 건너뜀' : ''}',
-        ),
-      ),
-    );
+    await _loadVideos();
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('복원 완료 $success개, 실패 $failed개')));
   }
 
   @override

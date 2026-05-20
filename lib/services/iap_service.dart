@@ -56,6 +56,20 @@ class IapVerificationException implements Exception {
   String toString() => 'IapVerificationException(code=$code, message=$message)';
 }
 
+class _EntitlementStoreRefreshStats {
+  const _EntitlementStoreRefreshStats({
+    this.candidateCount = 0,
+    this.verifiedActiveCount = 0,
+    this.verifiedInactiveCount = 0,
+    this.verificationFailedCount = 0,
+  });
+
+  final int candidateCount;
+  final int verifiedActiveCount;
+  final int verifiedInactiveCount;
+  final int verificationFailedCount;
+}
+
 /// 인앱 결제 서비스
 ///
 /// in_app_purchase 패키지를 사용하여 Google Play Store / Apple App Store와 연동
@@ -124,8 +138,8 @@ class IAPService {
 
   final Set<String> _verifiedPurchaseKeySet = <String>{};
   final Set<String> _pendingVerificationKeySet = <String>{};
-  final Map<String, IapServerVerificationResult> _latestVerificationResultByKey =
-      <String, IapServerVerificationResult>{};
+  final Map<String, IapServerVerificationResult>
+  _latestVerificationResultByKey = <String, IapServerVerificationResult>{};
   final Map<String, Map<String, dynamic>> _pendingVerificationPayloadByKey =
       <String, Map<String, dynamic>>{};
   bool _isRetryingPendingVerification = false;
@@ -138,6 +152,7 @@ class IAPService {
 
   DateTime? _lastProductQueryAt;
   DateTime? _lastStoreEntitlementRefreshAt;
+  String _activeEntitlementTrigger = 'startup_warmup';
 
   /// 초기화 여부
   bool get isInitialized => _isInitialized;
@@ -147,6 +162,70 @@ class IAPService {
 
   /// 로드된 상품 목록
   List<ProductDetails> get products => _products;
+
+  static String _entitlementTierName(UserTier tier) {
+    switch (tier) {
+      case UserTier.free:
+        return 'free';
+      case UserTier.standard:
+        return 'standard';
+      case UserTier.premium:
+        return 'premium';
+    }
+  }
+
+  static String _entitlementTrigger(String reason) {
+    switch (reason) {
+      case 'startup_warmup':
+      case 'app_resumed':
+      case 'return_from_paywall':
+        return reason;
+      case 'profile_initialize':
+        return 'profile_init';
+      case 'profile_refresh':
+        return 'profile_refresh';
+      case 'screen_init':
+      case 'return_from_play_cancel':
+      case 'manual_refresh':
+        return 'subscription_management_init';
+      default:
+        if (reason.startsWith('entitlement_refresh_')) {
+          return _entitlementTrigger(
+            reason.substring('entitlement_refresh_'.length),
+          );
+        }
+        return 'subscription_management_init';
+    }
+  }
+
+  static void _logEntitlementRefresh({
+    required String trigger,
+    required String source,
+    required UserTier beforeTier,
+    required UserTier afterTier,
+    required String result,
+    required String reasonCode,
+    int candidateCount = 0,
+    int verifiedActiveCount = 0,
+    int verifiedInactiveCount = 0,
+    int verificationFailedCount = 0,
+    required int durationMs,
+  }) {
+    print(
+      '[EntitlementRefresh] '
+      'trigger=${_entitlementTrigger(trigger)} '
+      'source=$source '
+      'before_tier=${_entitlementTierName(beforeTier)} '
+      'after_tier=${_entitlementTierName(afterTier)} '
+      'result=$result '
+      'reason_code=$reasonCode '
+      'candidate_count=$candidateCount '
+      'verified_active_count=$verifiedActiveCount '
+      'verified_inactive_count=$verifiedInactiveCount '
+      'verification_failed_count=$verificationFailedCount '
+      'duration_ms=$durationMs',
+    );
+  }
 
   /// 서비스 초기화
   ///
@@ -478,7 +557,7 @@ class IAPService {
           status: 'INVALID_PRODUCT',
           requestedTransactionDateMillis:
               int.tryParse(purchase.transactionDate ?? '') ??
-                  DateTime.now().millisecondsSinceEpoch,
+              DateTime.now().millisecondsSinceEpoch,
           transactionId: purchase.purchaseID,
           errorCode: 'INVALID_PRODUCT',
           errorMessage: '지원되지 않는 상품 ID입니다.',
@@ -488,7 +567,10 @@ class IAPService {
 
       final payload = _buildVerificationPayload(purchase);
       final key = _buildPurchaseVerificationKey(payload);
-      final orderId = payload['orderId'] ?? payload['purchaseId'];
+      final logKey = _logSafePurchaseVerificationKey(payload);
+      final orderId = _redactedOrderId(
+        payload['orderId'] ?? payload['purchaseId'],
+      );
 
       print(
         '[IAPService][IAPVerify] 검증 시작: '
@@ -512,7 +594,7 @@ class IAPService {
           status: 'INVALID_REQUEST',
           requestedTransactionDateMillis:
               _coerceInt(payload['transactionDateMillis']) ??
-                  DateTime.now().millisecondsSinceEpoch,
+              DateTime.now().millisecondsSinceEpoch,
           transactionId: '${payload['purchaseId'] ?? payload['orderId'] ?? ''}',
           errorCode: 'INVALID_REQUEST',
           errorMessage: '필수 검증 항목이 누락되었습니다: ${missingFields.join(',')}',
@@ -526,7 +608,7 @@ class IAPService {
       if (!result.valid) {
         print(
           '[IAPService][IAPVerify] 서버 검증 실패: '
-          'key=$key productId=${purchase.productID} status=${result.status} '
+          'key=$logKey productId=${purchase.productID} status=${result.status} '
           'errorCode=${result.errorCode} errorMessage=${result.errorMessage} '
           'transactionId=${result.transactionId}',
         );
@@ -544,7 +626,7 @@ class IAPService {
       if (!result.active) {
         print(
           '[IAPService][IAPVerify] 정산 상태 비활성: '
-          'key=$key productId=${purchase.productID} status=${result.status} '
+          'key=$logKey productId=${purchase.productID} status=${result.status} '
           'orderId=$orderId '
           'transactionId=${result.transactionId} '
           'expiry=${result.expiryTimeMillis}',
@@ -563,7 +645,7 @@ class IAPService {
 
       print(
         '[IAPService][IAPVerify] 서버 검증 성공: '
-        'key=$key productId=${purchase.productID} orderId=$orderId '
+        'key=$logKey productId=${purchase.productID} orderId=$orderId '
         'status=${result.status} ack=${result.acknowledged} '
         'consumed=${result.consumed} expiry=${result.expiryTimeMillis} '
         'transactionId=${result.transactionId}',
@@ -608,7 +690,7 @@ class IAPService {
           status: '${fallbackPayload['status'] ?? 'UNHANDLED'}',
           requestedTransactionDateMillis:
               _coerceInt(fallbackPayload['transactionDateMillis']) ??
-                  DateTime.now().millisecondsSinceEpoch,
+              DateTime.now().millisecondsSinceEpoch,
           transactionId:
               '${fallbackPayload['purchaseId'] ?? fallbackPayload['orderId'] ?? ''}',
           errorCode: e.code,
@@ -630,7 +712,7 @@ class IAPService {
         status: 'UNHANDLED_EXCEPTION',
         requestedTransactionDateMillis:
             int.tryParse(purchase.transactionDate ?? '') ??
-                DateTime.now().millisecondsSinceEpoch,
+            DateTime.now().millisecondsSinceEpoch,
         transactionId: purchase.purchaseID,
         errorCode: 'UNHANDLED_EXCEPTION',
         errorMessage: e.toString(),
@@ -656,15 +738,15 @@ class IAPService {
         );
 
         if (orderId != null && orderId.isNotEmpty) {
-          return orderId;
+          return _redactedOrderId(orderId);
         }
 
         if (purchaseId != null && purchaseId.isNotEmpty) {
-          return purchaseId;
+          return _redactedOrderId(purchaseId);
         }
 
         if (transactionDate != null && transactionDate.isNotEmpty) {
-          return transactionDate;
+          return _redactedOrderId(transactionDate);
         }
 
         return 'unknown';
@@ -681,11 +763,11 @@ class IAPService {
       );
 
       if (purchaseId != null && purchaseId.isNotEmpty) {
-        return purchaseId;
+        return _redactedOrderId(purchaseId);
       }
 
       if (transactionDate != null && transactionDate.isNotEmpty) {
-        return transactionDate;
+        return _redactedOrderId(transactionDate);
       }
 
       return 'unknown';
@@ -701,15 +783,21 @@ class IAPService {
       );
 
       if (purchaseId != null && purchaseId.isNotEmpty) {
-        return purchaseId;
+        return _redactedOrderId(purchaseId);
       }
 
       if (transactionDate != null && transactionDate.isNotEmpty) {
-        return transactionDate;
+        return _redactedOrderId(transactionDate);
       }
 
-      return purchase.productID;
+      return _redactedOrderId(purchase.productID);
     }
+  }
+
+  String _redactedOrderId(Object? value) {
+    final raw = value?.toString().trim();
+    if (raw == null || raw.isEmpty || raw == 'null') return 'unknown';
+    return '<redacted-order-id>';
   }
 
   Map<String, dynamic> _buildVerificationPayload(PurchaseDetails purchase) {
@@ -761,7 +849,18 @@ class IAPService {
     return '$productId|$orderId';
   }
 
-  List<String> _validateRequiredVerificationFields(Map<String, dynamic> payload) {
+  String _logSafePurchaseVerificationKey(Map<String, dynamic> payload) {
+    final productId = payload['productId'] ?? '';
+    final orderId = payload['orderId'] ?? payload['purchaseId'] ?? '';
+    final suffix = orderId.toString().trim().isEmpty
+        ? 'none'
+        : orderId.hashCode.toUnsigned(20).toRadixString(16);
+    return '$productId|<redacted-order-id:$suffix>';
+  }
+
+  List<String> _validateRequiredVerificationFields(
+    Map<String, dynamic> payload,
+  ) {
     final List<String> missing = <String>[];
 
     if (!(payload['platform'] == 'android' || payload['platform'] == 'ios')) {
@@ -801,9 +900,11 @@ class IAPService {
     Map<String, dynamic> payload,
   ) async {
     final endpoint = await _resolveIapVerifyUri();
-    final verificationKey = _buildPurchaseVerificationKey(payload);
+    final verificationKey = _logSafePurchaseVerificationKey(payload);
     final requestedProductId = payload['productId'];
-    final orderId = payload['orderId'] ?? payload['purchaseId'];
+    final orderId = _redactedOrderId(
+      payload['orderId'] ?? payload['purchaseId'],
+    );
 
     print(
       '[IAPService][IAPVerify] 요청 시작: '
@@ -864,21 +965,22 @@ class IAPService {
 
     if (decoded['success'] != true) {
       final error = decoded['error'];
-      final errorCode =
-          error is Map<String, dynamic> && error['code'] != null
-              ? '${error['code']}'
-              : 'VERIFICATION_REJECTED';
+      final errorCode = error is Map<String, dynamic> && error['code'] != null
+          ? '${error['code']}'
+          : 'VERIFICATION_REJECTED';
       final errorMessage =
           error is Map<String, dynamic> && error['message'] != null
-              ? '${error['message']}'
-              : '영수증 검증이 거부되었습니다.';
-      final Object? errorDetails = error is Map<String, dynamic> ? error['details'] : null;
+          ? '${error['message']}'
+          : '영수증 검증이 거부되었습니다.';
+      final Object? errorDetails = error is Map<String, dynamic>
+          ? error['details']
+          : null;
       final recoverable = _coerceBool(
         error is Map<String, dynamic>
             ? (error['recoverable'] ??
-                (errorDetails is Map<String, dynamic>
-                    ? errorDetails['recoverable']
-                    : null))
+                  (errorDetails is Map<String, dynamic>
+                      ? errorDetails['recoverable']
+                      : null))
             : null,
       );
       print(
@@ -894,7 +996,7 @@ class IAPService {
         status: '${payload['status']}',
         requestedTransactionDateMillis:
             _coerceInt(payload['transactionDateMillis']) ??
-                DateTime.now().millisecondsSinceEpoch,
+            DateTime.now().millisecondsSinceEpoch,
         transactionId: payload['purchaseId'] ?? payload['orderId'],
         errorCode: errorCode,
         errorMessage: errorMessage,
@@ -930,13 +1032,16 @@ class IAPService {
       productId: responseProductId,
       platform: platform,
       status: status,
-      acknowledged:
-          data['acknowledged'] is bool ? data['acknowledged'] as bool : null,
+      acknowledged: data['acknowledged'] is bool
+          ? data['acknowledged'] as bool
+          : null,
       consumed: data['consumed'] is bool ? data['consumed'] as bool : null,
       expiryTimeMillis: _coerceInt(data['expiryTimeMillis']),
-      transactionId: (data['transactionId'] ?? payload['purchaseId'])?.toString(),
+      transactionId: (data['transactionId'] ?? payload['purchaseId'])
+          ?.toString(),
       requestedTransactionDateMillis:
-          _coerceInt(payload['transactionDateMillis']) ?? DateTime.now().millisecondsSinceEpoch,
+          _coerceInt(payload['transactionDateMillis']) ??
+          DateTime.now().millisecondsSinceEpoch,
       errorCode: data['errorCode']?.toString(),
       errorMessage: data['errorMessage']?.toString(),
       recoverable: serverRecoverable ?? false,
@@ -954,19 +1059,16 @@ class IAPService {
 
     try {
       final exchangeUri = Uri.parse(_socialExchangeUrl);
-      final normalizedPath =
-          (exchangeUri.path.isEmpty ? '' : exchangeUri.path).replaceAll(
-            RegExp(r'//+'),
-            '/',
-          );
+      final normalizedPath = (exchangeUri.path.isEmpty ? '' : exchangeUri.path)
+          .replaceAll(RegExp(r'//+'), '/');
       final trimmedPath =
           normalizedPath.endsWith('/') && normalizedPath.length > 1
-              ? normalizedPath.substring(0, normalizedPath.length - 1)
-              : normalizedPath;
+          ? normalizedPath.substring(0, normalizedPath.length - 1)
+          : normalizedPath;
 
       if (normalizedPath.endsWith('/exchange')) {
         final updatedPath =
-          '${normalizedPath.substring(0, normalizedPath.length - '/exchange'.length)}/iap/verify';
+            '${normalizedPath.substring(0, normalizedPath.length - '/exchange'.length)}/iap/verify';
         return exchangeUri.replace(path: updatedPath);
       }
 
@@ -975,10 +1077,9 @@ class IAPService {
       }
 
       return exchangeUri.replace(
-        path:
-            trimmedPath.isEmpty || trimmedPath == '/'
-                ? '/iap/verify'
-                : '$trimmedPath/iap/verify',
+        path: trimmedPath.isEmpty || trimmedPath == '/'
+            ? '/iap/verify'
+            : '$trimmedPath/iap/verify',
       );
     } catch (error) {
       throw IapVerificationException(
@@ -993,13 +1094,15 @@ class IAPService {
     Map<String, dynamic> payload,
   ) async {
     final productId = payload['productId'];
-    final orderId = payload['orderId'] ?? payload['purchaseId'];
+    final orderId = _redactedOrderId(
+      payload['orderId'] ?? payload['purchaseId'],
+    );
     try {
       return await _verifyWithServer(payload);
     } on IapVerificationException catch (error, stackTrace) {
       print(
         '[IAPService][IAPVerify] 설정/검증 예외: '
-        'key=${_buildPurchaseVerificationKey(payload)} '
+        'key=${_logSafePurchaseVerificationKey(payload)} '
         'productId=$productId orderId=$orderId '
         'code=${error.code} recoverable=${error.recoverable} '
         'message=${error.message}',
@@ -1009,7 +1112,7 @@ class IAPService {
     } on SocketException catch (error, stackTrace) {
       print(
         '[IAPService][IAPVerify] 소켓 오류: '
-        'key=${_buildPurchaseVerificationKey(payload)} '
+        'key=${_logSafePurchaseVerificationKey(payload)} '
         'productId=$productId orderId=$orderId '
         'code=IAP_VERIFY_NETWORK_ERROR message=${error.message}',
       );
@@ -1022,7 +1125,7 @@ class IAPService {
     } on TimeoutException catch (error, stackTrace) {
       print(
         '[IAPService][IAPVerify] 타임아웃: '
-        'key=${_buildPurchaseVerificationKey(payload)} '
+        'key=${_logSafePurchaseVerificationKey(payload)} '
         'productId=$productId orderId=$orderId '
         'code=IAP_VERIFY_TIMEOUT message=${error.message}',
       );
@@ -1035,7 +1138,7 @@ class IAPService {
     } on FormatException catch (error, stackTrace) {
       print(
         '[IAPService][IAPVerify] JSON 형식 오류: '
-        'key=${_buildPurchaseVerificationKey(payload)} '
+        'key=${_logSafePurchaseVerificationKey(payload)} '
         'productId=$productId orderId=$orderId '
         'code=IAP_VERIFY_RESPONSE_FORMAT_ERROR '
         'message=${error.message}',
@@ -1048,7 +1151,7 @@ class IAPService {
     } catch (error, stackTrace) {
       print(
         '[IAPService][IAPVerify] 알 수 없는 검증 예외: '
-        'key=${_buildPurchaseVerificationKey(payload)} '
+        'key=${_logSafePurchaseVerificationKey(payload)} '
         'productId=$productId orderId=$orderId '
         'code=IAP_VERIFY_ERROR message=$error',
       );
@@ -1062,7 +1165,9 @@ class IAPService {
   }
 
   String _toStatusString(PurchaseDetails purchase) {
-    return '${purchase.status}'.replaceFirst('PurchaseStatus.', '').toUpperCase();
+    return '${purchase.status}'
+        .replaceFirst('PurchaseStatus.', '')
+        .toUpperCase();
   }
 
   int? _coerceInt(dynamic raw) {
@@ -1104,8 +1209,8 @@ class IAPService {
     try {
       final transactionDateMillis =
           verificationResult?.requestedTransactionDateMillis ??
-              int.tryParse(purchase.transactionDate ?? '0') ??
-                  DateTime.now().millisecondsSinceEpoch;
+          int.tryParse(purchase.transactionDate ?? '0') ??
+          DateTime.now().millisecondsSinceEpoch;
       await _applyVerifiedPurchaseFromResult(
         productId: purchase.productID,
         verificationResult: verificationResult,
@@ -1208,7 +1313,37 @@ class IAPService {
     required String status,
   }) async {
     final userManager = UserStatusManager();
-    await userManager.resetToFree();
+    if (status == 'CANCELLED') {
+      final expiryAt = userManager.estimatedExpiryAt;
+      final now = DateTime.now();
+      if (userManager.isStandardOrAbove() &&
+          expiryAt != null &&
+          now.isBefore(expiryAt)) {
+        await userManager.setPendingTierChange(
+          nextTier: UserTier.free,
+          effectiveAt: expiryAt,
+        );
+        await AuthService().syncPendingSubscriptionChangeToFirestore(
+          nextTier: UserTier.free,
+          nextProductId: userManager.productId ?? productId,
+          effectiveAt: expiryAt,
+          reason: 'iap_cancelled_until_expiry',
+        );
+        print(
+          '[IAPService][Deliver] cancelled subscription kept paid until expiry: '
+          'productId=$productId orderId=${orderId ?? 'unknown'} expiry=$expiryAt',
+        );
+        return;
+      }
+    }
+
+    if (status == 'EXPIRED' || status == 'CANCELLED') {
+      await userManager.downgradeExpiredSubscriptionToFreePreservingHistory(
+        reason: 'iap_inactive_${status.toLowerCase()}',
+      );
+    } else {
+      await userManager.resetToFree();
+    }
     await AuthService().syncFreeTierToFirestore(
       reason: 'iap_inactive_${status.toLowerCase()}',
     );
@@ -1223,7 +1358,9 @@ class IAPService {
     required String status,
     required int transactionDateMillis,
   }) async {
+    final stopwatch = Stopwatch()..start();
     final userManager = UserStatusManager();
+    final beforeTier = userManager.currentTier;
 
     UserTier tier;
     if (productId == standardMonthly || productId == standardAnnual) {
@@ -1259,12 +1396,34 @@ class IAPService {
         purchaseDate: purchaseDateTime,
       );
       await userManager.initialize();
+      _logEntitlementRefresh(
+        trigger: _activeEntitlementTrigger,
+        source: 'server_verify',
+        beforeTier: beforeTier,
+        afterTier: userManager.currentTier,
+        result: 'applied',
+        reasonCode: 'verification_active',
+        candidateCount: 1,
+        verifiedActiveCount: 1,
+        durationMs: stopwatch.elapsedMilliseconds,
+      );
       print(
         '[IAPService][Deliver] entitlement persisted: '
         'localTier=${userManager.currentTier} productId=${userManager.productId} '
         'firestoreSynced=$firestoreSynced status=$status',
       );
     } else {
+      _logEntitlementRefresh(
+        trigger: _activeEntitlementTrigger,
+        source: 'server_verify',
+        beforeTier: beforeTier,
+        afterTier: userManager.currentTier,
+        result: 'failed',
+        reasonCode: 'verification_active',
+        candidateCount: 1,
+        verifiedActiveCount: 1,
+        durationMs: stopwatch.elapsedMilliseconds,
+      );
       print('[IAPService] ✗ 사용자 등급 업데이트 실패');
     }
   }
@@ -1308,11 +1467,14 @@ class IAPService {
         }
 
         final productId = '${payload['productId'] ?? 'unknown'}';
-        final orderId = '${payload['orderId'] ?? payload['purchaseId'] ?? 'unknown'}';
+        final orderId = _redactedOrderId(
+          payload['orderId'] ?? payload['purchaseId'],
+        );
+        final logKey = _logSafePurchaseVerificationKey(payload);
 
         print(
           '[IAPService][IAPVerifyRetry] 재검증 시작: '
-          'source=$source key=$key productId=$productId orderId=$orderId',
+          'source=$source key=$logKey productId=$productId orderId=$orderId',
         );
 
         try {
@@ -1326,7 +1488,7 @@ class IAPService {
             if (!result.valid) {
               print(
                 '[IAPService][IAPVerifyRetry] 검증 실패: '
-                'key=$key productId=$productId orderId=$orderId '
+                'key=$logKey productId=$productId orderId=$orderId '
                 'code=${result.errorCode} message=${result.errorMessage}',
               );
             }
@@ -1349,14 +1511,14 @@ class IAPService {
 
           print(
             '[IAPService][IAPVerifyRetry] 재검증 결과: '
-            'key=$key productId=$productId orderId=$orderId '
+            'key=$logKey productId=$productId orderId=$orderId '
             'status=${result.status} valid=${result.valid} '
             'active=${result.active} recoverable=${result.recoverable}',
           );
         } on IapVerificationException catch (error, stackTrace) {
           print(
             '[IAPService][IAPVerifyRetry] 예외: '
-            'source=$source key=$key productId=$productId orderId=$orderId '
+            'source=$source key=$logKey productId=$productId orderId=$orderId '
             'code=${error.code} message=${error.message}',
           );
           print(stackTrace);
@@ -1368,7 +1530,7 @@ class IAPService {
         } catch (error, stackTrace) {
           print(
             '[IAPService][IAPVerifyRetry] 알 수 없는 예외: '
-            'source=$source key=$key productId=$productId orderId=$orderId '
+            'source=$source key=$logKey productId=$productId orderId=$orderId '
             'error=$error',
           );
           print(stackTrace);
@@ -1411,10 +1573,13 @@ class IAPService {
   /// 결제 UI가 닫힌 뒤 `purchaseStream` 이벤트가 유실되거나 앱이 백그라운드에서
   /// 복귀한 경우에도 Android `queryPastPurchases()` 결과를 다시 검증해 로컬/Firestore
   /// 구독 상태를 보정한다.
-  Future<void> refreshEntitlementsFromStore({
-    String reason = 'manual',
-  }) async {
+  Future<void> refreshEntitlementsFromStore({String reason = 'manual'}) async {
+    _activeEntitlementTrigger = reason;
     final now = DateTime.now();
+    final stopwatch = Stopwatch()..start();
+    final userManager = UserStatusManager();
+    await userManager.initialize();
+    final beforeTier = userManager.currentTier;
     print(
       '[IAPService][EntitlementRefresh] requested '
       'reason=$reason initialized=$_isInitialized available=$_isAvailable '
@@ -1430,35 +1595,88 @@ class IAPService {
           'reason=$reason initialized=$initialized available=$_isAvailable',
         );
         if (!initialized || !_isAvailable) {
+          _logEntitlementRefresh(
+            trigger: reason,
+            source: 'store_query',
+            beforeTier: beforeTier,
+            afterTier: userManager.currentTier,
+            result: 'failed',
+            reasonCode: !_isInitialized
+                ? 'not_initialized'
+                : 'store_unavailable',
+            durationMs: stopwatch.elapsedMilliseconds,
+          );
           return;
         }
       }
 
       _lastStoreEntitlementRefreshAt = now;
-      await _retryRestoreVerificationFromStore(source: 'entitlement_refresh_$reason');
+      final stats = await _retryRestoreVerificationFromStore(
+        source: 'entitlement_refresh_$reason',
+      );
       await _retryPendingVerification(source: 'entitlement_refresh_$reason');
 
-      final userManager = UserStatusManager();
       await userManager.initialize();
+      final afterTier = userManager.currentTier;
+      final result = beforeTier != afterTier
+          ? 'applied'
+          : stats.verifiedActiveCount > 0
+          ? 'preserved'
+          : 'skipped';
+      final reasonCode = stats.verifiedActiveCount > 0
+          ? 'verification_active'
+          : stats.verifiedInactiveCount > 0
+          ? 'verification_inactive'
+          : stats.verificationFailedCount > 0
+          ? 'verification_inactive'
+          : 'no_candidate';
+      _logEntitlementRefresh(
+        trigger: reason,
+        source: 'store_query',
+        beforeTier: beforeTier,
+        afterTier: afterTier,
+        result: result,
+        reasonCode: reasonCode,
+        candidateCount: stats.candidateCount,
+        verifiedActiveCount: stats.verifiedActiveCount,
+        verifiedInactiveCount: stats.verifiedInactiveCount,
+        verificationFailedCount: stats.verificationFailedCount,
+        durationMs: stopwatch.elapsedMilliseconds,
+      );
       print(
         '[IAPService][EntitlementRefresh] done '
         'reason=$reason localTier=${userManager.currentTier} '
         'productId=${userManager.productId} nextTier=${userManager.nextTier}',
       );
     } catch (e, stackTrace) {
+      await userManager.initialize();
+      _logEntitlementRefresh(
+        trigger: reason,
+        source: 'store_query',
+        beforeTier: beforeTier,
+        afterTier: userManager.currentTier,
+        result: 'failed',
+        reasonCode: 'store_unavailable',
+        durationMs: stopwatch.elapsedMilliseconds,
+      );
       print('[IAPService][EntitlementRefresh] failed reason=$reason error=$e');
       print(stackTrace);
     }
   }
 
-  Future<void> _retryRestoreVerificationFromStore({String source = 'restore'}) async {
+  Future<_EntitlementStoreRefreshStats> _retryRestoreVerificationFromStore({
+    String source = 'restore',
+  }) async {
     if (!Platform.isAndroid) {
-      print('[IAPService][IAPRestoreVerify] skip: unsupported platform source=$source');
-      return;
+      print(
+        '[IAPService][IAPRestoreVerify] skip: unsupported platform source=$source',
+      );
+      return const _EntitlementStoreRefreshStats();
     }
 
     try {
-      final addition = _iap.getPlatformAddition<InAppPurchaseAndroidPlatformAddition>();
+      final addition = _iap
+          .getPlatformAddition<InAppPurchaseAndroidPlatformAddition>();
       final response = await addition.queryPastPurchases();
 
       if (response.error != null) {
@@ -1470,10 +1688,13 @@ class IAPService {
       final pastPurchases = response.pastPurchases
           .where((purchase) => _productIds.contains(purchase.productID))
           .toList();
+      var verifiedActiveCount = 0;
+      var verifiedInactiveCount = 0;
+      var verificationFailedCount = 0;
 
       if (pastPurchases.isEmpty) {
         print('[IAPService][IAPRestoreVerify] no matching past purchase found');
-        return;
+        return const _EntitlementStoreRefreshStats();
       }
 
       print(
@@ -1490,12 +1711,18 @@ class IAPService {
         final result = await _verifyPurchase(purchase);
 
         if (!result.valid) {
+          verificationFailedCount++;
           print(
             '[IAPService][IAPRestoreVerify] verify failed: '
             'productId=${purchase.productID} orderId=$orderId '
             'status=${result.status} code=${result.errorCode}',
           );
           continue;
+        }
+        if (result.active) {
+          verifiedActiveCount++;
+        } else {
+          verifiedInactiveCount++;
         }
 
         await _deliverProduct(
@@ -1509,9 +1736,16 @@ class IAPService {
           'productId=${purchase.productID} orderId=$orderId',
         );
       }
+      return _EntitlementStoreRefreshStats(
+        candidateCount: pastPurchases.length,
+        verifiedActiveCount: verifiedActiveCount,
+        verifiedInactiveCount: verifiedInactiveCount,
+        verificationFailedCount: verificationFailedCount,
+      );
     } catch (error, stackTrace) {
       print('[IAPService][IAPRestoreVerify] failed: $error');
       print(stackTrace);
+      return const _EntitlementStoreRefreshStats(verificationFailedCount: 1);
     }
   }
 
@@ -1524,16 +1758,39 @@ class IAPService {
   Future<void> syncCancellationStateFromStore({
     String reason = 'manual_refresh',
   }) async {
-    if (!Platform.isAndroid) return;
+    final stopwatch = Stopwatch()..start();
+    final userManager = UserStatusManager();
+    await userManager.initialize();
+    final beforeTier = userManager.currentTier;
+    if (!Platform.isAndroid) {
+      _logEntitlementRefresh(
+        trigger: reason,
+        source: 'store_query',
+        beforeTier: beforeTier,
+        afterTier: beforeTier,
+        result: 'skipped',
+        reasonCode: 'store_unavailable',
+        durationMs: stopwatch.elapsedMilliseconds,
+      );
+      return;
+    }
 
     try {
       if (!_isInitialized) {
         await initialize();
       }
 
-      final userManager = UserStatusManager();
       await userManager.initialize();
       if (userManager.currentTier == UserTier.free) {
+        _logEntitlementRefresh(
+          trigger: reason,
+          source: 'store_query',
+          beforeTier: beforeTier,
+          afterTier: userManager.currentTier,
+          result: 'skipped',
+          reasonCode: 'no_candidate',
+          durationMs: stopwatch.elapsedMilliseconds,
+        );
         return;
       }
 
@@ -1543,6 +1800,15 @@ class IAPService {
         print(
           '[IAPService][CancelSync] skip: no matching purchase found '
           '(reason=$reason, currentProductId=$currentProductId)',
+        );
+        _logEntitlementRefresh(
+          trigger: reason,
+          source: 'store_query',
+          beforeTier: beforeTier,
+          afterTier: userManager.currentTier,
+          result: 'skipped',
+          reasonCode: 'no_candidate',
+          durationMs: stopwatch.elapsedMilliseconds,
         );
         return;
       }
@@ -1562,6 +1828,17 @@ class IAPService {
             purchaseDate: userManager.purchaseDate,
           );
         }
+        _logEntitlementRefresh(
+          trigger: reason,
+          source: 'store_query',
+          beforeTier: beforeTier,
+          afterTier: userManager.currentTier,
+          result: 'preserved',
+          reasonCode: 'verification_active',
+          candidateCount: 1,
+          verifiedActiveCount: 1,
+          durationMs: stopwatch.elapsedMilliseconds,
+        );
         return;
       }
 
@@ -1585,7 +1862,28 @@ class IAPService {
         '[IAPService][CancelSync] cancellation reserved '
         'currentTier=${userManager.currentTier} -> free at=$effectiveAt',
       );
+      _logEntitlementRefresh(
+        trigger: reason,
+        source: 'store_query',
+        beforeTier: beforeTier,
+        afterTier: userManager.currentTier,
+        result: 'preserved',
+        reasonCode: 'verification_inactive',
+        candidateCount: 1,
+        verifiedInactiveCount: 1,
+        durationMs: stopwatch.elapsedMilliseconds,
+      );
     } catch (e, stackTrace) {
+      await userManager.initialize();
+      _logEntitlementRefresh(
+        trigger: reason,
+        source: 'store_query',
+        beforeTier: beforeTier,
+        afterTier: userManager.currentTier,
+        result: 'failed',
+        reasonCode: 'store_unavailable',
+        durationMs: stopwatch.elapsedMilliseconds,
+      );
       print('[IAPService][CancelSync] failed: $e');
       print(stackTrace);
     }

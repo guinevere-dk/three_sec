@@ -1107,7 +1107,7 @@ class _CaptureScreenState extends State<CaptureScreen>
         captureQualityMode: _selectedQualityMode.storageKey,
       );
       debugPrint(
-        '[Capture] recorded_clip_enqueued source=${video.path} '
+        '[Capture] recorded_clip_enqueued source=<redacted-path> '
         'quality=${_selectedQualityMode.profile.summaryLabel} '
         'aspectPreset=${_selectedAspectPreset.saveAspectPreset}',
       );

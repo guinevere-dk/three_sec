@@ -16,6 +16,11 @@ class LocalIndexEntry {
   final String? cloudFileName;
   final int? cloudFileSize;
   final String? albumName;
+  final String? thumbnailStoragePath;
+  final String? thumbnailStatus;
+  final int? thumbnailWidth;
+  final int? thumbnailHeight;
+  final int? durationMs;
 
   const LocalIndexEntry({
     required this.id,
@@ -31,6 +36,11 @@ class LocalIndexEntry {
     this.cloudFileName,
     this.cloudFileSize,
     this.albumName,
+    this.thumbnailStoragePath,
+    this.thumbnailStatus,
+    this.thumbnailWidth,
+    this.thumbnailHeight,
+    this.durationMs,
   });
 
   Map<String, dynamic> toJson() => {
@@ -47,6 +57,12 @@ class LocalIndexEntry {
     if (cloudFileName != null) 'cloudFileName': cloudFileName,
     if (cloudFileSize != null) 'cloudFileSize': cloudFileSize,
     if (albumName != null) 'albumName': albumName,
+    if (thumbnailStoragePath != null)
+      'thumbnailStoragePath': thumbnailStoragePath,
+    if (thumbnailStatus != null) 'thumbnailStatus': thumbnailStatus,
+    if (thumbnailWidth != null) 'thumbnailWidth': thumbnailWidth,
+    if (thumbnailHeight != null) 'thumbnailHeight': thumbnailHeight,
+    if (durationMs != null) 'durationMs': durationMs,
   };
 
   factory LocalIndexEntry.fromJson(Map<String, dynamic> json) {
@@ -68,8 +84,20 @@ class LocalIndexEntry {
           ? (json['cloudFileSize'] as num).toInt()
           : int.tryParse('${json['cloudFileSize'] ?? ''}'),
       albumName: json['albumName'] as String?,
+      thumbnailStoragePath: json['thumbnailStoragePath'] as String?,
+      thumbnailStatus: json['thumbnailStatus'] as String?,
+      thumbnailWidth: _readNullableInt(json['thumbnailWidth']),
+      thumbnailHeight: _readNullableInt(json['thumbnailHeight']),
+      durationMs: _readNullableInt(json['durationMs']),
     );
   }
+}
+
+int? _readNullableInt(Object? value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  if (value is String) return int.tryParse(value);
+  return null;
 }
 
 class LocalIndexService {

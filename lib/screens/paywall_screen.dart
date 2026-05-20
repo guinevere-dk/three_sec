@@ -128,7 +128,13 @@ class _PaywallScreenState extends State<PaywallScreen> {
   }
 
   Future<void> _handlePurchaseCompleted(PurchaseDetails purchaseDetails) async {
-    final synced = await _waitForLocalTierSync(purchaseDetails.productID);
+    var synced = await _waitForLocalTierSync(purchaseDetails.productID);
+    if (!synced) {
+      await _iapService.refreshEntitlementsFromStore(
+        reason: 'return_from_paywall',
+      );
+      synced = await _waitForLocalTierSync(purchaseDetails.productID);
+    }
     if (synced && _authService.isAuthenticatedAccount) {
       final userStatus = UserStatusManager();
       await _authService.syncSubscriptionToFirestore(
@@ -139,11 +145,18 @@ class _PaywallScreenState extends State<PaywallScreen> {
     }
     if (!mounted) return;
 
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text("Subscription activated!")));
     setState(() => _isPurchaseLoading = false);
-    Navigator.pop(context, true);
+    if (synced) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("Subscription activated!")));
+      Navigator.pop(context, true);
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('구독 확인 중입니다. 잠시 후 구독 관리 화면에서 다시 확인해 주세요.')),
+    );
   }
 
   Future<bool> _waitForLocalTierSync(String productId) async {
@@ -237,7 +250,8 @@ class _PaywallScreenState extends State<PaywallScreen> {
     await Navigator.push<bool>(
       context,
       MaterialPageRoute(
-        builder: (_) => const LoginScreen(popOnSuccess: true, allowGuest: false),
+        builder: (_) =>
+            const LoginScreen(popOnSuccess: true, allowGuest: false),
       ),
     );
 
@@ -487,11 +501,11 @@ class _PaywallScreenState extends State<PaywallScreen> {
               onPressed: _isPurchaseLoading
                   ? null
                   : () async {
-                       if (!await _ensureAuthenticatedAccountForPaidAction()) {
-                         return;
-                       }
-                       final selectedProductId = _selectedProductId;
-                       final ok = await _iapService.purchase(selectedProductId);
+                      if (!await _ensureAuthenticatedAccountForPaidAction()) {
+                        return;
+                      }
+                      final selectedProductId = _selectedProductId;
+                      final ok = await _iapService.purchase(selectedProductId);
                       if (!ok && mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
@@ -550,11 +564,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
               padding: const EdgeInsets.only(bottom: 8),
               child: Row(
                 children: [
-                  Icon(
-                    Icons.check_circle,
-                    color: Colors.white54,
-                    size: 20,
-                  ),
+                  Icon(Icons.check_circle, color: Colors.white54, size: 20),
                   const SizedBox(width: 8),
                   Text(
                     b,

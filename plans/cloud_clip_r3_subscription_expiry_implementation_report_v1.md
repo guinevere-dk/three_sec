@@ -1,93 +1,222 @@
-# Cloud Clip R3 구독 만료 정책 구현 보고서 v1
+# Cloud Clip R3 구독 만료 Cloud 접근 정책 구현 보고서 v1
 
-## 1. 구현 범위
+## 1. 구현 범위와 결론
 
-- R3 정책만 Flutter 클라이언트 최소 변경으로 구현했다.
-- 구독 만료 즉시 신규 Cloud upload를 차단한다.
-- 기존 Cloud clip은 만료 후 30일 grace 동안 목록 조회와 download/restore만 허용한다.
-- Storage object 삭제, Firestore schema migration/backfill, Firebase rules/index 변경, Functions 변경, Cloud copy 구현은 수행하지 않았다.
+R3 v1 구독 만료 Cloud 접근 정책을 Flutter 클라이언트 중심으로 구현했다.
 
-## 2. 기준 문서
+확정 정책 반영:
 
-- `AGENTS.md`
-- `CURRENT_PHASE.md`
-- `DATA_COMPATIBILITY.md`
-- `plans/cloud_clip_policy_decision_v1.md`
-- `plans/cloud_clip_remaining_risk_resolution_plan_v1.md`
-- `plans/cloud_clip_deferred_items_execution_guide_v1.md`
+- R3 v1 grace는 로컬 SharedPreferences의 `3s_purchase_date`, `3s_product_id` 기반으로만 계산한다.
+- cross-device grace는 구현하지 않았다.
+- 신규 Cloud write는 active Standard/Premium에서만 허용한다.
+- expired/free grace 상태에서도 upload, auto upload, queue upload, copy는 차단한다.
+- 기존 Cloud clip list/read/download/restore는 active 또는 30일 grace 기간에만 허용한다.
+- grace 종료 후 Cloud 접근은 차단한다.
+- refund/revoked/chargeback류 inactive 상태는 grace 없이 차단한다.
+- cancelled는 expiry 전까지 paid 상태를 유지하고, expiry 후에는 단순 만료로 grace를 적용한다.
+- grace 중 Cloud metadata lifecycle write는 최소화하고, 로컬 restore 중심으로 처리한다.
 
-## 3. 변경 파일
+명시적 미수행:
 
-| 파일 | 변경 요약 |
+- Firebase rules/index 변경 없음.
+- Firestore schema 변경 없음.
+- migration/backfill 없음.
+- Storage object 삭제 없음.
+- Cloud copy 구현 없음.
+- npm audit fix 없음.
+- deploy 없음.
+- unrelated cleanup 없음.
+
+## 2. 변경 파일 목록
+
+| 파일 | 변경 내용 |
 |---|---|
-| `lib/managers/user_status_manager.dart` | 구독 만료 추정 시각, Cloud write 차단, 30일 read grace 판정 helper 추가. 자동 만료 강등 시 purchaseDate/productId를 보존해 grace 판정에 사용. |
-| `lib/services/cloud_service.dart` | 신규 upload/queue upload/auto upload에 만료 write guard 적용. Cloud 목록/download에는 read grace guard 적용. 만료 안내 문구와 `subscription_expired` 오류 코드 추가. |
-| `lib/managers/video_manager.dart` | Library Cloud placeholder 동기화 조건을 Standard 이상에서 read grace 허용 조건으로 변경. |
-| `lib/screens/cloud_backup_screen.dart` | 만료 grace 중 Cloud 보관함 접근과 복원을 허용하고, read-only 안내 배너 표시. grace 종료/권한 없음 안내 문구 표시. |
-| `lib/screens/library_screen.dart` | Cloud 이동 실패 안내에 구독 만료 문구 추가. |
-| `plans/cloud_clip_r3_subscription_expiry_implementation_report_v1.md` | 구현 결과와 QA 체크리스트 문서화. |
+| [lib/managers/user_status_manager.dart](../lib/managers/user_status_manager.dart) | R3 helper 유지/정리. 만료 강등 시 purchase/product 이력을 보존하는 public helper 추가. |
+| [lib/services/cloud_service.dart](../lib/services/cloud_service.dart) | 신규 Cloud write gate 통일, read gate 보강, metadata lifecycle write를 active write 권한으로 제한, reason code/message 정리. |
+| [lib/services/iap_service.dart](../lib/services/iap_service.dart) | `CANCELLED`는 expiry 전 paid 유지, `EXPIRED/CANCELLED`는 이력 보존 free 강등, refund/revoked/chargeback류는 grace 없이 reset. |
+| [lib/services/auth_service.dart](../lib/services/auth_service.dart) | Firestore `free` 동기화가 이미 로컬 grace 상태인 SharedPreferences 이력을 지우지 않도록 보존. |
+| [lib/managers/video_manager.dart](../lib/managers/video_manager.dart) | grace restore 후 Cloud metadata move write를 생략하고 로컬 restore 중심으로 유지. |
+| [lib/screens/library_screen.dart](../lib/screens/library_screen.dart) | Cloud upload 버튼/실행 진입을 `canStartNewCloudWrite()` 기준으로 차단하고 안내 메시지 표시. |
+| [lib/screens/profile_screen.dart](../lib/screens/profile_screen.dart) | Profile Cloud stats 노출 기준을 `canReadExistingCloudClips()`로 조정. |
+| [test/user_status_manager_r3_test.dart](../test/user_status_manager_r3_test.dart) | active paid, grace, grace 종료, free never paid, refund-like reset 상태 단위 테스트 추가. |
+| [plans/cloud_clip_r3_subscription_expiry_implementation_report_v1.md](cloud_clip_r3_subscription_expiry_implementation_report_v1.md) | 본 구현 결과 보고서 갱신. |
+
+## 3. 핵심 구현 요약
+
+### 3.1 UserStatusManager
+
+구독 상태 계산 helper는 `UserStatusManager`에 둔다.
+
+확인/구현된 계약:
+
+- `canStartNewCloudWrite({DateTime? now})`
+  - Standard/Premium이 아니면 false.
+  - Standard/Premium이어도 추정 만료 시각 이후면 false.
+  - active paid 상태에서만 true.
+- `canReadExistingCloudClips({DateTime? now})`
+  - active paid면 true.
+  - paid tier가 이미 만료됐지만 grace 안이면 true.
+  - Free로 강등된 경우에도 보존된 purchase/product 기반 만료 후 30일 이내면 true.
+  - purchase/product 이력이 없으면 false.
+- `isInCloudReadGrace({DateTime? now})`
+  - Free 상태이면서 read grace가 유효할 때 true.
+- `cloudReadGraceEndsAt`
+  - `lastKnownPaidExpiryAt + 30일`.
+- `downgradeExpiredSubscriptionToFreePreservingHistory()`
+  - tier와 pending tier만 정리하고 `3s_purchase_date`, `3s_product_id`는 보존한다.
+
+### 3.2 CloudService
+
+실행 gate와 error code/user message는 `CloudService`에 둔다.
+
+신규 write gate 적용:
+
+- `uploadVideo()`
+- `uploadVideoImmediate()`
+- `_processUploadQueue()`
+- `_executeUpload()`
+- `enqueuePendingLocalUploads()`
+- metadata lifecycle write 계열:
+  - `updateVideoMetadata()`
+  - `markVideoMovedToAlbum()`
+  - `markVideoInTrash()`
+  - `restoreVideoFromTrash()`
+  - `deleteVideo()`
+
+read/download gate 적용:
+
+- `getCompletedUserVideos()`
+- `downloadVideo()`
+- `getUserVideos()`
+- `refreshCloudStatsSnapshot()`
+
+reason code 정리:
+
+- `tier_required`: never-paid Free처럼 Cloud write/read 권한 자체가 없는 상태.
+- `subscription_expired`: paid 이력이 있으나 신규 Cloud write가 만료 정책으로 차단된 상태.
+- `subscription_expired_or_grace_ended`: 기존 Cloud read/download grace가 종료되었거나 read 권한이 없는 상태.
+
+### 3.3 IAP/Auth 동기화
+
+- `CANCELLED` inactive가 expiry 전 들어오면 `nextTier=free` 예약만 유지하고 현재 paid tier는 expiry까지 유지한다.
+- `EXPIRED` 또는 expiry 이후 `CANCELLED`는 로컬 purchase/product 이력을 보존한 free 강등으로 처리해 30일 grace를 열 수 있게 했다.
+- `REVOKED`, `REFUNDED`, `CHARGEBACK`, `FRAUD` 등 refund-like 상태는 `resetToFree()`로 purchase/product를 제거해 grace 없이 차단한다.
+- Firestore `users/{uid}`가 `free`로 내려와도 이미 로컬 grace 상태라면 SharedPreferences 이력을 지우지 않는다.
+- cross-device grace는 추가하지 않았다. Firestore schema도 변경하지 않았다.
+
+### 3.4 UI
+
+- `CloudBackupScreen`은 `canReadExistingCloudClips()` 기준으로 진입/목록 표시를 판단하고 grace 중 read-only 배너를 표시한다.
+- `LibraryScreen`은 upload 버튼/실행 진입을 `canStartNewCloudWrite()` 기준으로 차단한다.
+- `ProfileScreen` Cloud stats는 `canReadExistingCloudClips()` 기준으로 표시한다.
+- UI는 안내/버튼 노출에 helper를 사용하지만, 최종 권한은 `CloudService` 실행 결과가 결정한다.
 
 ## 4. 변경 전/후 동작
 
 | 시나리오 | 변경 전 | 변경 후 |
 |---|---|---|
-| 활성 Standard/Premium 신규 Cloud upload | 허용 | 추정 만료 전이면 허용 |
-| 결제 만료 시각 이후 신규 Cloud upload | 자동 강등 전까지 허용될 수 있음 | `canStartNewCloudWrite()`에서 즉시 차단 |
-| 만료 후 upload queue 복구/재시도 | 실패/재시도 흐름에 의존 | `subscription_expired` 실패 상태로 보존하고 Storage upload 미실행 |
-| Free 강등 직후 기존 Cloud 목록/read | Standard 이상 조건 때문에 차단 | 구매 이력 기반 만료 후 30일 grace 내 목록/read 허용 |
-| grace 중 Cloud download/restore | Standard 이상 조건 때문에 차단 | read-only 복원 허용 |
-| grace 종료 후 Cloud read | 차단 | 삭제 없이 안내/차단 |
-| restore purchase/re-subscribe | 기존 setTier/sync 흐름 | `setTier()`가 최신 purchase/product로 덮어써 upload/read 권한 복구 |
-| Cloud copy | 미구현/스킵 | 구현하지 않음. 기존 cloud-only 일반 복사 스킵 정책 유지 |
-| 삭제 | 일부 계정 삭제 purge 경로 외 일반 clip 삭제는 tombstone | R3 작업에서 Storage object 삭제 추가 없음 |
+| active Standard/Premium 신규 upload | Standard 이상이면 허용 | active Standard/Premium이고 만료 전일 때만 허용 |
+| expired paid 신규 upload | tier 상태에 따라 허용될 수 있음 | `subscription_expired`로 차단 |
+| Free grace 신규 upload | tier_required 또는 불명확 | `subscription_expired`로 차단, 기존 Cloud read/download만 허용 |
+| Free never paid 신규 upload | Standard 이상 필요 | `tier_required`로 차단 |
+| queue upload 중 만료 | queue 실행 시점 정책 불명확 | `_processUploadQueue()`와 `_executeUpload()`에서 재확인 후 failed 보존 |
+| active/grace Cloud list | 일부 경로만 read gate | 사용자 노출 list/read 경로를 `canReadExistingCloudClips()` 기준으로 정렬 |
+| grace Cloud download/restore | download는 가능하나 metadata write가 뒤따를 수 있음 | download/local restore는 허용, Cloud metadata lifecycle write는 active write 권한일 때만 수행 |
+| grace 종료 후 Cloud 접근 | 일부 경로에서 접근 가능성 | read/download/list 차단 |
+| CANCELLED | terminal inactive로 reset 가능 | expiry 전 paid 유지, expiry 후 grace 적용 |
+| EXPIRED | reset 시 grace 이력 손실 가능 | purchase/product 보존 free 강등으로 grace 적용 |
+| REFUNDED/REVOKED/CHARGEBACK | reset | reset 유지, grace 없음 |
+| Profile Cloud stats | Standard 이상 기준 | active 또는 grace read 가능 기준 |
+| Firebase rules/index | 변경 가능성 없음 | 변경 없음 |
+| Storage 삭제 | R3 범위 밖 | 구현 없음 |
+| Cloud copy | 미구현 | 계속 미구현/차단 |
 
-## 5. 정책 세부 사항
+## 5. QA matrix
 
-- `UserStatusManager.canStartNewCloudWrite()`는 Standard/Premium이라도 `estimatedExpiryAt`이 지난 경우 신규 Cloud write를 차단한다.
-- `UserStatusManager.canReadExistingCloudClips()`는 활성 유료 구독이면 read 허용, 만료 후에는 `lastKnownPaidExpiryAt + 30일` 전까지만 read/download 허용한다.
-- 자동 만료 강등은 tier와 pending tier만 Free로 정리하고 `3s_purchase_date`, `3s_product_id` 값은 보존한다. 이는 새 key/schema를 추가하지 않고 grace를 계산하기 위한 보수적 호환 처리다.
-- purchase timestamp/productId가 없으면 만료 기준이 불확실하므로 grace를 추정하지 않고 read를 차단한다. 단, 데이터/객체 삭제는 하지 않는다.
-- queue에 남은 upload job은 삭제하지 않고 failed 상태와 `subscription_expired` 오류를 남겨 재구독 후 사용자가 재시도할 수 있는 보존 흐름으로 유지한다.
+| ID | 상태 | 절차 | 기대 결과 | 현재 상태 |
+|---|---|---|---|---|
+| R3-QA-01 | active paid | Standard/Premium에서 Cloud upload | upload 허용 | 단위 helper 테스트 완료, 수동 QA 필요 |
+| R3-QA-02 | active paid | 자동 upload/queue upload | queue/upload 허용 | 수동 QA 필요 |
+| R3-QA-03 | expired within grace | 신규 Cloud upload | `subscription_expired` 차단, 로컬 원본 보존 | helper 테스트 완료, 수동 QA 필요 |
+| R3-QA-04 | expired within grace | Cloud 보관함 list/read | 목록 표시 허용 | helper 테스트 완료, 수동 QA 필요 |
+| R3-QA-05 | expired within grace | Cloud download/restore | 로컬 restore 허용, Cloud metadata lifecycle write 최소화 | 수동 QA 필요 |
+| R3-QA-06 | expired after grace | Cloud 보관함/download | 접근 차단 | helper 테스트 완료, 수동 QA 필요 |
+| R3-QA-07 | free never paid | Cloud upload/read | `tier_required` 또는 read 차단 | helper 테스트 완료 |
+| R3-QA-08 | guest | Cloud upload/read | guest 차단 | 수동 QA 필요 |
+| R3-QA-09 | refund/revoked/chargeback | Cloud upload/read | grace 없이 차단 | reset helper 테스트로 유사 검증, store sandbox QA 필요 |
+| R3-QA-10 | cancelled before expiry | entitlement refresh | expiry 전 paid 유지, pending free 예약 | sandbox QA 필요 |
+| R3-QA-11 | cancelled/expired after expiry | entitlement refresh | free + 30일 grace | sandbox QA 필요 |
+| R3-QA-12 | grace 종료 후 | Storage/Firestore 삭제 여부 | 삭제 없음 | 코드 리뷰 기준 확인, 수동 로그 QA 필요 |
+| R3-QA-13 | Cloud copy | Cloud-only 일반 복사 | Cloud copy 생성 없음 | 수동 QA 필요 |
 
-## 6. QA 체크리스트
+## 6. 실행한 검증 명령과 결과
 
-| 항목 | 절차 | 기대 결과 | 상태 |
-|---|---|---|---|
-| 만료 전 upload | Standard/Premium 상태에서 로컬 클립 Cloud 이동 | upload 성공, metadata completed, local 원본 보존 | 수동 QA 필요 |
-| 만료 직후 upload 차단 | purchaseDate를 과거로 둔 Standard/Premium 상태에서 Cloud 이동 | Storage upload 미실행, `subscription_expired` 안내 표시, 로컬 원본 보존 | 수동 QA 필요 |
-| upload queue 차단 | 만료 상태에서 앱 재시작/복귀 후 queue restore | queue job failed 보존, Storage object 생성 없음 | 수동 QA 필요 |
-| grace 중 목록 조회 | Free 강등 + purchaseDate/productId 보존 + 만료 후 30일 이내 | Cloud 보관함/Library placeholder 표시 | 수동 QA 필요 |
-| grace 중 download/restore | grace 상태에서 Cloud clip 복원 | 로컬 파일 생성, Cloud metadata/Storage object 삭제 없음 | 수동 QA 필요 |
-| grace 종료 후 read 차단 | 만료 후 30일 초과 상태 | Cloud 보관함 접근 차단 안내, 삭제 없음 | 수동 QA 필요 |
-| restore purchase | 만료/Free 상태에서 restore purchases 후 tier refresh | Cloud upload/read 권한 복구, 기존 metadata 연결 유지 | sandbox QA 필요 |
-| 재구독 | 만료/Free 상태에서 재구매 | `setTier()`로 최신 purchase/product 반영, upload/read 권한 복구 | sandbox QA 필요 |
-| Cloud copy 금지 | Cloud-only clip 일반 복사 | Cloud copy 생성 없이 기존 스킵 동작 유지 | 수동 QA 필요 |
-| 삭제 금지 확인 | R3 경로 수행 중 Storage/Firestore 삭제 호출 여부 확인 | 삭제 호출 없음 | 코드 리뷰 완료 |
+### 6.1 단위 테스트
 
-## 7. 검증 결과
+```cmd
+flutter test test\user_status_manager_r3_test.dart
+```
 
-- `flutter analyze`: 실행 완료, exit code 1.
-- 전체 결과: 504 issues.
-- 관련 변경 파일 필터 결과: 신규 compile error는 확인되지 않았고, 기존 성격의 `avoid_print`, `curly_braces_in_flow_control_structures`, deprecated/info 항목이 보고됐다.
-- 대표 관련 파일 결과:
-  - `lib/managers/user_status_manager.dart`: `avoid_print` info 다수.
-  - `lib/services/cloud_service.dart`: `avoid_print` info 다수.
-  - `lib/managers/video_manager.dart`: 기존 `avoid_print`, `curly_braces_in_flow_control_structures` info.
-  - `lib/screens/library_screen.dart`: 기존 style/deprecated info.
-  - `lib/screens/cloud_backup_screen.dart`: 필터 결과에 error/warning 없음.
+결과:
 
-## 8. 미검증 사유와 남은 리스크
+- PASS.
+- `00:00 +5: All tests passed!`
 
-- sandbox 구독 만료/restore/re-subscribe는 실제 테스트 계정과 스토어 상태 전파가 필요해 수동 QA가 필요하다.
-- 기존 사용자 중 `purchaseDate` 또는 `productId`가 없는 경우 30일 grace 기준을 신뢰할 수 없어 read를 보수적으로 차단한다. 이 경우에도 Cloud metadata/object는 삭제하지 않는다.
-- Firestore server-side expiry timestamp가 별도로 확정되어 있지 않아 로컬 purchaseDate/productId 기반 추정 만료를 사용했다.
-- upload queue의 `failed` 상태는 기존 복구 대상에 포함되지만, 재구독 후 중복 방지 로직과 사용자의 재시도 흐름을 추가 QA해야 한다.
+검증 범위:
 
-## 9. 금지 범위 준수 확인
+- active paid write/read 허용.
+- expired paid grace 중 write 차단/read 허용.
+- expired free 강등 후 purchase/product 이력 보존.
+- grace 종료 후 read 차단.
+- free never-paid read/write 차단.
+- refund-like reset 후 grace 없음.
 
-- Storage object 삭제 구현 없음.
-- Firestore schema migration/backfill 없음.
+### 6.2 변경 파일 대상 analyze
+
+```cmd
+flutter analyze lib\managers\user_status_manager.dart lib\services\cloud_service.dart lib\services\iap_service.dart lib\services\auth_service.dart lib\managers\video_manager.dart lib\screens\library_screen.dart lib\screens\cloud_backup_screen.dart lib\screens\profile_screen.dart test\user_status_manager_r3_test.dart
+```
+
+결과:
+
+- exit code 1.
+- `453 issues found`.
+- 출력은 기존 성격의 `avoid_print`, `curly_braces_in_flow_control_structures`, deprecated/info, IAP package dependency info, 기존 IAP nullability warning 위주다.
+- 이번 R3 변경으로 인한 compile error는 출력에서 확인되지 않았다.
+
+## 7. 금지 범위 준수 확인
+
 - Firebase rules/index 변경 없음.
-- Functions 변경 없음.
-- Storage path, collection name, SharedPreferences key, IAP product id 변경 없음.
+- Firestore schema 변경 없음.
+- migration/backfill 없음.
+- Storage object 삭제 구현 없음.
 - Cloud copy 구현 없음.
+- npm audit fix 없음.
+- deploy 실행 없음.
+- Storage path, collection name, SharedPreferences key, IAP product id 변경 없음.
+- 계정 삭제 purge 흐름 변경 없음.
+
+## 8. 남은 리스크
+
+| 리스크 | 설명 | 후속 조치 |
+|---|---|---|
+| Store sandbox 상태 전파 | cancelled/expired/refund/revoked/chargeback은 실제 store 검증 결과가 필요 | Android/iOS sandbox QA |
+| Firestore free 동기화와 local grace | 현재는 local grace 상태를 보존하지만 cross-device grace는 없음 | R3 v1 정책상 허용. cross-device는 별도 계획 |
+| grace restore metadata write | grace 중 restore는 로컬 중심으로 처리하지만 일부 다른 lifecycle 경로는 사용 시나리오 QA 필요 | CloudBackup/Library restore 수동 QA |
+| Profile stats in grace | `canReadExistingCloudClips()` 기준으로 표시하지만 limit은 Free면 0GB일 수 있음 | UX 확인 필요 |
+| analyze 부채 | 기존 453개 이슈 때문에 신규 회귀 탐지가 어렵다 | R6 정적 분석 부채 작업으로 분리 |
+| 수동 QA 미완료 | 실제 upload/download/queue/guest/profile UI는 기기 검증 필요 | QA matrix 수행 |
+
+## 9. 최종 판정
+
+R3 v1 구현은 코드 레벨에서 완료했다.
+
+릴리스 전에는 다음 수동 QA를 완료해야 한다.
+
+1. active Standard/Premium upload, auto upload, queue upload.
+2. expired within grace Cloud list/download/restore.
+3. expired after grace Cloud 접근 차단.
+4. guest Cloud 접근 차단.
+5. store sandbox cancelled/expired/refund/revoked/chargeback.
+6. Cloud copy 미구현/차단 유지.
+7. Storage object 삭제가 발생하지 않는지 로그/콘솔 확인.

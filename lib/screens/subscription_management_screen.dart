@@ -26,6 +26,56 @@ class _SubscriptionManagementScreenState
 
   static const String _androidPackageName = 'com.dk.three_sec';
 
+  static String _entitlementTierName(UserTier tier) {
+    switch (tier) {
+      case UserTier.free:
+        return 'free';
+      case UserTier.standard:
+        return 'standard';
+      case UserTier.premium:
+        return 'premium';
+    }
+  }
+
+  static String _entitlementTrigger(String reason) {
+    switch (reason) {
+      case 'app_resumed':
+      case 'return_from_paywall':
+        return reason;
+      case 'screen_init':
+      case 'return_from_play_cancel':
+      case 'manual_refresh':
+        return 'subscription_management_init';
+      default:
+        return 'subscription_management_init';
+    }
+  }
+
+  static void _logEntitlementRefresh({
+    required String trigger,
+    required String source,
+    required UserTier beforeTier,
+    required UserTier afterTier,
+    required String result,
+    required String reasonCode,
+    required int durationMs,
+  }) {
+    print(
+      '[EntitlementRefresh] '
+      'trigger=${_entitlementTrigger(trigger)} '
+      'source=$source '
+      'before_tier=${_entitlementTierName(beforeTier)} '
+      'after_tier=${_entitlementTierName(afterTier)} '
+      'result=$result '
+      'reason_code=$reasonCode '
+      'candidate_count=0 '
+      'verified_active_count=0 '
+      'verified_inactive_count=0 '
+      'verification_failed_count=0 '
+      'duration_ms=$durationMs',
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -56,10 +106,26 @@ class _SubscriptionManagementScreenState
       'effectiveAt(beforeSync)=${_userStatus.nextTierEffectiveAt}',
     );
 
+    await _iapService.refreshEntitlementsFromStore(reason: reason);
+    print('[SubscriptionManagement][Diag] after store-refresh reason=$reason');
+
     await _iapService.syncCancellationStateFromStore(reason: reason);
     print('[SubscriptionManagement][Diag] after cancel-sync reason=$reason');
 
+    final localCacheStopwatch = Stopwatch()..start();
+    final beforeLocalCacheTier = _userStatus.currentTier;
     await _userStatus.initialize();
+    _logEntitlementRefresh(
+      trigger: reason,
+      source: 'local_cache',
+      beforeTier: beforeLocalCacheTier,
+      afterTier: _userStatus.currentTier,
+      result: beforeLocalCacheTier == _userStatus.currentTier
+          ? 'preserved'
+          : 'applied',
+      reasonCode: 'no_candidate',
+      durationMs: localCacheStopwatch.elapsedMilliseconds,
+    );
     if (_authService.isAuthenticatedAccount) {
       await _authService.syncCurrentUserSubscriptionFromFirestore(
         preserveLocalPaidTier: true,
