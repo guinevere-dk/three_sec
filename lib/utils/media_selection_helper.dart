@@ -20,7 +20,7 @@ class MediaSelectionHelper {
 
     if (scaleDiff.abs() > sensitivity) {
       int newCount = currentColumnCount;
-      
+
       if (scaleDiff > 0) {
         // 줌인 (열 감소)
         if (currentColumnCount == 5) {
@@ -36,14 +36,14 @@ class MediaSelectionHelper {
           newCount = 5;
         }
       }
-      
+
       if (newCount != currentColumnCount) {
         onZoomChanged(newCount);
         hapticFeedback();
         return newCount;
       }
     }
-    
+
     return null;
   }
 
@@ -55,19 +55,35 @@ class MediaSelectionHelper {
     required double childAspectRatio,
     double scrollOffset = 0.0,
     double topPadding = 0.0,
+    EdgeInsets gridPadding = EdgeInsets.zero,
+    double crossAxisSpacing = 0.0,
+    double mainAxisSpacing = 0.0,
   }) {
-    final double cellWidth = gridSize.width / columnCount;
+    final double availableWidth =
+        gridSize.width - gridPadding.left - gridPadding.right;
+    if (availableWidth <= 0 || columnCount <= 0) return -1;
+
+    final double cellWidth =
+        (availableWidth - (crossAxisSpacing * (columnCount - 1))) / columnCount;
+    if (cellWidth <= 0) return -1;
     final double cellHeight = cellWidth / childAspectRatio;
-    
-    // Y position relative to the grid content start
-    final double relativeY = localPosition.dy + scrollOffset - topPadding;
-    
+    final double rowStride = cellHeight + mainAxisSpacing;
+    final double colStride = cellWidth + crossAxisSpacing;
+
+    final double relativeX = localPosition.dx - gridPadding.left;
+    final double relativeY =
+        localPosition.dy + scrollOffset - topPadding - gridPadding.top;
+
+    if (relativeX < 0 || relativeX >= availableWidth) return -1;
     if (relativeY < 0) return -1;
 
-    final int colIdx = (localPosition.dx / cellWidth).floor().clamp(0, columnCount - 1);
-    final int rowIdx = (relativeY / cellHeight).floor();
+    final int colIdx = (relativeX / colStride).floor().clamp(
+      0,
+      columnCount - 1,
+    );
+    final int rowIdx = (relativeY / rowStride).floor();
     final int idx = (rowIdx * columnCount) + colIdx;
-    
+
     return idx;
   }
 
@@ -83,10 +99,13 @@ class MediaSelectionHelper {
     bool Function(String item)? canSelectItem,
     double scrollOffset = 0.0,
     double topPadding = 0.0,
+    EdgeInsets gridPadding = EdgeInsets.zero,
+    double crossAxisSpacing = 0.0,
+    double mainAxisSpacing = 0.0,
   }) {
     final rb = gridKey.currentContext?.findRenderObject() as RenderBox?;
     if (rb == null) return;
-    
+
     final lp = rb.globalToLocal(focalPoint);
     final idx = calculateGridIndex(
       localPosition: lp,
@@ -95,16 +114,19 @@ class MediaSelectionHelper {
       childAspectRatio: childAspectRatio,
       scrollOffset: scrollOffset,
       topPadding: topPadding,
+      gridPadding: gridPadding,
+      crossAxisSpacing: crossAxisSpacing,
+      mainAxisSpacing: mainAxisSpacing,
     );
-    
+
     if (idx >= 0 && idx < targetList.length) {
       final String item = targetList[idx];
-      
+
       // 선택 불가능한 항목 체크
       if (canSelectItem != null && !canSelectItem(item)) {
         return;
       }
-      
+
       // 현재 선택 상태 확인 (List와 Set 모두 지원)
       bool isCurrentlySelected;
       if (currentSelection is List<String>) {
@@ -114,9 +136,9 @@ class MediaSelectionHelper {
       } else {
         return;
       }
-      
+
       bool isAdding = !isCurrentlySelected;
-      
+
       bool stateChanged = false;
       if (isAdding && !isCurrentlySelected) {
         onSelectionChanged(item, true);
@@ -125,9 +147,9 @@ class MediaSelectionHelper {
         onSelectionChanged(item, false);
         stateChanged = true;
       }
-      
+
       onDragStarted(idx, isAdding);
-      
+
       if (stateChanged) {
         hapticFeedback();
       }
@@ -147,10 +169,13 @@ class MediaSelectionHelper {
     bool Function(String item)? canSelectItem,
     double scrollOffset = 0.0,
     double topPadding = 0.0,
+    EdgeInsets gridPadding = EdgeInsets.zero,
+    double crossAxisSpacing = 0.0,
+    double mainAxisSpacing = 0.0,
   }) {
     final rb = gridKey.currentContext?.findRenderObject() as RenderBox?;
     if (rb == null) return;
-    
+
     final lp = rb.globalToLocal(focalPoint);
     final currentIndex = calculateGridIndex(
       localPosition: lp,
@@ -159,40 +184,47 @@ class MediaSelectionHelper {
       childAspectRatio: childAspectRatio,
       scrollOffset: scrollOffset,
       topPadding: topPadding,
+      gridPadding: gridPadding,
+      crossAxisSpacing: crossAxisSpacing,
+      mainAxisSpacing: mainAxisSpacing,
     );
-    
+
     if (currentIndex < 0 || currentIndex >= targetList.length) return;
 
-    final int start = dragStartIndex < currentIndex ? dragStartIndex : currentIndex;
-    final int end = dragStartIndex > currentIndex ? dragStartIndex : currentIndex;
+    final int start = dragStartIndex < currentIndex
+        ? dragStartIndex
+        : currentIndex;
+    final int end = dragStartIndex > currentIndex
+        ? dragStartIndex
+        : currentIndex;
 
     for (int i = start; i <= end; i++) {
-        final String item = targetList[i];
+      final String item = targetList[i];
 
-        if (canSelectItem != null && !canSelectItem(item)) continue;
+      if (canSelectItem != null && !canSelectItem(item)) continue;
 
-        bool isCurrentlySelected;
+      bool isCurrentlySelected;
+      if (currentSelection is List<String>) {
+        isCurrentlySelected = currentSelection.contains(item);
+      } else if (currentSelection is Set<String>) {
+        isCurrentlySelected = currentSelection.contains(item);
+      } else {
+        continue;
+      }
+
+      if (isDragAdding && !isCurrentlySelected) {
         if (currentSelection is List<String>) {
-            isCurrentlySelected = currentSelection.contains(item);
+          currentSelection.add(item);
         } else if (currentSelection is Set<String>) {
-            isCurrentlySelected = currentSelection.contains(item);
-        } else {
-            continue;
+          currentSelection.add(item);
         }
-
-        if (isDragAdding && !isCurrentlySelected) {
-            if (currentSelection is List<String>) {
-              currentSelection.add(item);
-            } else if (currentSelection is Set<String>) {
-              currentSelection.add(item);
-            }
-        } else if (!isDragAdding && isCurrentlySelected) {
-            if (currentSelection is List<String>) {
-              currentSelection.remove(item);
-            } else if (currentSelection is Set<String>) {
-              currentSelection.remove(item);
-            }
+      } else if (!isDragAdding && isCurrentlySelected) {
+        if (currentSelection is List<String>) {
+          currentSelection.remove(item);
+        } else if (currentSelection is Set<String>) {
+          currentSelection.remove(item);
         }
+      }
     }
   }
 }

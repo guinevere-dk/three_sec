@@ -152,6 +152,9 @@ class LibraryScreen extends StatefulWidget {
 
 class _LibraryScreenState extends State<LibraryScreen> {
   static const String _traceTag = '[LibraryTrace]';
+  static const EdgeInsets _clipGridPadding = EdgeInsets.fromLTRB(8, 8, 8, 210);
+  static const double _clipGridSpacing = 3.0;
+  static const double _clipFilterBarEstimatedExtent = 56.0;
 
   bool _isInAlbumDetail = false;
   bool _isClipSelectionMode = false;
@@ -580,8 +583,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
     return const Color(0xFFFFD66B);
   }
 
-  Widget _buildDetailView() {
-    final visibleClipPaths = videoManager.recordedVideoPaths
+  List<String> _visibleClipPathsForCurrentFilter() {
+    return videoManager.recordedVideoPaths
         .where(
           (path) =>
               videoManager.isClipVisibleByStorageFilter(path, _storageFilter),
@@ -591,6 +594,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
               !_showFavoritesOnly || videoManager.favorites.contains(path),
         )
         .toList();
+  }
+
+  Widget _buildDetailView() {
+    final visibleClipPaths = _visibleClipPathsForCurrentFilter();
     _traceDetailRender(visibleClipPaths);
     final showStandardBadge = _userStatusManager.currentTier == UserTier.free;
 
@@ -731,13 +738,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
               )
             else
               SliverPadding(
-                padding: const EdgeInsets.fromLTRB(8, 8, 8, 210),
+                padding: _clipGridPadding,
                 sliver: SliverGrid(
                   // key: _clipGridKey removed from here
                   gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: _gridColumnCount,
-                    crossAxisSpacing: 3,
-                    mainAxisSpacing: 3,
+                    crossAxisSpacing: _clipGridSpacing,
+                    mainAxisSpacing: _clipGridSpacing,
                     childAspectRatio: 1.0,
                   ),
                   delegate: SliverChildBuilderDelegate((context, index) {
@@ -946,10 +953,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   void _startDragSelection(Offset position, bool isClip) {
     final targetList = isClip
-        ? videoManager.recordedVideoPaths
+        ? _visibleClipPathsForCurrentFilter()
         : videoManager.clipAlbums;
 
     double topPad = MediaQuery.of(context).padding.top + kToolbarHeight;
+    if (isClip) {
+      topPad += _clipFilterBarEstimatedExtent;
+    }
     final controller = isClip ? _clipScrollController : _albumScrollController;
     double currentScroll = controller.hasClients ? controller.offset : 0.0;
 
@@ -962,6 +972,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
       currentSelection: isClip ? _selectedClipPaths : _selectedAlbumNames,
       scrollOffset: currentScroll,
       topPadding: topPad,
+      gridPadding: isClip ? _clipGridPadding : EdgeInsets.zero,
+      crossAxisSpacing: isClip ? _clipGridSpacing : 0.0,
+      mainAxisSpacing: isClip ? _clipGridSpacing : 0.0,
       onSelectionChanged: (item, isAdding) {
         setState(() {
           if (isClip) {
@@ -1008,10 +1021,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (!isActive) return;
 
     final targetList = isClip
-        ? videoManager.recordedVideoPaths
+        ? _visibleClipPathsForCurrentFilter()
         : videoManager.clipAlbums;
 
     double topPad = MediaQuery.of(context).padding.top + kToolbarHeight;
+    if (isClip) {
+      topPad += _clipFilterBarEstimatedExtent;
+    }
     final controller = isClip ? _clipScrollController : _albumScrollController;
     double currentScroll = controller.hasClients ? controller.offset : 0.0;
 
@@ -1027,6 +1043,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
         isDragAdding: _isDragAdding,
         scrollOffset: currentScroll,
         topPadding: topPad,
+        gridPadding: isClip ? _clipGridPadding : EdgeInsets.zero,
+        crossAxisSpacing: isClip ? _clipGridSpacing : 0.0,
+        mainAxisSpacing: isClip ? _clipGridSpacing : 0.0,
         // onIndexProcessed removed from helper
         canSelectItem: isClip ? null : (item) => item != "일상" && item != "휴지통",
       );
