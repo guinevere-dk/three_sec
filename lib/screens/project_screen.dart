@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:provider/provider.dart';
@@ -16,11 +19,13 @@ import '../screens/video_edit_screen.dart';
 class ProjectScreen extends StatefulWidget {
   final Function() onRefresh;
   final bool isActive;
+  final VoidCallback onOpenSubscriptionManagement;
 
   const ProjectScreen({
     super.key,
     required this.onRefresh,
     required this.isActive,
+    required this.onOpenSubscriptionManagement,
   });
 
   @override
@@ -47,11 +52,14 @@ class _ProjectScreenState extends State<ProjectScreen> {
   Set<String> _selectedFolderNames = {};
 
   late VideoManager videoManager;
+  bool _isFreeExporting = false;
 
   Future<void> _openProjectWithTierRouting(VlogProject project) async {
     final userStatus = UserStatusManager();
 
     if (!userStatus.isStandardOrAbove()) {
+      if (_isFreeExporting) return;
+      setState(() => _isFreeExporting = true);
       Fluttertoast.showToast(msg: '720p로 내보냅니다.');
 
       final audioConfig = <String, double>{
@@ -61,16 +69,23 @@ class _ProjectScreenState extends State<ProjectScreen> {
       final String mergeSessionId =
           'edit_${DateTime.now().millisecondsSinceEpoch}';
 
-      final resultPath = await videoManager.exportVlog(
-        clips: project.clips,
-        audioConfig: audioConfig,
-        bgmPath: project.bgmPath,
-        bgmVolume: project.bgmVolume,
-        quality: kQuality720p,
-        userTier: kUserTierFree,
-        mergeSessionId: mergeSessionId,
-        debugTag: 'ProjectScreen_free_export',
-      );
+      String? resultPath;
+      try {
+        resultPath = await videoManager.exportVlog(
+          clips: project.clips,
+          audioConfig: audioConfig,
+          bgmPath: project.bgmPath,
+          bgmVolume: project.bgmVolume,
+          quality: kQuality720p,
+          userTier: kUserTierFree,
+          mergeSessionId: mergeSessionId,
+          debugTag: 'ProjectScreen_free_export',
+        );
+      } finally {
+        if (mounted) {
+          setState(() => _isFreeExporting = false);
+        }
+      }
 
       if (!mounted) return;
 
@@ -88,10 +103,8 @@ class _ProjectScreenState extends State<ProjectScreen> {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => VideoEditScreen(
-          project: project,
-          mergeSessionId: mergeSessionId,
-        ),
+        builder: (_) =>
+            VideoEditScreen(project: project, mergeSessionId: mergeSessionId),
       ),
     );
     if (!mounted) return;
@@ -116,6 +129,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
     _isZoomingLocked = false;
     _selectedProjectIds.clear();
     _selectedFolderNames.clear();
+    _isFreeExporting = false;
   }
 
   @override
@@ -132,18 +146,19 @@ class _ProjectScreenState extends State<ProjectScreen> {
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
-        if (_isProjectSelectionMode)
+        if (_isProjectSelectionMode) {
           setState(() {
             _isProjectSelectionMode = false;
             _selectedProjectIds.clear();
           });
-        else if (_isFolderSelectionMode)
+        } else if (_isFolderSelectionMode) {
           setState(() {
             _isFolderSelectionMode = false;
             _selectedFolderNames.clear();
           });
-        else if (_isInFolderDetail)
+        } else if (_isInFolderDetail) {
           setState(() => _isInFolderDetail = false);
+        }
       },
       child: _isInFolderDetail ? _buildDetailView() : _buildFolderListTab(),
     );
@@ -160,7 +175,67 @@ class _ProjectScreenState extends State<ProjectScreen> {
         .length;
   }
 
+  bool _hasLocalProjectClip(VlogClip clip) {
+    return !videoManager.isCloudOnlyPlaceholder(clip.path) &&
+        File(clip.path).existsSync();
+  }
+
+  bool _hasCloudProjectClip(VlogClip clip) {
+    return videoManager.isCloudOnlyPlaceholder(clip.path) ||
+        videoManager.isClipCloudSynced(clip.path);
+  }
+
+  String _projectThumbnailPath(VlogProject project) {
+    for (final clip in project.clips) {
+      if (_hasLocalProjectClip(clip)) return clip.path;
+    }
+
+    for (final clip in project.clips) {
+      if (videoManager.isCloudOnlyPlaceholder(clip.path) &&
+          videoManager.hasCompletedCloudThumbnail(clip.path)) {
+        return clip.path;
+      }
+    }
+
+    for (final clip in project.clips) {
+      if (videoManager.isCloudOnlyPlaceholder(clip.path)) return clip.path;
+    }
+
+    return project.clips.isNotEmpty ? project.clips.first.path : '';
+  }
+
+  bool _isProjectThumbnailCloudOnly(String path) {
+    return path.isNotEmpty && videoManager.isCloudOnlyPlaceholder(path);
+  }
+
+  Future<Uint8List?> _getProjectThumbnail(String path) async {
+    if (path.isEmpty) return null;
+    if (videoManager.isCloudOnlyPlaceholder(path)) {
+      return videoManager.getCloudThumbnail(path);
+    }
+    return videoManager.getThumbnail(path);
+  }
+
+  Future<Duration> _getProjectThumbnailDuration(String path) async {
+    if (path.isEmpty) return Duration.zero;
+    return videoManager.getVideoDuration(path);
+  }
+
+  String _projectSubtitle(VlogProject project) {
+    final cloudClipCount = project.clips.where(_hasCloudProjectClip).length;
+    final cloudText = cloudClipCount > 0 ? ' • Cloud $cloudClipCount' : '';
+    return '${DateFormat('MM/dd').format(project.updatedAt)} • '
+        '${project.clips.length} clips$cloudText';
+  }
+
   String? _projectStatusBadge(VlogProject project) {
+    if (project.clips.isNotEmpty &&
+        project.clips.every(
+          (clip) => videoManager.isCloudOnlyPlaceholder(clip.path),
+        )) {
+      return 'Cloud';
+    }
+
     final cloudId = project.cloudProjectId;
     if (cloudId != null && cloudId.trim().isNotEmpty) {
       return '동기화됨';
@@ -169,10 +244,11 @@ class _ProjectScreenState extends State<ProjectScreen> {
   }
 
   Widget _buildFolderListTab() {
-    final allFolders = videoManager.vlogAlbums.where((f) => f != "일상").toList();
+    final allFolders = videoManager.projectFolders.toList();
     final selectableFolders = allFolders
         .where((f) => f != "기본" && f != "휴지통")
         .toList();
+    final isFreeUser = !UserStatusManager().isStandardOrAbove();
     final bool isAll =
         _selectedFolderNames.length == selectableFolders.length &&
         _selectedFolderNames.isNotEmpty;
@@ -229,6 +305,11 @@ class _ProjectScreenState extends State<ProjectScreen> {
                 ],
               ],
             ),
+
+            if (isFreeUser && !_isFolderSelectionMode)
+              _buildStandardUpsellSliver(
+                padding: const EdgeInsets.fromLTRB(14, 4, 14, 8),
+              ),
 
             allFolders.isEmpty
                 ? SliverFillRemaining(
@@ -340,6 +421,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
   Widget _buildDetailView() {
     // Use filteredProjects instead of vlogProjects
     final projects = videoManager.filteredProjects;
+    final isFreeUser = !UserStatusManager().isStandardOrAbove();
 
     return Scaffold(
       backgroundColor: const Color(0xFFF4F6F8),
@@ -360,7 +442,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
               physics: const AlwaysScrollableScrollPhysics(),
               slivers: [
                 SliverAppBar(
-                  backgroundColor: Colors.white.withOpacity(0.92),
+                  backgroundColor: Colors.white.withValues(alpha: 0.92),
                   surfaceTintColor: Colors.transparent,
                   pinned: true,
                   toolbarHeight: 74,
@@ -457,12 +539,13 @@ class _ProjectScreenState extends State<ProjectScreen> {
                         final int selectIdx = _selectedProjectIds.indexOf(
                           project.id,
                         );
+                        final thumbnailPath = _projectThumbnailPath(project);
+                        final isCloudThumbnail = _isProjectThumbnailCloudOnly(
+                          thumbnailPath,
+                        );
 
-                        return MediaWidgets.buildMediaGridItem(
-                          // Thumbnail from first clip
-                          path: project.clips.isNotEmpty
-                              ? project.clips.first.path
-                              : '',
+                        final item = MediaWidgets.buildMediaGridItem(
+                          path: thumbnailPath,
                           isSelected: isSelected,
                           selectIndex: selectIdx,
                           isSelectionMode: _isProjectSelectionMode,
@@ -471,8 +554,11 @@ class _ProjectScreenState extends State<ProjectScreen> {
                           benchmarkStyle: true,
                           showDurationBadge: true,
                           statusBadge: _projectStatusBadge(project),
-                          subtitle:
-                              "${DateFormat('MM/dd').format(project.updatedAt)} • ${project.clips.length} clips",
+                          isCloudOnly: isCloudThumbnail,
+                          getCloudThumbnail: isCloudThumbnail
+                              ? videoManager.getCloudThumbnail
+                              : null,
+                          subtitle: _projectSubtitle(project),
                           title: project.title,
                           onTap: () {
                             if (_isProjectSelectionMode) {
@@ -500,8 +586,22 @@ class _ProjectScreenState extends State<ProjectScreen> {
                             });
                             hapticFeedback();
                           },
-                          getThumbnail: videoManager.getThumbnail,
-                          getDuration: videoManager.getVideoDuration,
+                          getThumbnail: _getProjectThumbnail,
+                          getDuration: _getProjectThumbnailDuration,
+                        );
+
+                        if (!isFreeUser) return item;
+
+                        return Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            item,
+                            Positioned(
+                              right: 8,
+                              bottom: 8,
+                              child: _buildFreeExportButton(project),
+                            ),
+                          ],
                         );
                       }, childCount: projects.length),
                     ),
@@ -559,12 +659,128 @@ class _ProjectScreenState extends State<ProjectScreen> {
     );
   }
 
+  Widget _buildStandardUpsellSliver({
+    EdgeInsetsGeometry padding = const EdgeInsets.fromLTRB(14, 10, 14, 12),
+  }) {
+    return SliverToBoxAdapter(
+      child: Padding(
+        padding: padding,
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withAlpha(12),
+                blurRadius: 14,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE8F0FE),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(
+                      Icons.workspace_premium_rounded,
+                      color: Color(0xFF1A73E8),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Standard 구독 시 Project 편집 가능',
+                          style: TextStyle(
+                            color: Color(0xFF111827),
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                            height: 1.2,
+                          ),
+                        ),
+                        SizedBox(height: 5),
+                        Text(
+                          '무료 사용자는 프로젝트를 열지 않고 720p로 바로 내보낼 수 있습니다.',
+                          style: TextStyle(
+                            color: Color(0xFF64748B),
+                            fontSize: 12,
+                            height: 1.35,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              const Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _StandardBenefitChip(label: 'Project 편집'),
+                  _StandardBenefitChip(label: 'Cloud 연동'),
+                  _StandardBenefitChip(label: '고화질 내보내기'),
+                ],
+              ),
+              const SizedBox(height: 14),
+              SizedBox(
+                width: double.infinity,
+                height: 44,
+                child: FilledButton.icon(
+                  onPressed: widget.onOpenSubscriptionManagement,
+                  icon: const Icon(Icons.arrow_forward_rounded, size: 19),
+                  label: const Text('구독하러가기'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFreeExportButton(VlogProject project) {
+    return SizedBox(
+      height: 34,
+      child: FilledButton(
+        onPressed: _isFreeExporting
+            ? null
+            : () => _openProjectWithTierRouting(project),
+        style: FilledButton.styleFrom(
+          backgroundColor: const Color(0xFF111827).withAlpha(220),
+          disabledBackgroundColor: const Color(0xFF475569).withAlpha(160),
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          visualDensity: VisualDensity.compact,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(999),
+          ),
+        ),
+        child: Text(
+          _isFreeExporting ? '내보내는 중' : '720p 내보내기',
+          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
+        ),
+      ),
+    );
+  }
+
   // --- [제스처 처리] ---
 
   void _startDragSelection(Offset position, bool isProject) {
-    final folderItems = videoManager.vlogAlbums
-        .where((f) => f != "일상")
-        .toList();
+    final folderItems = videoManager.projectFolders.toList();
     final projectItems = videoManager.filteredProjects
         .map((p) => p.id)
         .toList();
@@ -632,9 +848,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
         : _isFolderSelectionMode;
     if (!isActive) return;
 
-    final folderItems = videoManager.vlogAlbums
-        .where((f) => f != "일상")
-        .toList();
+    final folderItems = videoManager.projectFolders.toList();
     final projectItems = videoManager.filteredProjects
         .map((p) => p.id)
         .toList();
@@ -671,8 +885,8 @@ class _ProjectScreenState extends State<ProjectScreen> {
 
   void _toggleSelectAllFolders() {
     setState(() {
-      final selectable = videoManager.vlogAlbums
-          .where((f) => f != "기본" && f != "휴지통" && f != "일상")
+      final selectable = videoManager.projectFolders
+          .where((f) => f != "기본" && f != "휴지통")
           .toList();
       if (_selectedFolderNames.length == selectable.length) {
         _selectedFolderNames.clear();
@@ -690,8 +904,9 @@ class _ProjectScreenState extends State<ProjectScreen> {
       context: context,
     );
     if (name != null && name.trim().isNotEmpty) {
-      if (videoManager.vlogAlbums.contains(name.trim())) return;
-      await videoManager.createNewVlogAlbum(name.trim());
+      final folderName = videoManager.normalizeProjectFolderName(name);
+      if (videoManager.projectFolders.contains(folderName)) return;
+      await videoManager.createProjectFolder(folderName);
       widget.onRefresh();
     }
   }
@@ -703,12 +918,11 @@ class _ProjectScreenState extends State<ProjectScreen> {
       content: "폴더는 삭제되고 Project는 휴지통으로 이동합니다.",
     );
     if (ok == true) {
-      await videoManager.deleteVlogAlbums(_selectedFolderNames);
+      await videoManager.deleteProjectFolders(_selectedFolderNames);
       setState(() {
         _isFolderSelectionMode = false;
         _selectedFolderNames.clear();
       });
-      await videoManager.initAlbumSystem();
       if (mounted) setState(() {});
     }
   }
@@ -722,7 +936,9 @@ class _ProjectScreenState extends State<ProjectScreen> {
         content: "선택한 Project를 영구 삭제할까요? 복구할 수 없습니다.",
       );
       if (ok != true) return;
-      for (var id in _selectedProjectIds) await videoManager.deleteProject(id);
+      for (var id in _selectedProjectIds) {
+        await videoManager.deleteProject(id);
+      }
     } else {
       bool? ok = await MediaDialogs.showConfirmDialog(
         context: context,
@@ -765,7 +981,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
     final String? result = await MediaDialogs.showMoveOrCopyDialog(
       context: context,
       isMove: isMove,
-      folderList: videoManager.vlogAlbums,
+      folderList: videoManager.projectFolders,
       currentFolder: videoManager.currentVlogFolder,
       excludeFolders: const ["휴지통"],
       itemSubtitleBuilder: (folderName) {
@@ -786,8 +1002,9 @@ class _ProjectScreenState extends State<ProjectScreen> {
         context: context,
       );
       if (name == null || name.trim().isEmpty) return;
-      targetFolder = name.trim();
-      await videoManager.createNewVlogAlbum(targetFolder);
+      final createdFolder = await videoManager.createProjectFolder(name);
+      if (createdFolder == null) return;
+      targetFolder = createdFolder;
     }
 
     final selectedCount = _selectedProjectIds.length;
@@ -817,5 +1034,30 @@ class _ProjectScreenState extends State<ProjectScreen> {
       msg: isMove ? "$selectedCount개 이동됨" : "$selectedCount개 복사됨",
     );
     hapticFeedback();
+  }
+}
+
+class _StandardBenefitChip extends StatelessWidget {
+  final String label;
+
+  const _StandardBenefitChip({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF1F5F9),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: Color(0xFF334155),
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
   }
 }

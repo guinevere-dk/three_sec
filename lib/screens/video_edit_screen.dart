@@ -8,14 +8,19 @@ import 'package:video_player/video_player.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../managers/video_manager.dart';
 import '../models/edit_command.dart';
 import '../managers/user_status_manager.dart';
 import '../models/vlog_project.dart';
+import '../services/cloud_clip_session_resolver.dart';
+import '../services/cloud_service.dart';
 import '../constants/clip_policy.dart';
+import '../utils/brightness_adjustment_policy.dart';
 import '../utils/clip_duration_label.dart';
 import '../utils/quality_policy.dart';
+import 'subscription_management_screen.dart';
 
 // 자막 데이터 모델
 
@@ -167,15 +172,56 @@ class _TrimUiState {
 
 enum _TransformInlinePanel { none, angle }
 
-enum _TransformAngleMode { tilt, horizontal, vertical }
+enum _TransformAngleMode { tilt }
 
-enum _TransformQuickAction { none, flip, rotate, angle }
+enum _TransformQuickAction { flip, rotate, angle }
 
 enum _BottomInlinePanel { none, sound, trimSpeedPreset }
 
 enum _TrimTimelineInteraction { none, playhead, startHandle, endHandle }
 
+enum _CloudClipEditState {
+  cloudResolving,
+  cloudBuffering,
+  cloudReady,
+  cloudFailed,
+}
+
+enum _ProjectSaveUiState {
+  idle,
+  saving,
+  localSaved,
+  cloudSaved,
+  cloudFailed,
+  retrying,
+}
+
+class _ExportClipResolveException implements Exception {
+  final int index;
+  final String message;
+  final CloudClipResolveFailureCode? cloudFailureCode;
+
+  const _ExportClipResolveException({
+    required this.index,
+    required this.message,
+    this.cloudFailureCode,
+  });
+
+  @override
+  String toString() => message;
+}
+
 // 메인 편집 화면
+
+class _ExportPreflightException implements Exception {
+  final String code;
+  final String message;
+
+  const _ExportPreflightException(this.code, this.message);
+
+  @override
+  String toString() => '$code: $message';
+}
 
 class VideoEditScreen extends StatefulWidget {
   final VlogProject project;
@@ -205,6 +251,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   static const double _inlineModePanelSidePadding = 12.0;
   static const double _inlineModePanelVerticalPadding = 6.0;
   static const double _inlineModeChipRowHeight = 28.0;
+  static const bool _enableDormantEditFeatures = false;
   static final BoxDecoration _inlineModePanelDecoration = BoxDecoration(
     color: Color(0x6B000000),
     border: Border.all(color: Color(0x66FFFFFF)),
@@ -215,8 +262,20 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   bool _isInitialized = false;
   bool _isPlaying = false;
   bool _isMissingFile = false;
+  bool _isCloudClipLoadFailed = false;
   int? _activeMissingClipIndex;
+  int? _activeCloudClipFailureIndex;
   Set<int> _missingClipIndexes = <int>{};
+  final Set<int> _cloudResolvingClipIndexes = <int>{};
+  final Map<int, _CloudClipEditState> _cloudClipStates =
+      <int, _CloudClipEditState>{};
+  final Map<int, CloudClipResolveFailureCode> _cloudClipFailureCodes =
+      <int, CloudClipResolveFailureCode>{};
+  final Map<String, CloudClipResolvedSource> _resolvedCloudClipSources =
+      <String, CloudClipResolvedSource>{};
+  final Map<String, CloudClipResolvedSource> _resolvedExportCloudClipSources =
+      <String, CloudClipResolvedSource>{};
+  CloudClipSessionResolver? _cloudClipSessionResolver;
 
   // Editor State
   List<SubtitleModel> _subtitles = [];
@@ -252,13 +311,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   bool _isTransformModeActive = false;
   bool _transformDirectManipulationEnabled = false;
   _TransformInlinePanel _transformInlinePanel = _TransformInlinePanel.none;
-  _TransformAngleMode _transformAngleMode = _TransformAngleMode.tilt;
   _BottomInlinePanel _bottomInlinePanel = _BottomInlinePanel.none;
   bool _playbackLockedByTransform = false;
   double _transformGestureBaseScale = 1.0;
   bool _transformPreviewFrameScheduled = false;
-  EditorState? _transformSessionBaseState;
-  Duration? _transformSessionBasePosition;
   bool _isTransformAngleDragging = false;
   bool _showTransformAngleNumericLabel = false;
   bool _isBrightnessMode = false;
@@ -270,23 +326,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   bool _brightnessGestureDirty = false;
   String _e3SessionId = '';
   int _e3Seq = 0;
-  Map<String, double> _brightnessAdjustments = <String, double>{
-    'brightness': 0,
-    'exposure': 0,
-    'contrast': 0,
-    'highlights': 0,
-    'shadows': 0,
-    'saturation': 0,
-    'tint': 0,
-    'temperature': 0,
-    'sharpness': 0,
-    'clarity': 0,
-  };
+  Map<String, double> _brightnessAdjustments = defaultBrightnessAdjustments();
 
   bool get _isPlaybackLockedForEditing =>
       _playbackLockedByTransform ||
       _isBrightnessMode ||
       _bottomInlinePanel == _BottomInlinePanel.sound;
+
+  bool get _canUseTopClipNavigation => !_isExportUiBlocking;
 
   // Audio State
   VideoPlayerController? _bgmController;
@@ -301,20 +348,44 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   List<VlogClip> _clips = [];
   int _currentClipIndex = 0;
 
+  EditorState _sanitizeEditorStateForSupportedFeatures(EditorState state) {
+    if (_enableDormantEditFeatures) return state;
+    return EditorState(
+      subtitles: const <SubtitleModel>[],
+      stickers: const <StickerModel>[],
+      filter: FilterPreset.none,
+      filterOpacity: 0.0,
+      bgmPath: state.bgmPath,
+      videoVolume: state.videoVolume,
+      bgmVolume: state.bgmVolume,
+      clips: state.clips.map((clip) => clip.copyWith()).toList(),
+      currentClipIndex: state.currentClipIndex,
+      canvasAspectRatioPreset: state.canvasAspectRatioPreset,
+      canvasBackgroundMode: state.canvasBackgroundMode,
+      brightnessAdjustments: Map<String, double>.from(
+        state.brightnessAdjustments,
+      ),
+    );
+  }
+
   // State for Snapshot
-  EditorState get _currentState => EditorState(
-    subtitles: _subtitles.map((e) => e.copy()).toList(),
-    stickers: _stickers.map((e) => e.copy()).toList(),
-    filter: _selectedFilter,
-    filterOpacity: _filterOpacity,
-    bgmPath: _bgmPath,
-    videoVolume: _videoVolume,
-    bgmVolume: _bgmVolume,
-    clips: _clips.map((e) => e.copyWith()).toList(),
-    currentClipIndex: _currentClipIndex,
-    canvasAspectRatioPreset: widget.project.canvasAspectRatioPreset,
-    canvasBackgroundMode: widget.project.canvasBackgroundMode,
-    brightnessAdjustments: Map<String, double>.from(_brightnessAdjustments),
+  EditorState get _currentState => _sanitizeEditorStateForSupportedFeatures(
+    EditorState(
+      subtitles: _subtitles.map((e) => e.copy()).toList(),
+      stickers: _stickers.map((e) => e.copy()).toList(),
+      filter: _selectedFilter,
+      filterOpacity: _filterOpacity,
+      bgmPath: _bgmPath,
+      videoVolume: _videoVolume,
+      bgmVolume: _bgmVolume,
+      clips: _clips.map((e) => e.copyWith()).toList(),
+      currentClipIndex: _currentClipIndex,
+      canvasAspectRatioPreset: widget.project.canvasAspectRatioPreset,
+      canvasBackgroundMode: widget.project.canvasBackgroundMode,
+      brightnessAdjustments: normalizeBrightnessAdjustments(
+        _brightnessAdjustments,
+      ),
+    ),
   );
 
   // 스티커 에셋 경로
@@ -340,15 +411,25 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   late VideoManager
   _videoManager; // Cached reference to avoid context access after dispose
   late final String _editExportSessionId;
+  late final UserTier _sessionStartTier;
+  late final UserTier _sessionRuntimeTier;
+  UserTier _currentRuntimeTier = UserTier.free;
+  bool _subscriptionRestrictedDuringEdit = false;
   final ScrollController _timelineScrollController = ScrollController();
   bool _didCheckAccessGate = false;
+  bool _isAccessDenied = false;
   Timer? _autosaveDebounceTimer;
   Future<void> _autosaveChain = Future.value();
+  _ProjectSaveUiState _saveUiState = _ProjectSaveUiState.idle;
+  ProjectSaveResult? _lastProjectSaveResult;
+  String? _lastProjectSaveReason;
   bool _isClosingWithSave = false;
   bool _isExportInProgress = false;
   bool _isExportCancelRequested = false;
   bool get _isExportUiBlocking =>
-      _isExportInProgress || _isExportProgressDialogOpen || _isExportCancelRequested;
+      _isExportInProgress ||
+      _isExportProgressDialogOpen ||
+      _isExportCancelRequested;
   String _exportProgressPhase = 'ready';
   String? _exportCancelReason;
   double _exportDialogProgress = 0.0;
@@ -365,6 +446,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   String get _currentClipBadgeText =>
       '현재 $_safeCurrentClipDisplayIndex / ${_clips.length}';
 
+  CloudClipSessionResolver get _cloudResolver =>
+      _cloudClipSessionResolver ??= CloudClipSessionResolver(
+        metadataSource: CallbackCloudClipMetadataSource(
+          _videoManager.getCloudMetadataForPath,
+        ),
+        downloadClient: CloudServiceSessionDownloadClient(CloudService()),
+      );
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -374,10 +463,15 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   @override
   void initState() {
     super.initState();
-    _editExportSessionId =
-        widget.mergeSessionId?.trim().isNotEmpty == true
-            ? widget.mergeSessionId!.trim()
-            : 'edit_${widget.project.id}_${DateTime.now().millisecondsSinceEpoch}';
+    _brightnessAdjustments = normalizeBrightnessAdjustments(
+      widget.project.brightnessAdjustments,
+    );
+    _sessionStartTier = UserStatusManager().currentTier;
+    _sessionRuntimeTier = normalizeRuntimeUserTier(_sessionStartTier);
+    _currentRuntimeTier = _sessionRuntimeTier;
+    _editExportSessionId = widget.mergeSessionId?.trim().isNotEmpty == true
+        ? widget.mergeSessionId!.trim()
+        : 'edit_${widget.project.id}_${DateTime.now().millisecondsSinceEpoch}';
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _runAccessGateThenInit();
     });
@@ -388,9 +482,53 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     _didCheckAccessGate = true;
 
     final userStatus = UserStatusManager();
-    debugPrint(
-      '[EditScreen][AccessGate] tier=${userStatus.currentTier} project=${widget.project.id}',
+    await userStatus.evaluateAndAutoDowngradeIfExpired(
+      reason: 'edit_screen_access_gate',
     );
+    if (!mounted || _isDisposed) return;
+
+    final evaluatedRuntimeTier = _effectiveTierForEditWrite(userStatus);
+    final clampedQuality = clampExportQuality(
+      evaluatedRuntimeTier,
+      widget.project.quality,
+    );
+    if (widget.project.quality != clampedQuality) {
+      widget.project.quality = clampedQuality;
+      debugPrint(
+        '[EditScreen][AccessGate] clampedProjectQuality=$clampedQuality '
+        'project=${widget.project.id}',
+      );
+    }
+
+    debugPrint(
+      '[EditScreen][AccessGate] sessionStartTier=$_sessionStartTier '
+      'runtimeTier=$_sessionRuntimeTier currentTier=${userStatus.currentTier} '
+      'evaluatedRuntimeTier=$evaluatedRuntimeTier '
+      'canCloudWrite=${userStatus.canStartNewCloudWrite()} '
+      'project=${widget.project.id}',
+    );
+
+    if (!canAccessVideoEditScreenForTier(evaluatedRuntimeTier)) {
+      debugPrint(
+        '[EditScreen][AccessGate] blocked project=${widget.project.id} '
+        'sessionStartTier=$_sessionStartTier '
+        'sessionRuntimeTier=$_sessionRuntimeTier '
+        'evaluatedRuntimeTier=$evaluatedRuntimeTier',
+      );
+      if (mounted) {
+        setState(() {
+          _currentRuntimeTier = evaluatedRuntimeTier;
+          _subscriptionRestrictedDuringEdit = true;
+          _isAccessDenied = true;
+        });
+      }
+      return;
+    }
+
+    _currentRuntimeTier = evaluatedRuntimeTier;
+    _subscriptionRestrictedDuringEdit = false;
+    await _refreshSubscriptionRuntimeTier(reason: 'session_start');
+    if (!mounted || _isDisposed) return;
 
     debugPrint('\n\n🚀🚀🚀 [EditScreen] initState START 🚀🚀🚀\n');
     _initClips()
@@ -416,6 +554,67 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             '\n\n⛔⛔⛔ [EditScreen] _initClips CRASHED: $e ⛔⛔⛔\n$stack\n',
           );
         });
+  }
+
+  UserTier _effectiveTierForEditWrite(UserStatusManager userStatus) {
+    if (!userStatus.canStartNewCloudWrite()) {
+      return UserTier.free;
+    }
+    return normalizeRuntimeUserTier(userStatus.currentTier);
+  }
+
+  Future<UserTier> _refreshSubscriptionRuntimeTier({
+    required String reason,
+    bool notifyUser = false,
+  }) async {
+    final userStatus = UserStatusManager();
+    await userStatus.evaluateAndAutoDowngradeIfExpired(
+      reason: 'edit_screen_$reason',
+    );
+
+    final nextRuntimeTier = _effectiveTierForEditWrite(userStatus);
+    final restricted = !canAccessVideoEditScreenForTier(nextRuntimeTier);
+    final clampedQuality = clampExportQuality(
+      nextRuntimeTier,
+      widget.project.quality,
+    );
+    final didChange =
+        nextRuntimeTier != _currentRuntimeTier ||
+        restricted != _subscriptionRestrictedDuringEdit ||
+        clampedQuality != widget.project.quality;
+
+    if (clampedQuality != widget.project.quality) {
+      widget.project.quality = clampedQuality;
+    }
+
+    if (didChange) {
+      debugPrint(
+        '[EditScreen][SubscriptionChange] reason=$reason '
+        'sessionStart=$_sessionStartTier sessionRuntime=$_sessionRuntimeTier '
+        'currentTier=${userStatus.currentTier} '
+        'effectiveRuntimeTier=$nextRuntimeTier '
+        'canCloudWrite=${userStatus.canStartNewCloudWrite()} '
+        'restricted=$restricted '
+        'projectQuality=${widget.project.quality}',
+      );
+      if (mounted && !_isDisposed) {
+        setState(() {
+          _currentRuntimeTier = nextRuntimeTier;
+          _subscriptionRestrictedDuringEdit = restricted;
+        });
+      } else {
+        _currentRuntimeTier = nextRuntimeTier;
+        _subscriptionRestrictedDuringEdit = restricted;
+      }
+    }
+
+    if (restricted && notifyUser) {
+      Fluttertoast.showToast(
+        msg: '구독 상태가 변경되어 Cloud 저장은 중단되고 내보내기는 720p로 제한됩니다.',
+      );
+    }
+
+    return nextRuntimeTier;
   }
 
   Duration _getTrimmedDuration(VlogClip clip) {
@@ -476,8 +675,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             clip.path,
           );
         } catch (e) {
-          debugPrint('Error fetching duration for ${clip.path}: $e');
-          clip.originalDuration = Duration(milliseconds: kTargetClipMs); // Fallback
+          debugPrint('Error fetching duration for <redacted-path>: $e');
+          clip.originalDuration = Duration(
+            milliseconds: kTargetClipMs,
+          ); // Fallback
         }
       }
 
@@ -510,7 +711,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     // Auto-save updated endTime values for old projects
     if (!_isDisposed) {
       widget.project.clips = _clips;
-      _videoManager.saveProject(widget.project);
+      unawaited(_enqueueAutosave(reason: 'preload_duration'));
     }
     debugPrint('[EditScreen] _preloadDurations DONE, total=$_totalDuration');
   }
@@ -540,9 +741,345 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
     if (didUpdateMetadata && mounted && !_isDisposed) {
       widget.project.clips = _clips;
-      await _videoManager.saveProject(widget.project);
+      await _enqueueAutosave(reason: 'timeline_thumbnail');
     }
     debugPrint('[EditScreen] _preloadTimelineThumbnails DONE');
+  }
+
+  bool _isCloudOnlyClipPath(String path) =>
+      CloudClipSessionResolver.isCloudOnlyPlaceholder(path);
+
+  void _setCloudClipState(
+    int index,
+    _CloudClipEditState state, {
+    CloudClipResolveFailureCode? failureCode,
+  }) {
+    _cloudClipStates[index] = state;
+    if (state == _CloudClipEditState.cloudResolving ||
+        state == _CloudClipEditState.cloudBuffering) {
+      _cloudResolvingClipIndexes.add(index);
+    } else {
+      _cloudResolvingClipIndexes.remove(index);
+    }
+
+    if (state == _CloudClipEditState.cloudFailed && failureCode != null) {
+      _cloudClipFailureCodes[index] = failureCode;
+    } else if (state != _CloudClipEditState.cloudFailed) {
+      _cloudClipFailureCodes.remove(index);
+    }
+
+    debugPrint(
+      '[EditScreen][CloudClip][state] index=$index state=${state.name} '
+      'failure=${failureCode?.name ?? ''}',
+    );
+  }
+
+  bool _isClipPotentiallyPlayable(VlogClip clip) {
+    if (_isCloudOnlyClipPath(clip.path)) return true;
+    return File(clip.path).existsSync();
+  }
+
+  Future<File?> _resolvePlaybackFileForClip(
+    int index,
+    VlogClip clip, {
+    bool updateUi = true,
+  }) async {
+    if (!_isCloudOnlyClipPath(clip.path)) {
+      final file = File(clip.path);
+      return await file.exists() ? file : null;
+    }
+
+    final cached = _resolvedCloudClipSources[clip.path];
+    if (cached != null) {
+      final cachedFile = File(cached.sessionLocalPath);
+      if (await cachedFile.exists() &&
+          await cachedFile.length() == cached.fileSize) {
+        _setCloudClipState(index, _CloudClipEditState.cloudReady);
+        return cachedFile;
+      }
+      _resolvedCloudClipSources.remove(clip.path);
+    }
+
+    if (updateUi && mounted && !_isDisposed) {
+      setState(() {
+        _currentClipIndex = index;
+        _setCloudClipState(index, _CloudClipEditState.cloudResolving);
+        _isCloudClipLoadFailed = false;
+        _activeCloudClipFailureIndex = null;
+        _isMissingFile = false;
+      });
+    } else {
+      _setCloudClipState(index, _CloudClipEditState.cloudResolving);
+    }
+
+    final appDocumentsDirectory = await getApplicationDocumentsDirectory();
+    if (updateUi && mounted && !_isDisposed) {
+      setState(() {
+        _setCloudClipState(index, _CloudClipEditState.cloudBuffering);
+      });
+    } else {
+      _setCloudClipState(index, _CloudClipEditState.cloudBuffering);
+    }
+
+    final result = await _cloudResolver.resolve(
+      placeholderPath: clip.path,
+      appDocumentsDirectory: appDocumentsDirectory,
+      purpose: CloudClipSessionPurpose.edit,
+    );
+    if (_isDisposed) return null;
+
+    if (!result.isSuccess) {
+      final code =
+          result.failure?.code ?? CloudClipResolveFailureCode.downloadFailed;
+      _setCloudClipState(
+        index,
+        _CloudClipEditState.cloudFailed,
+        failureCode: code,
+      );
+      debugPrint(
+        '[EditScreen][CloudClip][resolve_failed] index=$index code=$code',
+      );
+      if (updateUi && mounted && !_isDisposed) {
+        setState(() {
+          _isCloudClipLoadFailed = true;
+          _activeCloudClipFailureIndex = index;
+          _isInitialized = false;
+          _isPlaying = false;
+        });
+      }
+      return null;
+    }
+
+    final source = result.source!;
+    _resolvedCloudClipSources[clip.path] = source;
+    _setCloudClipState(index, _CloudClipEditState.cloudReady);
+    _missingClipIndexes.remove(index);
+    if (source.duration != null && source.duration! > Duration.zero) {
+      if (clip.originalDuration == Duration.zero) {
+        clip.originalDuration = source.duration!;
+      }
+      if (clip.endTime == Duration.zero) {
+        clip.endTime = source.duration!;
+      }
+    }
+    debugPrint(
+      '[EditScreen][CloudClip][resolved] index=$index fromCache=${source.fromCache}',
+    );
+    if (updateUi && mounted && !_isDisposed) {
+      setState(() {
+        _isCloudClipLoadFailed = false;
+        _activeCloudClipFailureIndex = null;
+      });
+    }
+    return File(source.sessionLocalPath);
+  }
+
+  Future<Uint8List?> _getTimelineCardThumbnail(VlogClip clip) async {
+    if (!_isCloudOnlyClipPath(clip.path)) {
+      return _videoManager.getThumbnail(clip.path);
+    }
+
+    final cloudThumbnail = await _videoManager.getThumbnail(clip.path);
+    if (cloudThumbnail != null) return cloudThumbnail;
+
+    final resolved = _resolvedCloudClipSources[clip.path];
+    if (resolved == null) return null;
+    return _videoManager.getThumbnail(resolved.sessionLocalPath);
+  }
+
+  String _timelineSourcePathForClip(VlogClip clip) {
+    if (!_isCloudOnlyClipPath(clip.path)) return clip.path;
+    return _resolvedCloudClipSources[clip.path]?.sessionLocalPath ?? clip.path;
+  }
+
+  Future<List<VlogClip>?> _resolveExportClips() async {
+    if (_clips.isEmpty) return const <VlogClip>[];
+
+    final appDocumentsDirectory = await getApplicationDocumentsDirectory();
+    final exportClips = <VlogClip>[];
+
+    for (var i = 0; i < _clips.length; i++) {
+      if (_isDisposed || _isExportCancelRequested) return null;
+      final clip = _clips[i];
+
+      if (!_isCloudOnlyClipPath(clip.path)) {
+        final file = File(clip.path);
+        if (!await file.exists()) {
+          throw _ExportClipResolveException(
+            index: i,
+            message: 'local_source_missing',
+          );
+        }
+        exportClips.add(clip.copyWith());
+        continue;
+      }
+
+      _setExportProgress(
+        phase: 'prepare_cloud',
+        label: 'Cloud Clip 준비 중 ${i + 1}/${_clips.length}',
+        progress: 0.12 + (0.18 * ((i + 1) / _clips.length)),
+      );
+
+      final result = await _cloudResolver.resolve(
+        placeholderPath: clip.path,
+        appDocumentsDirectory: appDocumentsDirectory,
+        purpose: CloudClipSessionPurpose.export,
+      );
+      if (_isDisposed || _isExportCancelRequested) return null;
+
+      if (!result.isSuccess) {
+        throw _ExportClipResolveException(
+          index: i,
+          message: 'cloud_clip_materialize_failed',
+          cloudFailureCode: result.failure?.code,
+        );
+      }
+
+      final source = result.source!;
+      _resolvedExportCloudClipSources[clip.path] = source;
+      debugPrint(
+        '[EditScreen][Export][CloudClip][resolved] '
+        'index=$i fromCache=${source.fromCache}',
+      );
+      exportClips.add(clip.copyWith(path: source.sessionLocalPath));
+    }
+
+    return exportClips;
+  }
+
+  Future<ProjectSaveResult> _runExportPreflight({
+    required VideoManager videoManager,
+    required String quality,
+  }) async {
+    _setExportProgress(
+      phase: 'preflight',
+      label: 'Export preflight',
+      progress: 0.28,
+    );
+
+    final cloudClipCount = _clips
+        .where((clip) => _isCloudOnlyClipPath(clip.path))
+        .length;
+    final estimatedBytes = _estimateExportOutputBytes(quality);
+    final estimatedMaterializeBytes = _estimateCloudMaterializeBytes();
+    final canWriteScratch = await _probeExportScratchWritable();
+    if (!canWriteScratch) {
+      throw const _ExportPreflightException(
+        'storage_unavailable',
+        'export_scratch_write_failed',
+      );
+    }
+
+    for (var i = 0; i < _clips.length; i++) {
+      final clip = _clips[i];
+      if (_isCloudOnlyClipPath(clip.path)) continue;
+      if (!await File(clip.path).exists()) {
+        throw _ExportClipResolveException(
+          index: i,
+          message: 'local_source_missing',
+        );
+      }
+    }
+
+    final saveResult = await videoManager.saveProject(
+      widget.project,
+      reason: 'edit_export_preflight_save',
+    );
+    _applyProjectSaveResult(saveResult, reason: 'export_preflight_save');
+    if (!saveResult.localSaved) {
+      throw const _ExportPreflightException(
+        'project_save_failed',
+        'local_project_save_failed',
+      );
+    }
+
+    debugPrint(
+      '[EditScreen][Export][Preflight] '
+      'quality=$quality clipCount=${_clips.length} '
+      'cloudClipCount=$cloudClipCount '
+      'networkRequired=${cloudClipCount > 0} '
+      'estimatedOutputBytes=$estimatedBytes '
+      'estimatedMaterializeBytes=$estimatedMaterializeBytes '
+      'localSave=${saveResult.localStatus.name} '
+      'cloudSave=${saveResult.cloudStatus.name} '
+      'partialOutputPolicy=do_not_register_before_success',
+    );
+
+    if (cloudClipCount > 0) {
+      _setExportProgress(
+        phase: 'preflight_cloud',
+        label: 'Cloud Clip network required',
+        progress: 0.3,
+      );
+    }
+
+    return saveResult;
+  }
+
+  int _estimateExportOutputBytes(String quality) {
+    final profile = videoQualityProfile(quality);
+    final totalMs = _clips.fold<int>(0, (sum, clip) {
+      final duration = _getTrimmedDuration(clip);
+      final safeMs = duration.inMilliseconds > 0
+          ? duration.inMilliseconds
+          : kTargetClipMs;
+      return sum + safeMs;
+    });
+    final videoBytes = (profile.targetBitrate / 8 * (totalMs / 1000)).ceil();
+    return (videoBytes * 1.25).ceil();
+  }
+
+  int _estimateCloudMaterializeBytes() {
+    var total = 0;
+    for (final clip in _clips) {
+      if (!_isCloudOnlyClipPath(clip.path)) continue;
+      final meta = _videoManager.getCloudMetadataForPath(clip.path);
+      final size = meta?.fileSize ?? 0;
+      if (size > 0) total += size;
+    }
+    return total;
+  }
+
+  Future<bool> _probeExportScratchWritable() async {
+    File? probe;
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      probe = File(
+        '${appDir.path}${Platform.pathSeparator}.export_preflight_probe',
+      );
+      await probe.writeAsBytes(const <int>[1], flush: true);
+      await probe.delete();
+      return true;
+    } catch (e) {
+      debugPrint(
+        '[EditScreen][Export][Preflight] scratch_write_failed '
+        'errorType=${e.runtimeType}',
+      );
+      try {
+        if (probe != null && await probe.exists()) {
+          await probe.delete();
+        }
+      } catch (_) {}
+      return false;
+    }
+  }
+
+  void _markExportSourceFailureForUi(_ExportClipResolveException e) {
+    if (!mounted || _isDisposed) return;
+    final isCloudFailure = e.cloudFailureCode != null;
+    setState(() {
+      if (isCloudFailure) {
+        _isCloudClipLoadFailed = true;
+        _activeCloudClipFailureIndex = e.index;
+        if (e.cloudFailureCode != null) {
+          _cloudClipFailureCodes[e.index] = e.cloudFailureCode!;
+        }
+      } else {
+        _isMissingFile = true;
+        _activeMissingClipIndex = e.index;
+        _missingClipIndexes.add(e.index);
+      }
+    });
   }
 
   Future<void> _preloadNextClip() async {
@@ -558,8 +1095,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     if (nextIndex >= _clips.length) return;
 
     final nextClip = _clips[nextIndex];
-    final file = File(nextClip.path);
-    if (!await file.exists()) return;
+    final file = await _resolvePlaybackFileForClip(
+      nextIndex,
+      nextClip,
+      updateUi: false,
+    );
+    if (file == null || !await file.exists()) return;
     if (_isDisposed) return; // Check after await
 
     // Dispose old next controller if it exists and points to a different file
@@ -585,14 +1126,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   int? _findNextExistingClipIndex(int startIndex) {
     for (int i = startIndex; i < _clips.length; i++) {
-      if (File(_clips[i].path).existsSync()) return i;
+      if (_isClipPotentiallyPlayable(_clips[i])) return i;
     }
     return null;
   }
 
   int? _findPreviousExistingClipIndex(int startIndex) {
     for (int i = startIndex; i >= 0; i--) {
-      if (File(_clips[i].path).existsSync()) return i;
+      if (_isClipPotentiallyPlayable(_clips[i])) return i;
     }
     return null;
   }
@@ -632,7 +1173,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     debugPrint(
       '[EditScreen][Diag][Missing][remove][start] '
       'index=$index current=$_currentClipIndex '
-      'path=${_clips[index].path} missingBefore=${_missingClipIndexes.toList()}',
+      'path=<redacted-path> missingBefore=${_missingClipIndexes.toList()}',
     );
 
     final removingCurrent = index == _currentClipIndex;
@@ -651,6 +1192,31 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           .where((i) => i != index)
           .map((i) => i > index ? i - 1 : i)
           .toSet();
+      final shiftedCloudResolving = _cloudResolvingClipIndexes
+          .where((i) => i != index)
+          .map((i) => i > index ? i - 1 : i)
+          .toSet();
+      _cloudResolvingClipIndexes
+        ..clear()
+        ..addAll(shiftedCloudResolving);
+      final shiftedCloudStates = <int, _CloudClipEditState>{};
+      for (final entry in _cloudClipStates.entries) {
+        if (entry.key == index) continue;
+        shiftedCloudStates[entry.key > index ? entry.key - 1 : entry.key] =
+            entry.value;
+      }
+      _cloudClipStates
+        ..clear()
+        ..addAll(shiftedCloudStates);
+      final shiftedCloudFailures = <int, CloudClipResolveFailureCode>{};
+      for (final entry in _cloudClipFailureCodes.entries) {
+        if (entry.key == index) continue;
+        shiftedCloudFailures[entry.key > index ? entry.key - 1 : entry.key] =
+            entry.value;
+      }
+      _cloudClipFailureCodes
+        ..clear()
+        ..addAll(shiftedCloudFailures);
 
       final active = _activeMissingClipIndex;
       if (active == index) {
@@ -658,12 +1224,23 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       } else if (active != null && active > index) {
         _activeMissingClipIndex = active - 1;
       }
+      final activeCloudFailure = _activeCloudClipFailureIndex;
+      if (activeCloudFailure == index) {
+        _activeCloudClipFailureIndex = null;
+        _isCloudClipLoadFailed = false;
+      } else if (activeCloudFailure != null && activeCloudFailure > index) {
+        _activeCloudClipFailureIndex = activeCloudFailure - 1;
+      }
 
       if (_clips.isEmpty) {
         _currentClipIndex = 0;
         _isInitialized = false;
         _isPlaying = false;
         _isMissingFile = false;
+        _isCloudClipLoadFailed = false;
+        _cloudClipStates.clear();
+        _cloudClipFailureCodes.clear();
+        _cloudResolvingClipIndexes.clear();
       } else {
         if (_currentClipIndex > index) {
           _currentClipIndex -= 1;
@@ -855,14 +1432,16 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             _loadClip(_currentClipIndex + 1);
           }
         } else {
-          // Stop at last clip
+          // Stop at project end and reset to the first playable clip.
           _controller!.pause();
-          _controller!.seekTo(clip.startTime);
+          _bgmController?.pause();
           if (mounted && !_isDisposed) {
             setState(() {
               _isPlaying = false;
             });
           }
+          final resetIndex = _findNextExistingClipIndex(0) ?? 0;
+          unawaited(_loadClip(resetIndex, autoPlay: false));
         }
       }
     }
@@ -908,20 +1487,25 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     if (_isDisposed) return;
 
     final clip = _clips[index];
-    final file = File(clip.path);
     debugPrint(
       '[EditScreen][Diag][Missing][load] index=$index '
-      'path=${clip.path} missingNow=${_missingClipIndexes.toList()}',
+      'path=<redacted-path> missingNow=${_missingClipIndexes.toList()}',
     );
 
-    if (!await file.exists()) {
+    final file = await _resolvePlaybackFileForClip(index, clip);
+    if (_isDisposed || loadEpoch != _controllerEpoch) return;
+
+    if (file == null || !await file.exists()) {
+      if (_isCloudOnlyClipPath(clip.path)) {
+        return;
+      }
       _missingClipIndexes.add(index);
 
       final nextPlayable = _findNextExistingClipIndex(index + 1);
       final prevPlayable = _findPreviousExistingClipIndex(index - 1);
       debugPrint(
         '[EditScreen][Diag][Missing][not_found] '
-        'index=$index path=${clip.path} '
+        'index=$index path=<redacted-path> '
         'nextPlayable=$nextPlayable prevPlayable=$prevPlayable '
         'missingNow=${_missingClipIndexes.toList()}',
       );
@@ -950,6 +1534,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       if (mounted && !_isDisposed) {
         setState(() {
           _isMissingFile = true;
+          _isCloudClipLoadFailed = false;
           _activeMissingClipIndex = index;
           _isInitialized = false;
           _isPlaying = false;
@@ -984,7 +1569,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         _isInitialized = true;
         _isPlaying = autoPlay;
         _isMissingFile = false;
+        _isCloudClipLoadFailed = false;
         _activeMissingClipIndex = null;
+        _activeCloudClipFailureIndex = null;
       });
       if (_isTrimMode) {
         _ensureTrimUiStateForCurrentClip(force: true);
@@ -1127,10 +1714,19 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     widget.project.canvasAspectRatioPreset =
         _currentState.canvasAspectRatioPreset;
     widget.project.canvasBackgroundMode = _currentState.canvasBackgroundMode;
+    widget.project.brightnessAdjustmentScope =
+        kBrightnessAdjustmentScopeProjectWide;
+    widget.project.brightnessAdjustments = normalizeBrightnessAdjustments(
+      _brightnessAdjustments,
+    );
   }
 
   double _canvasAspectRatioForPreset(String preset) {
     switch (preset) {
+      case 'r3_4':
+        return 3 / 4;
+      case 'r4_3':
+        return 4 / 3;
       case 'r1_1':
         return 1.0;
       case 'r16_9':
@@ -1143,6 +1739,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   String _canvasAspectLabel(String preset) {
     switch (preset) {
+      case 'r3_4':
+        return '3:4';
+      case 'r4_3':
+        return '4:3';
       case 'r1_1':
         return '1:1';
       case 'r16_9':
@@ -1160,17 +1760,39 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     return _clips[_currentClipIndex];
   }
 
-  Future<void> _persistProjectAutosave({required String reason}) async {
+  Future<ProjectSaveResult> _persistProjectAutosave({
+    required String reason,
+  }) async {
+    await _refreshSubscriptionRuntimeTier(reason: 'autosave_$reason');
     _syncEditorStateToProject();
-    await _videoManager.saveProject(widget.project);
-    debugPrint('[EditScreen][Autosave] saved: reason=$reason');
+    final result = await _videoManager.saveProject(
+      widget.project,
+      reason: 'edit_autosave_$reason',
+    );
+    debugPrint(
+      '[EditScreen][Autosave] saved: reason=$reason '
+      'local=${result.localStatus.name} cloud=${result.cloudStatus.name}',
+    );
+    return result;
   }
 
   Future<void> _enqueueAutosave({required String reason}) {
+    _setProjectSaveUiState(
+      _ProjectSaveUiState.saving,
+      reason: reason,
+      result: _lastProjectSaveResult,
+    );
     _autosaveChain = _autosaveChain
         .then((_) => _persistProjectAutosave(reason: reason))
+        .then((result) {
+          _applyProjectSaveResult(result, reason: reason);
+        })
         .catchError((Object e, StackTrace st) {
           debugPrint('[EditScreen][Autosave] failed: reason=$reason, error=$e');
+          _setProjectSaveUiState(
+            _ProjectSaveUiState.cloudFailed,
+            reason: reason,
+          );
         });
     return _autosaveChain;
   }
@@ -1192,14 +1814,80 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     await _enqueueAutosave(reason: reason);
   }
 
+  void _applyProjectSaveResult(
+    ProjectSaveResult result, {
+    required String reason,
+  }) {
+    final nextState = result.cloudSaved
+        ? _ProjectSaveUiState.cloudSaved
+        : result.localSaved && result.cloudFailed
+        ? _ProjectSaveUiState.cloudFailed
+        : result.localSaved
+        ? _ProjectSaveUiState.localSaved
+        : _ProjectSaveUiState.cloudFailed;
+    _setProjectSaveUiState(nextState, reason: reason, result: result);
+  }
+
+  void _setProjectSaveUiState(
+    _ProjectSaveUiState nextState, {
+    required String reason,
+    ProjectSaveResult? result,
+  }) {
+    if (_isDisposed) return;
+    if (mounted) {
+      setState(() {
+        _saveUiState = nextState;
+        _lastProjectSaveReason = reason;
+        if (result != null) {
+          _lastProjectSaveResult = result;
+        }
+      });
+    } else {
+      _saveUiState = nextState;
+      _lastProjectSaveReason = reason;
+      if (result != null) {
+        _lastProjectSaveResult = result;
+      }
+    }
+  }
+
+  Future<void> _retryProjectCloudSave() async {
+    if (_isDisposed || _saveUiState == _ProjectSaveUiState.saving) return;
+    _setProjectSaveUiState(
+      _ProjectSaveUiState.retrying,
+      reason: 'manual_retry',
+      result: _lastProjectSaveResult,
+    );
+    await _flushAutosave(reason: 'manual_retry');
+  }
+
   Future<void> _handleClosePressed() async {
     if (_isClosingWithSave) return;
     setState(() {
       _isClosingWithSave = true;
     });
     try {
+      _setProjectSaveUiState(
+        _ProjectSaveUiState.saving,
+        reason: 'close_button_flush',
+      );
+      debugPrint(
+        '[EditScreen][Autosave] close flush start project=${widget.project.id}',
+      );
       await _flushAutosave(reason: 'close_button');
-      await _videoManager.saveProject(widget.project);
+      await _refreshSubscriptionRuntimeTier(
+        reason: 'close_button_save',
+        notifyUser: true,
+      );
+      final result = await _videoManager.saveProject(
+        widget.project,
+        reason: 'edit_close_button_save',
+      );
+      _applyProjectSaveResult(result, reason: 'close_button_save');
+      debugPrint(
+        '[EditScreen][Autosave] close flush done project=${widget.project.id} '
+        'local=${result.localStatus.name} cloud=${result.cloudStatus.name}',
+      );
       if (!mounted) return;
       Navigator.pop(context, true);
     } finally {
@@ -1211,14 +1899,47 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     }
   }
 
+  Future<void> _cleanupSessionCacheBestEffort({
+    required String trigger,
+    Iterable<String> protectedPaths = const <String>[],
+  }) async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final result = await CloudClipSessionResolver.cleanupExpiredSessionCache(
+        appDocumentsDirectory: appDir,
+        protectedPaths: protectedPaths,
+      );
+      debugPrint(
+        '[EditScreen][SessionCacheCleanup] trigger=$trigger '
+        'deleted=${result.deletedFileCount} '
+        'protected=${result.skippedProtectedCount} '
+        'fresh=${result.skippedFreshCount} '
+        'failed=${result.failedDeleteCount}',
+      );
+    } catch (e) {
+      debugPrint(
+        '[EditScreen][SessionCacheCleanup] trigger=$trigger failed '
+        'errorType=${e.runtimeType}',
+      );
+    }
+  }
+
   @override
   void dispose() {
     debugPrint('[EditScreen] dispose START');
+    final protectedCachePaths = <String>[
+      ..._resolvedCloudClipSources.values.map(
+        (source) => source.sessionLocalPath,
+      ),
+      ..._resolvedExportCloudClipSources.values.map(
+        (source) => source.sessionLocalPath,
+      ),
+    ];
     unawaited(_closeExportProgressDialog());
     _autosaveDebounceTimer?.cancel();
     _autosaveDebounceTimer = null;
-    unawaited(_enqueueAutosave(reason: 'dispose'));
     _isDisposed = true;
+    unawaited(_enqueueAutosave(reason: 'dispose'));
 
     // 1. Stop playback first to prevent native codec conflicts
     _controller?.removeListener(_videoListener);
@@ -1246,6 +1967,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     _pendingTrimSeekMs = null;
     _trimTimelineFutureCache.clear();
     _timelineScrollController.dispose();
+    unawaited(
+      _cleanupSessionCacheBestEffort(
+        trigger: 'edit_dispose',
+        protectedPaths: protectedCachePaths,
+      ),
+    );
 
     debugPrint('[EditScreen] dispose DONE');
     super.dispose();
@@ -1255,6 +1982,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   void _applyEditorState(EditorState state, {bool keepPlayback = false}) {
     final wasPlaying = keepPlayback ? _isPlaying : false;
+    state = _sanitizeEditorStateForSupportedFeatures(state);
     final previousIndex = _currentClipIndex.clamp(
       0,
       (_clips.isEmpty ? 0 : _clips.length - 1),
@@ -1273,10 +2001,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       _stickers = state.stickers.map((e) => e.copy()).toList();
       _selectedFilter = state.filter;
       _filterOpacity = state.filterOpacity;
-      _brightnessAdjustments = Map<String, double>.from(
-        state.brightnessAdjustments.isEmpty
-            ? _brightnessAdjustments
-            : state.brightnessAdjustments,
+      _brightnessAdjustments = normalizeBrightnessAdjustments(
+        state.brightnessAdjustments,
       );
       _bgmPath = state.bgmPath;
       _videoVolume = state.videoVolume;
@@ -1285,6 +2011,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       _currentClipIndex = normalizedNextIndex;
       widget.project.canvasAspectRatioPreset = state.canvasAspectRatioPreset;
       widget.project.canvasBackgroundMode = state.canvasBackgroundMode;
+      widget.project.brightnessAdjustmentScope =
+          kBrightnessAdjustmentScopeProjectWide;
+      widget.project.brightnessAdjustments = normalizeBrightnessAdjustments(
+        _brightnessAdjustments,
+      );
       _recalculateTimelineMetrics();
     });
 
@@ -1535,8 +2266,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     if (shouldActivate) {
       _controller?.pause();
       _bgmController?.pause();
-      _transformSessionBaseState = _currentState.copy();
-      _transformSessionBasePosition = _controller?.value.position;
       _showTransformAngleNumericLabel = false;
       _isTransformAngleDragging = false;
     }
@@ -1551,51 +2280,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       } else {
         _commitTransformGesture();
         _transformDirectManipulationEnabled = false;
-        _transformSessionBaseState = null;
-        _transformSessionBasePosition = null;
         _showTransformAngleNumericLabel = false;
         _isTransformAngleDragging = false;
         _transformInlinePanel = _TransformInlinePanel.none;
       }
     });
-  }
-
-  void _restoreTransformSession() {
-    final baseState = _transformSessionBaseState;
-    if (baseState == null) return;
-    final basePosition = _transformSessionBasePosition;
-
-    _applyEditorState(baseState, keepPlayback: false);
-    if (basePosition == null) return;
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _isDisposed || _controller == null) return;
-      _controller!.seekTo(basePosition);
-    });
-    Future<void>.delayed(const Duration(milliseconds: 120), () {
-      if (!mounted || _isDisposed || _controller == null) return;
-      _controller!.seekTo(basePosition);
-    });
-  }
-
-  double _adaptiveAngleSnapThreshold(BuildContext context) {
-    final dpr = MediaQuery.of(context).devicePixelRatio;
-    final shortest = MediaQuery.of(context).size.shortestSide;
-    var threshold = 2.4;
-    if (dpr < 2.0) threshold += 0.8;
-    if (shortest >= 600) threshold -= 0.4;
-    return threshold.clamp(1.6, 3.8);
-  }
-
-  double _applyAdaptiveAngleSnap(double rawAngle, BuildContext context) {
-    const snapPoints = <double>[-180, -90, 0, 90, 180];
-    final threshold = _adaptiveAngleSnapThreshold(context);
-    for (final snap in snapPoints) {
-      if ((rawAngle - snap).abs() <= threshold) {
-        return snap;
-      }
-    }
-    return rawAngle;
   }
 
   double _quantizeAngleStep(double value) => (value * 10).round() / 10;
@@ -1610,39 +2299,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     });
   }
 
-  void _setTransformAngleMode(_TransformAngleMode mode) {
-    if (_transformAngleMode == mode) {
-      _setTransformAngleNumericLabelFromCurrentValue();
-      return;
-    }
-
-    if (_isTransformAngleDragging) {
-      _commitTransformGesture();
-    }
-
-    setState(() {
-      _transformAngleMode = mode;
-      _showTransformAngleNumericLabel = false;
-    });
-
-    if (mode == _TransformAngleMode.tilt) return;
-
-    _startTransformGesture();
-    _applyCurrentClipTransformPreview((clip) {
-      clip.transformAngle = mode == _TransformAngleMode.horizontal ? 0.0 : 90.0;
-    });
-    _commitTransformGesture();
-    _setTransformAngleNumericLabelFromCurrentValue();
-  }
-
   String _transformAngleModeLabel(_TransformAngleMode mode) {
     switch (mode) {
       case _TransformAngleMode.tilt:
         return '기울기';
-      case _TransformAngleMode.horizontal:
-        return '수평';
-      case _TransformAngleMode.vertical:
-        return '수직';
     }
   }
 
@@ -1993,8 +2653,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       barrierDismissible: false,
       builder: (dialogContext) {
         _exportProgressDialogContext = dialogContext;
-        return WillPopScope(
-          onWillPop: () async => false,
+        return PopScope(
+          canPop: false,
           child: StatefulBuilder(
             builder: (innerContext, setDialogState) {
               _exportProgressDialogStateSetter = setDialogState;
@@ -2071,11 +2731,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     required double progress,
   }) {
     _exportCancelReason = reason;
-    _setExportProgress(
-      phase: phase,
-      label: '내보내기 취소 요청됨',
-      progress: progress,
-    );
+    _setExportProgress(phase: phase, label: '내보내기 취소 요청됨', progress: progress);
   }
 
   double _defaultExportProgressForPhase(String phase) {
@@ -2215,13 +2871,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     return "${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}";
   }
 
-  String _formatTrimTime(Duration d) {
-    int minutes = d.inMinutes;
-    int seconds = d.inSeconds % 60;
-    int milliseconds = (d.inMilliseconds % 1000) ~/ 100;
-    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}.$milliseconds';
-  }
-
   void _traceBrightnessEvent(
     String event,
     String note, {
@@ -2255,6 +2904,69 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isAccessDenied) {
+      return Scaffold(
+        backgroundColor: _bgColor,
+        body: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.workspace_premium_rounded,
+                    color: _primaryColor,
+                    size: 48,
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Standard 구독 필요',
+                    style: TextStyle(
+                      color: _textPrimary,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Free는 선택 클립의 720p 빠른 내보내기만 사용할 수 있습니다.\n프로젝트 편집과 저장은 Standard 구독이 필요합니다.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: _textSecondary, fontSize: 14),
+                  ),
+                  const SizedBox(height: 18),
+                  ElevatedButton(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const SubscriptionManagementScreen(),
+                        ),
+                      );
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _primaryColor,
+                      foregroundColor: Colors.white,
+                    ),
+                    child: const Text('구독하러 가기'),
+                  ),
+                  const SizedBox(height: 8),
+                  ElevatedButton(
+                    onPressed: () => Navigator.maybePop(context, false),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: _textPrimary,
+                    ),
+                    child: const Text('돌아가기'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
     return PopScope(
       canPop: !_isTrimMode && !_isExportUiBlocking,
       onPopInvokedWithResult: (didPop, result) {
@@ -2277,8 +2989,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   child: Stack(
                     children: [
                       _buildPreviewSection(),
-                      ..._stickers.map((s) => _buildStickerWidget(s)),
-                      ..._subtitles.map((s) => _buildSubtitleWidget(s)),
+                      if (_enableDormantEditFeatures)
+                        ..._stickers.map((s) => _buildStickerWidget(s)),
+                      if (_enableDormantEditFeatures)
+                        ..._subtitles.map((s) => _buildSubtitleWidget(s)),
                     ],
                   ),
                 ),
@@ -2340,6 +3054,75 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   Widget _buildPreviewSection() {
+    if (_isCloudClipLoadFailed) {
+      final failureIndex = _activeCloudClipFailureIndex;
+      final clipNumber = failureIndex == null ? '-' : '${failureIndex + 1}';
+      final code = failureIndex == null
+          ? null
+          : _cloudClipFailureCodes[failureIndex];
+      return Center(
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 20),
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE4E8EF)),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x14000000),
+                blurRadius: 12,
+                offset: Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.cloud_off, color: Color(0xFFD97706), size: 54),
+              const SizedBox(height: 12),
+              const Text(
+                'Cloud Clip 로드 실패',
+                style: TextStyle(
+                  color: Color(0xFF121212),
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '클립: $clipNumber 번',
+                style: const TextStyle(
+                  color: Color(0xFF2A2F37),
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                code == null ? 'cloud_clip_load_failed' : code.name,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Color(0xFF5A6472), fontSize: 12),
+              ),
+              const SizedBox(height: 14),
+              if (failureIndex != null)
+                ElevatedButton.icon(
+                  onPressed: () => _loadClip(failureIndex),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _primaryColor,
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('다시 시도'),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
+
     if (_isMissingFile) {
       final missingIndex = _missingIndexForUi();
       final clipNumber = missingIndex == null ? '-' : '${missingIndex + 1}';
@@ -2414,6 +3197,32 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       debugPrint(
         '⏳⏳⏳ [BUILD] Showing loading: _isInitialized=$_isInitialized, controller=${_controller != null}',
       );
+      final isCloudResolving = _cloudResolvingClipIndexes.contains(
+        _currentClipIndex,
+      );
+      if (isCloudResolving) {
+        final state = _cloudClipStates[_currentClipIndex];
+        final label = state == _CloudClipEditState.cloudResolving
+            ? 'Cloud Clip 확인 중'
+            : 'Cloud Clip 준비 중';
+        return Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(color: _primaryColor),
+              const SizedBox(height: 12),
+              Text(
+                label,
+                style: const TextStyle(
+                  color: Color(0xFF4C739A),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        );
+      }
       return const Center(
         child: CircularProgressIndicator(color: _primaryColor),
       );
@@ -2857,48 +3666,18 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         children: [
           SizedBox(
             height: _inlineModeChipRowHeight,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: _TransformAngleMode.values.length,
-              separatorBuilder: (_, index) => const SizedBox(width: 6),
-              itemBuilder: (context, index) {
-                final mode = _TransformAngleMode.values[index];
-                final selected = mode == _transformAngleMode;
-                final text = _transformAngleModeLabel(mode);
-                return InkWell(
-                  borderRadius: BorderRadius.circular(999),
-                  onTap: () {
-                    _setTransformAngleMode(mode);
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: selected
-                          ? const Color(0xFF2B8CEE)
-                          : Colors.white12,
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(
-                        color: selected
-                            ? const Color(0xFF9FD0FF)
-                            : Colors.white24,
-                      ),
-                    ),
-                    child: Text(
-                      selected && _showTransformAngleNumericLabel
-                          ? '${currentValue.toStringAsFixed(1)}°'
-                          : text,
-                      style: TextStyle(
-                        color: selected ? Colors.white : Colors.white70,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                );
-              },
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                _showTransformAngleNumericLabel
+                    ? '${currentValue.toStringAsFixed(1)}°'
+                    : _transformAngleModeLabel(_TransformAngleMode.tilt),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
             ),
           ),
           const SizedBox(height: 6),
@@ -2973,6 +3752,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   ColorFilter _getFilterMatrix() {
+    final brightnessFilter = ColorFilter.matrix(
+      brightnessPreviewColorMatrix(_brightnessAdjustments),
+    );
+    if (!_enableDormantEditFeatures) {
+      return brightnessFilter;
+    }
     switch (_selectedFilter) {
       case FilterPreset.grayscale:
         return const ColorFilter.matrix(<double>[
@@ -3008,7 +3793,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           BlendMode.overlay,
         );
       default:
-        return const ColorFilter.mode(Colors.transparent, BlendMode.dst);
+        return brightnessFilter;
     }
   }
 
@@ -3019,12 +3804,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         children: [
           Row(
             children: [
-                IconButton(
-                  icon: const Icon(Icons.close, color: _textPrimary, size: 28),
-                onPressed:
-                    _isClosingWithSave || _isExportInProgress ? null : _handleClosePressed,
-                  tooltip: '닫기',
-                ),
+              IconButton(
+                icon: const Icon(Icons.close, color: _textPrimary, size: 28),
+                onPressed: _isClosingWithSave || _isExportInProgress
+                    ? null
+                    : _handleClosePressed,
+                tooltip: '닫기',
+              ),
               Expanded(
                 child: Text(
                   widget.project.title,
@@ -3112,7 +3898,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 IconButton(
                   icon: const Icon(Icons.chevron_left, color: _textPrimary),
                   tooltip: '이전 클립',
-                  onPressed: _clips.isEmpty || _currentClipIndex <= 0
+                  onPressed:
+                      _clips.isEmpty ||
+                          _currentClipIndex <= 0 ||
+                          !_canUseTopClipNavigation
                       ? null
                       : () => unawaited(_moveToAdjacentClip(-1)),
                 ),
@@ -3120,16 +3909,186 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   icon: const Icon(Icons.chevron_right, color: _textPrimary),
                   tooltip: '다음 클립',
                   onPressed:
-                      _clips.isEmpty || _currentClipIndex >= _clips.length - 1
+                      _clips.isEmpty ||
+                          _currentClipIndex >= _clips.length - 1 ||
+                          !_canUseTopClipNavigation
                       ? null
                       : () => unawaited(_moveToAdjacentClip(1)),
                 ),
               ],
             ),
           ),
+          const SizedBox(height: 4),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: _buildProjectSaveStatusChip(),
+          ),
+          if (_subscriptionRestrictedDuringEdit) ...[
+            const SizedBox(height: 4),
+            _buildSubscriptionChangeNotice(),
+          ],
         ],
       ),
     );
+  }
+
+  Widget _buildSubscriptionChangeNotice() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF7E6),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFF5D08A)),
+      ),
+      child: const Row(
+        children: [
+          Icon(Icons.lock_clock, size: 16, color: Color(0xFFB45309)),
+          SizedBox(width: 7),
+          Expanded(
+            child: Text(
+              'Subscription changed. Local draft is kept, Cloud save is paused, export is limited to 720p.',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: Color(0xFF92400E),
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProjectSaveStatusChip() {
+    final state = _saveUiState;
+    final result = _lastProjectSaveResult;
+    final canRetry =
+        result?.canRetry == true || state == _ProjectSaveUiState.cloudFailed;
+
+    late final IconData icon;
+    late final String label;
+    late final Color fg;
+    late final Color bg;
+    late final Color border;
+
+    switch (state) {
+      case _ProjectSaveUiState.saving:
+        icon = Icons.sync;
+        label = 'Saving';
+        fg = const Color(0xFF2563EB);
+        bg = const Color(0xFFEAF3FF);
+        border = const Color(0xFFB9D9FF);
+        break;
+      case _ProjectSaveUiState.retrying:
+        icon = Icons.refresh;
+        label = 'Retrying save';
+        fg = const Color(0xFF2563EB);
+        bg = const Color(0xFFEAF3FF);
+        border = const Color(0xFFB9D9FF);
+        break;
+      case _ProjectSaveUiState.localSaved:
+        icon = Icons.save_outlined;
+        label = 'Saved locally';
+        fg = const Color(0xFF166534);
+        bg = const Color(0xFFEAF7EE);
+        border = const Color(0xFFBFE8CB);
+        break;
+      case _ProjectSaveUiState.cloudSaved:
+        icon = Icons.cloud_done_outlined;
+        label = 'Cloud saved';
+        fg = const Color(0xFF166534);
+        bg = const Color(0xFFEAF7EE);
+        border = const Color(0xFFBFE8CB);
+        break;
+      case _ProjectSaveUiState.cloudFailed:
+        icon = Icons.cloud_off_outlined;
+        label = result?.localSaved == true
+            ? 'Local saved, Cloud failed'
+            : 'Save failed';
+        fg = const Color(0xFFB45309);
+        bg = const Color(0xFFFFF7E6);
+        border = const Color(0xFFF5D08A);
+        break;
+      case _ProjectSaveUiState.idle:
+        icon = Icons.cloud_queue;
+        label = 'Autosave ready';
+        fg = _textSecondary;
+        bg = const Color(0xFFEFF3F7);
+        border = const Color(0xFFDCE4EC);
+        break;
+    }
+
+    return Semantics(
+      label: 'Project save status: $label',
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 320),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 15, color: fg),
+            const SizedBox(width: 5),
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: fg,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            if (_lastProjectSaveReason != null &&
+                state != _ProjectSaveUiState.idle) ...[
+              const SizedBox(width: 5),
+              Container(width: 1, height: 12, color: border),
+              const SizedBox(width: 5),
+              Text(
+                _saveStatusTimeLabel(result?.completedAt),
+                style: TextStyle(
+                  color: fg.withValues(alpha: 0.72),
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+            if (canRetry) ...[
+              const SizedBox(width: 6),
+              InkWell(
+                onTap: _retryProjectCloudSave,
+                borderRadius: BorderRadius.circular(999),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 2,
+                  ),
+                  child: Icon(Icons.refresh, size: 15, color: fg),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _saveStatusTimeLabel(DateTime? completedAt) {
+    if (completedAt == null) return 'pending';
+    final elapsed = DateTime.now().difference(completedAt);
+    if (elapsed.inSeconds < 5) return 'now';
+    if (elapsed.inMinutes < 1) return '${elapsed.inSeconds}s';
+    if (elapsed.inHours < 1) return '${elapsed.inMinutes}m';
+    return '${elapsed.inHours}h';
   }
 
   Widget _buildGlassToolbar() {
@@ -3236,34 +4195,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             },
             active: _bottomInlinePanel == _BottomInlinePanel.sound,
           ),
-          _buildToolbarItem(Icons.auto_awesome, "AI", () {
-            final transitionFrom = _getBrightnessTransitionFromMode();
-            _traceBrightnessEvent(
-              'toolbar_ai_pressed',
-              'from=$transitionFrom',
-              property: _selectedBrightnessProperty,
-              value: _brightnessAdjustments[_selectedBrightnessProperty] ?? 0.0,
-              dragging: _isBrightnessDragging,
-              showLabel: _showBrightnessNumericLabel,
-            );
-            if (_isTrimMode) {
-              _closeTrimMode();
-            }
-            if (_isTransformModeActive) {
-              _enterTransformMode();
-            }
-            if (_isBrightnessMode) {
-              _exitBrightnessModeForReason(
-                'ai_toolbar',
-                note: 'toolbar ai pressed',
-                fromMode: transitionFrom,
-              );
-            }
-            if (_bottomInlinePanel != _BottomInlinePanel.none) {
-              setState(() => _bottomInlinePanel = _BottomInlinePanel.none);
-            }
-            _showFilterDialog();
-          }, emphasized: true),
         ],
       ),
     );
@@ -3419,12 +4350,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         _inlineModePanelSidePadding,
         _inlineModePanelSpacing,
       ),
-      padding: EdgeInsets.fromLTRB(
-        _inlineModePanelSidePadding,
-        _inlineModePanelVerticalPadding,
-        _inlineModePanelSidePadding,
-        _inlineModePanelVerticalPadding,
-      ),
+      padding: const EdgeInsets.fromLTRB(10, 4, 10, 4),
       decoration: _inlineModePanelDecoration,
       child: Column(
         children: [
@@ -3452,7 +4378,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               _executeStateChange(newState);
             },
           ),
-          const SizedBox(height: _inlineModePanelSpacing),
+          const SizedBox(height: 2),
           _buildInlineSoundSliderRow(
             icon: Icons.music_note,
             label: '클립 사운드',
@@ -3489,53 +4415,59 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     required ValueChanged<double> onChanged,
     required ValueChanged<double> onChangeEnd,
   }) {
-    return Row(
-      children: [
-        Icon(icon, color: Colors.white, size: 19),
-        const SizedBox(width: 8),
-        SizedBox(
-          width: 72,
-          child: Text(
-            label,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
+    return SizedBox(
+      height: 48,
+      child: Row(
+        children: [
+          Icon(icon, color: Colors.white, size: 17),
+          const SizedBox(width: 6),
+          SizedBox(
+            width: 64,
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ),
-        ),
-        Expanded(
-          child: SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              trackHeight: 3,
-              activeTrackColor: Colors.white,
-              inactiveTrackColor: Colors.white24,
-              thumbColor: Colors.white,
-              overlayColor: Colors.white24,
-              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-            ),
-            child: Slider(
-              value: value,
-              min: 0,
-              max: 1,
-              onChanged: onChanged,
-              onChangeEnd: onChangeEnd,
-            ),
-          ),
-        ),
-        SizedBox(
-          width: 40,
-          child: Text(
-            '${(value * 100).round()}%',
-            textAlign: TextAlign.right,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 12,
-              fontWeight: FontWeight.w800,
+          Expanded(
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: 2.5,
+                activeTrackColor: Colors.white,
+                inactiveTrackColor: Colors.white24,
+                thumbColor: Colors.white,
+                overlayColor: Colors.white24,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
+                overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+              ),
+              child: Slider(
+                value: value,
+                min: 0,
+                max: 1,
+                onChanged: onChanged,
+                onChangeEnd: onChangeEnd,
+              ),
             ),
           ),
-        ),
-      ],
+          SizedBox(
+            width: 34,
+            child: Text(
+              '${(value * 100).round()}%',
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -3600,18 +4532,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     });
   }
 
-  List<MapEntry<String, String>> get _brightnessProperties => const [
-    MapEntry('brightness', '밝기'),
-    MapEntry('exposure', '노출'),
-    MapEntry('contrast', '대비'),
-    MapEntry('highlights', '하이라이트'),
-    MapEntry('shadows', '그림자'),
-    MapEntry('saturation', '채도'),
-    MapEntry('tint', '틴트'),
-    MapEntry('temperature', '색온도'),
-    MapEntry('sharpness', '선명도'),
-    MapEntry('clarity', '명료도'),
-  ];
+  List<BrightnessAdjustmentSpec> get _brightnessProperties =>
+      brightnessPreviewAdjustmentSpecs();
 
   void _startBrightnessGesture() {
     final property = _selectedBrightnessProperty;
@@ -3906,7 +4828,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     child: Text(
                       selected && _showBrightnessNumericLabel
                           ? displayedValue.toStringAsFixed(0)
-                          : property.value,
+                          : property.label,
                       style: TextStyle(
                         color: selected ? Colors.white : Colors.white70,
                         fontSize: 11,
@@ -4047,10 +4969,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: FutureBuilder<Uint8List?>(
-                    future: Provider.of<VideoManager>(
-                      context,
-                      listen: false,
-                    ).getThumbnail(clip.path),
+                    future: _getTimelineCardThumbnail(clip),
                     builder: (context, snapshot) {
                       if (snapshot.hasData && snapshot.data != null) {
                         return Image.memory(snapshot.data!, fit: BoxFit.cover);
@@ -4178,10 +5097,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   ClipRRect(
                     borderRadius: BorderRadius.circular(9),
                     child: FutureBuilder<Uint8List?>(
-                      future: Provider.of<VideoManager>(
-                        context,
-                        listen: false,
-                      ).getThumbnail(clip.path),
+                      future: _getTimelineCardThumbnail(clip),
                       builder: (context, snapshot) {
                         if (snapshot.hasData && snapshot.data != null) {
                           return Image.memory(
@@ -4312,428 +5228,434 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
     // Width of the expanded item (Reduced to show adjacent clips)
     final double itemWidth = MediaQuery.of(context).size.width * 0.7;
-    final double height = 70.0;
+    const double trackHeight = 70.0;
+    const double outerHeight = 90.0;
 
     if (itemWidth.isNaN || maxMs.isNaN || itemWidth <= 0 || maxMs <= 0) {
-      return Container(height: 90, color: Colors.red);
+      return Container(height: outerHeight, color: Colors.red);
     }
 
     return Container(
       width: itemWidth,
-      height: 90,
+      height: outerHeight,
       margin: const EdgeInsets.symmetric(horizontal: 10),
-      padding: const EdgeInsets.symmetric(vertical: 10),
-      child: FutureBuilder<List<Uint8List>>(
-        future: _getTrimTimelineFuture(clip, maxMs.toInt()),
-        builder: (context, snapshot) {
-          final thumbs = snapshot.data ?? const <Uint8List>[];
-          return Builder(
-            builder: (timelineContext) => Stack(
-              children: [
-                Positioned.fill(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: thumbs.isEmpty
-                        ? Container(
-                            color: Colors.grey[800],
-                            child: const Center(
-                              child: Icon(Icons.movie, color: Colors.white24),
-                            ),
-                          )
-                        : Row(
-                            children: thumbs
-                                .map(
-                                  (thumb) => Expanded(
-                                    child: Image.memory(
-                                      thumb,
-                                      fit: BoxFit.cover,
+      alignment: Alignment.center,
+      child: SizedBox(
+        height: trackHeight,
+        child: FutureBuilder<List<Uint8List>>(
+          future: _getTrimTimelineFuture(clip, maxMs.toInt()),
+          builder: (context, snapshot) {
+            final thumbs = snapshot.data ?? const <Uint8List>[];
+            return Builder(
+              builder: (timelineContext) => Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Positioned.fill(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: thumbs.isEmpty
+                          ? Container(
+                              color: Colors.grey[800],
+                              child: const Center(
+                                child: Icon(Icons.movie, color: Colors.white24),
+                              ),
+                            )
+                          : Row(
+                              children: thumbs
+                                  .map(
+                                    (thumb) => Expanded(
+                                      child: Container(
+                                        color: Colors.black,
+                                        child: Image.memory(
+                                          thumb,
+                                          fit: BoxFit.contain,
+                                        ),
+                                      ),
                                     ),
-                                  ),
-                                )
-                                .toList(),
-                          ),
-                  ),
-                ),
-                Positioned.fill(
-                  child: Row(
-                    children: [
-                      Container(
-                        width: itemWidth * startPercent,
-                        height: height,
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.58),
-                          borderRadius: const BorderRadius.horizontal(
-                            left: Radius.circular(12),
-                          ),
-                        ),
-                      ),
-                      const Spacer(),
-                      Container(
-                        width: itemWidth * (1 - endPercent),
-                        height: height,
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.58),
-                          borderRadius: const BorderRadius.horizontal(
-                            right: Radius.circular(12),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Positioned(
-                  left: itemWidth * startPercent,
-                  width: itemWidth * (endPercent - startPercent),
-                  height: height,
-                  child: Container(
-                    decoration: BoxDecoration(
-                      border: Border.all(
-                        color: const Color(0xFFF2F20D),
-                        width: 3,
-                      ),
-                      borderRadius: BorderRadius.circular(8),
+                                  )
+                                  .toList(),
+                            ),
                     ),
                   ),
-                ),
-                Positioned(
-                  left: itemWidth * startPercent - 12,
-                  top: 0,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onHorizontalDragStart: (details) {
-                      if (_activeTrimTimelineInteraction ==
-                          _TrimTimelineInteraction.playhead) {
-                        return;
-                      }
-                      final timelineBox =
-                          timelineContext.findRenderObject() as RenderBox?;
-                      if (timelineBox != null) {
-                        final localX = timelineBox
-                            .globalToLocal(details.globalPosition)
-                            .dx;
-                        if ((localX - itemWidth * scrubberPercent).abs() <=
-                            18) {
+                  Positioned.fill(
+                    child: Row(
+                      children: [
+                        Container(
+                          width: itemWidth * startPercent,
+                          height: trackHeight,
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.58),
+                            borderRadius: const BorderRadius.horizontal(
+                              left: Radius.circular(12),
+                            ),
+                          ),
+                        ),
+                        const Spacer(),
+                        Container(
+                          width: itemWidth * (1 - endPercent),
+                          height: trackHeight,
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.58),
+                            borderRadius: const BorderRadius.horizontal(
+                              right: Radius.circular(12),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Positioned(
+                    left: itemWidth * startPercent,
+                    width: itemWidth * (endPercent - startPercent),
+                    height: trackHeight,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: const Color(0xFFF2F20D),
+                          width: 3,
+                        ),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    left: itemWidth * startPercent - 12,
+                    top: 0,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onHorizontalDragStart: (details) {
+                        if (_activeTrimTimelineInteraction ==
+                            _TrimTimelineInteraction.playhead) {
                           return;
                         }
-                      }
-                      if (_isTrimPlayheadDragging) {
-                        return;
-                      }
-                      if (_activeTrimTimelineInteraction ==
-                          _TrimTimelineInteraction.endHandle) {
-                        _commitTrimGesture();
-                      }
-                      _setTrimTimelineInteraction(
-                        _TrimTimelineInteraction.startHandle,
-                      );
-                      _isTrimStartHandleDragging = true;
-                      _isTrimEndHandleDragging = false;
-                      _startTrimGesture();
-                    },
-                    onHorizontalDragUpdate: (details) {
-                      if (_activeTrimTimelineInteraction !=
-                          _TrimTimelineInteraction.startHandle) {
-                        return;
-                      }
-                      final state = _trimUiStateNotifier?.value ?? uiState;
-                      double newStartMs =
-                          state.startMs +
-                          (details.delta.dx / itemWidth * state.maxMs);
-                      newStartMs = newStartMs.clamp(
-                        0.0,
-                        state.endMs - 100,
-                      );
-                      if ((newStartMs - clip.startTime.inMilliseconds).abs() <
-                          4) {
-                        return;
-                      }
-                      final newStart = Duration(
-                        milliseconds: newStartMs.toInt(),
-                      );
-                      if (newStart == clip.startTime) return;
-                      clip.startTime = newStart;
-                      _trimGestureDirty = true;
-                      final currentClamped = state.currentMs < newStartMs
-                          ? newStartMs
-                          : state.currentMs;
-                      _trimUiStateNotifier?.value = state.copyWith(
-                        startMs: newStartMs,
-                        currentMs: currentClamped,
-                      );
-                      _scheduleTrimPreviewSeek(
-                        newStart,
-                        reason: _TrimTimelineInteraction.startHandle,
-                      );
-                      _requestTrimUiRebuild();
-                    },
-                    onHorizontalDragEnd: (_) {
-                      if (_activeTrimTimelineInteraction !=
-                          _TrimTimelineInteraction.startHandle) {
-                        return;
-                      }
-                      _isTrimStartHandleDragging = false;
-                      _setTrimTimelineInteraction(
-                        _TrimTimelineInteraction.none,
-                      );
-                      _commitTrimGesture();
-                    },
-                    child: Container(
-                      width: 24,
-                      height: height,
-                      decoration: const BoxDecoration(
-                        color: Color(0xFFF2F20D),
-                        borderRadius: BorderRadius.horizontal(
-                          left: Radius.circular(8),
-                        ),
-                      ),
-                      child: const Center(
-                        child: Icon(Icons.chevron_left, size: 16),
-                      ),
-                    ),
-                  ),
-                ),
-                Positioned(
-                  left: itemWidth * endPercent - 12,
-                  top: 0,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onHorizontalDragStart: (details) {
-                      if (_activeTrimTimelineInteraction ==
-                          _TrimTimelineInteraction.playhead) {
-                        return;
-                      }
-                      final timelineBox =
-                          timelineContext.findRenderObject() as RenderBox?;
-                      if (timelineBox != null) {
-                        final localX = timelineBox
-                            .globalToLocal(details.globalPosition)
-                            .dx;
-                        if ((localX - itemWidth * scrubberPercent).abs() <=
-                            18) {
+                        final timelineBox =
+                            timelineContext.findRenderObject() as RenderBox?;
+                        if (timelineBox != null) {
+                          final localX = timelineBox
+                              .globalToLocal(details.globalPosition)
+                              .dx;
+                          if ((localX - itemWidth * scrubberPercent).abs() <=
+                              18) {
+                            return;
+                          }
+                        }
+                        if (_isTrimPlayheadDragging) {
                           return;
                         }
-                      }
-                      if (_isTrimPlayheadDragging) {
-                        return;
-                      }
-                      if (_activeTrimTimelineInteraction ==
-                          _TrimTimelineInteraction.startHandle) {
+                        if (_activeTrimTimelineInteraction ==
+                            _TrimTimelineInteraction.endHandle) {
+                          _commitTrimGesture();
+                        }
+                        _setTrimTimelineInteraction(
+                          _TrimTimelineInteraction.startHandle,
+                        );
+                        _isTrimStartHandleDragging = true;
+                        _isTrimEndHandleDragging = false;
+                        _startTrimGesture();
+                      },
+                      onHorizontalDragUpdate: (details) {
+                        if (_activeTrimTimelineInteraction !=
+                            _TrimTimelineInteraction.startHandle) {
+                          return;
+                        }
+                        final state = _trimUiStateNotifier?.value ?? uiState;
+                        double newStartMs =
+                            state.startMs +
+                            (details.delta.dx / itemWidth * state.maxMs);
+                        newStartMs = newStartMs.clamp(0.0, state.endMs - 100);
+                        if ((newStartMs - clip.startTime.inMilliseconds).abs() <
+                            4) {
+                          return;
+                        }
+                        final newStart = Duration(
+                          milliseconds: newStartMs.toInt(),
+                        );
+                        if (newStart == clip.startTime) return;
+                        clip.startTime = newStart;
+                        _trimGestureDirty = true;
+                        final currentClamped = state.currentMs < newStartMs
+                            ? newStartMs
+                            : state.currentMs;
+                        _trimUiStateNotifier?.value = state.copyWith(
+                          startMs: newStartMs,
+                          currentMs: currentClamped,
+                        );
+                        _scheduleTrimPreviewSeek(
+                          newStart,
+                          reason: _TrimTimelineInteraction.startHandle,
+                        );
+                        _requestTrimUiRebuild();
+                      },
+                      onHorizontalDragEnd: (_) {
+                        if (_activeTrimTimelineInteraction !=
+                            _TrimTimelineInteraction.startHandle) {
+                          return;
+                        }
+                        _isTrimStartHandleDragging = false;
+                        _setTrimTimelineInteraction(
+                          _TrimTimelineInteraction.none,
+                        );
                         _commitTrimGesture();
-                      }
-
-                      _setTrimTimelineInteraction(
-                        _TrimTimelineInteraction.endHandle,
-                      );
-                      _isTrimEndHandleDragging = true;
-                      _isTrimStartHandleDragging = false;
-                      _startTrimGesture();
-                    },
-                    onHorizontalDragUpdate: (details) {
-                      if (_activeTrimTimelineInteraction !=
-                          _TrimTimelineInteraction.endHandle) {
-                        return;
-                      }
-                      final state = _trimUiStateNotifier?.value ?? uiState;
-                      double newEndMs =
-                          state.endMs +
-                          (details.delta.dx / itemWidth * state.maxMs);
-                      newEndMs = newEndMs.clamp(
-                        state.startMs + 100,
-                        state.maxMs,
-                      );
-                      if ((newEndMs - clip.endTime.inMilliseconds).abs() < 4) {
-                        return;
-                      }
-                      final newEnd = Duration(milliseconds: newEndMs.toInt());
-                      if (newEnd == clip.endTime) return;
-                      clip.endTime = newEnd;
-                      _trimGestureDirty = true;
-                      final currentClamped = state.currentMs > newEndMs
-                          ? newEndMs
-                          : state.currentMs;
-                      _trimUiStateNotifier?.value = state.copyWith(
-                        endMs: newEndMs,
-                        currentMs: currentClamped,
-                      );
-                      _scheduleTrimPreviewSeek(
-                        newEnd,
-                        reason: _TrimTimelineInteraction.endHandle,
-                      );
-                      _requestTrimUiRebuild();
-                    },
-                    onHorizontalDragEnd: (_) {
-                      if (_activeTrimTimelineInteraction !=
-                          _TrimTimelineInteraction.endHandle) {
-                        return;
-                      }
-                      _isTrimEndHandleDragging = false;
-                      _setTrimTimelineInteraction(
-                        _TrimTimelineInteraction.none,
-                      );
-                      _commitTrimGesture();
-                    },
-                    child: Container(
-                      width: 24,
-                      height: height,
-                      decoration: const BoxDecoration(
-                        color: Color(0xFFF2F20D),
-                        borderRadius: BorderRadius.horizontal(
-                          right: Radius.circular(8),
+                      },
+                      child: Container(
+                        width: 24,
+                        height: trackHeight,
+                        decoration: const BoxDecoration(
+                          color: Color(0xFFF2F20D),
+                          borderRadius: BorderRadius.horizontal(
+                            left: Radius.circular(8),
+                          ),
                         ),
-                      ),
-                      child: const Center(
-                        child: Icon(Icons.chevron_right, size: 16),
+                        child: const Center(
+                          child: Icon(Icons.chevron_left, size: 16),
+                        ),
                       ),
                     ),
                   ),
-                ),
-                Positioned(
-                  left: (itemWidth * scrubberPercent) - 14,
-                  top: 0,
-                  bottom: 0,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onHorizontalDragStart: (details) {
-                      if (_activeTrimTimelineInteraction ==
-                          _TrimTimelineInteraction.startHandle) {
-                        _commitTrimGesture();
-                      }
-                      if (_activeTrimTimelineInteraction ==
-                          _TrimTimelineInteraction.endHandle) {
-                        _commitTrimGesture();
-                      }
+                  Positioned(
+                    left: itemWidth * endPercent - 12,
+                    top: 0,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onHorizontalDragStart: (details) {
+                        if (_activeTrimTimelineInteraction ==
+                            _TrimTimelineInteraction.playhead) {
+                          return;
+                        }
+                        final timelineBox =
+                            timelineContext.findRenderObject() as RenderBox?;
+                        if (timelineBox != null) {
+                          final localX = timelineBox
+                              .globalToLocal(details.globalPosition)
+                              .dx;
+                          if ((localX - itemWidth * scrubberPercent).abs() <=
+                              18) {
+                            return;
+                          }
+                        }
+                        if (_isTrimPlayheadDragging) {
+                          return;
+                        }
+                        if (_activeTrimTimelineInteraction ==
+                            _TrimTimelineInteraction.startHandle) {
+                          _commitTrimGesture();
+                        }
 
-                      final state = _trimUiStateNotifier?.value ?? uiState;
-                      _setTrimTimelineInteraction(
-                        _TrimTimelineInteraction.playhead,
-                      );
-                      _startTrimGesture();
-                      _isTrimPlayheadDragging = true;
-                      _isTrimStartHandleDragging = false;
-                      _isTrimEndHandleDragging = false;
-
-                      final timelineBox =
-                          timelineContext.findRenderObject() as RenderBox?;
-                      if (timelineBox == null) return;
-                      final localX = timelineBox
-                          .globalToLocal(details.globalPosition)
-                          .dx;
-                      final nextCurrentMs = _trimTimelineMsFromLocalX(
-                        localX: localX,
-                        state: state,
-                        timelineWidth: itemWidth,
-                      );
-                      _trimUiStateNotifier?.value = state.copyWith(
-                        currentMs: nextCurrentMs,
-                      );
-                      _trimGestureDirty = true;
-                      _scheduleTrimPreviewSeek(
-                        Duration(milliseconds: nextCurrentMs.toInt()),
-                        reason: _TrimTimelineInteraction.playhead,
-                      );
-                      _requestTrimUiRebuild();
-                    },
-                    onHorizontalDragUpdate: (details) {
-                      if (_activeTrimTimelineInteraction !=
-                          _TrimTimelineInteraction.playhead) {
-                        return;
-                      }
-                      final state = _trimUiStateNotifier?.value ?? uiState;
-                      final timelineBox =
-                          timelineContext.findRenderObject() as RenderBox?;
-                      if (timelineBox == null) return;
-                      final localX = timelineBox
-                          .globalToLocal(details.globalPosition)
-                          .dx;
-                      final nextCurrentMs = _trimTimelineMsFromLocalX(
-                        localX: localX,
-                        state: state,
-                        timelineWidth: itemWidth,
-                      );
-                      _trimUiStateNotifier?.value = state.copyWith(
-                        currentMs: nextCurrentMs,
-                      );
-                      _trimGestureDirty = true;
-                      _scheduleTrimPreviewSeek(
-                        Duration(milliseconds: nextCurrentMs.toInt()),
-                        reason: _TrimTimelineInteraction.playhead,
-                      );
-                      _requestTrimUiRebuild();
-                    },
-                    onHorizontalDragEnd: (_) {
-                      if (_activeTrimTimelineInteraction !=
-                          _TrimTimelineInteraction.playhead) {
-                        return;
-                      }
-                      _isTrimPlayheadDragging = false;
-                      _setTrimTimelineInteraction(
-                        _TrimTimelineInteraction.none,
-                      );
-                      _commitTrimGesture();
-                    },
-                    onTapDown: (details) {
-                      if (_isTrimStartHandleDragging ||
-                          _isTrimEndHandleDragging) {
+                        _setTrimTimelineInteraction(
+                          _TrimTimelineInteraction.endHandle,
+                        );
+                        _isTrimEndHandleDragging = true;
+                        _isTrimStartHandleDragging = false;
+                        _startTrimGesture();
+                      },
+                      onHorizontalDragUpdate: (details) {
+                        if (_activeTrimTimelineInteraction !=
+                            _TrimTimelineInteraction.endHandle) {
+                          return;
+                        }
+                        final state = _trimUiStateNotifier?.value ?? uiState;
+                        double newEndMs =
+                            state.endMs +
+                            (details.delta.dx / itemWidth * state.maxMs);
+                        newEndMs = newEndMs.clamp(
+                          state.startMs + 100,
+                          state.maxMs,
+                        );
+                        if ((newEndMs - clip.endTime.inMilliseconds).abs() <
+                            4) {
+                          return;
+                        }
+                        final newEnd = Duration(milliseconds: newEndMs.toInt());
+                        if (newEnd == clip.endTime) return;
+                        clip.endTime = newEnd;
+                        _trimGestureDirty = true;
+                        final currentClamped = state.currentMs > newEndMs
+                            ? newEndMs
+                            : state.currentMs;
+                        _trimUiStateNotifier?.value = state.copyWith(
+                          endMs: newEndMs,
+                          currentMs: currentClamped,
+                        );
+                        _scheduleTrimPreviewSeek(
+                          newEnd,
+                          reason: _TrimTimelineInteraction.endHandle,
+                        );
+                        _requestTrimUiRebuild();
+                      },
+                      onHorizontalDragEnd: (_) {
+                        if (_activeTrimTimelineInteraction !=
+                            _TrimTimelineInteraction.endHandle) {
+                          return;
+                        }
+                        _isTrimEndHandleDragging = false;
+                        _setTrimTimelineInteraction(
+                          _TrimTimelineInteraction.none,
+                        );
                         _commitTrimGesture();
+                      },
+                      child: Container(
+                        width: 24,
+                        height: trackHeight,
+                        decoration: const BoxDecoration(
+                          color: Color(0xFFF2F20D),
+                          borderRadius: BorderRadius.horizontal(
+                            right: Radius.circular(8),
+                          ),
+                        ),
+                        child: const Center(
+                          child: Icon(Icons.chevron_right, size: 16),
+                        ),
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    left: (itemWidth * scrubberPercent) - 14,
+                    top: 0,
+                    bottom: 0,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onHorizontalDragStart: (details) {
+                        if (_activeTrimTimelineInteraction ==
+                            _TrimTimelineInteraction.startHandle) {
+                          _commitTrimGesture();
+                        }
+                        if (_activeTrimTimelineInteraction ==
+                            _TrimTimelineInteraction.endHandle) {
+                          _commitTrimGesture();
+                        }
+
+                        final state = _trimUiStateNotifier?.value ?? uiState;
+                        _setTrimTimelineInteraction(
+                          _TrimTimelineInteraction.playhead,
+                        );
+                        _startTrimGesture();
+                        _isTrimPlayheadDragging = true;
                         _isTrimStartHandleDragging = false;
                         _isTrimEndHandleDragging = false;
-                      }
-                      _setTrimTimelineInteraction(
-                        _TrimTimelineInteraction.playhead,
-                      );
-                      _startTrimGesture();
-                      _isTrimPlayheadDragging = false;
-                      _isTrimStartHandleDragging = false;
-                      _isTrimEndHandleDragging = false;
-                      final state = _trimUiStateNotifier?.value ?? uiState;
-                      final timelineBox =
-                          timelineContext.findRenderObject() as RenderBox?;
-                      if (timelineBox == null) return;
-                      final localX = timelineBox
-                          .globalToLocal(details.globalPosition)
-                          .dx;
-                      final targetMs = _trimTimelineMsFromLocalX(
-                        localX: localX,
-                        state: state,
-                        timelineWidth: itemWidth,
-                      );
-                      _trimUiStateNotifier?.value = state.copyWith(
-                        currentMs: targetMs,
-                      );
-                      _trimGestureDirty = true;
-                      _scheduleTrimPreviewSeek(
-                        Duration(milliseconds: targetMs.toInt()),
-                        reason: _TrimTimelineInteraction.playhead,
-                      );
-                      _requestTrimUiRebuild();
-                    },
-                    child: Container(
-                      width: 28,
-                      alignment: Alignment.center,
-                      child: Center(
-                        child: Container(
-                          width: 2,
-                          height: 70,
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(999),
-                            boxShadow: const [
-                              BoxShadow(
-                                color: Colors.black45,
-                                blurRadius: 3,
-                                offset: Offset(0, 1),
-                              ),
-                            ],
+
+                        final timelineBox =
+                            timelineContext.findRenderObject() as RenderBox?;
+                        if (timelineBox == null) return;
+                        final localX = timelineBox
+                            .globalToLocal(details.globalPosition)
+                            .dx;
+                        final nextCurrentMs = _trimTimelineMsFromLocalX(
+                          localX: localX,
+                          state: state,
+                          timelineWidth: itemWidth,
+                        );
+                        _trimUiStateNotifier?.value = state.copyWith(
+                          currentMs: nextCurrentMs,
+                        );
+                        _trimGestureDirty = true;
+                        _scheduleTrimPreviewSeek(
+                          Duration(milliseconds: nextCurrentMs.toInt()),
+                          reason: _TrimTimelineInteraction.playhead,
+                        );
+                        _requestTrimUiRebuild();
+                      },
+                      onHorizontalDragUpdate: (details) {
+                        if (_activeTrimTimelineInteraction !=
+                            _TrimTimelineInteraction.playhead) {
+                          return;
+                        }
+                        final state = _trimUiStateNotifier?.value ?? uiState;
+                        final timelineBox =
+                            timelineContext.findRenderObject() as RenderBox?;
+                        if (timelineBox == null) return;
+                        final localX = timelineBox
+                            .globalToLocal(details.globalPosition)
+                            .dx;
+                        final nextCurrentMs = _trimTimelineMsFromLocalX(
+                          localX: localX,
+                          state: state,
+                          timelineWidth: itemWidth,
+                        );
+                        _trimUiStateNotifier?.value = state.copyWith(
+                          currentMs: nextCurrentMs,
+                        );
+                        _trimGestureDirty = true;
+                        _scheduleTrimPreviewSeek(
+                          Duration(milliseconds: nextCurrentMs.toInt()),
+                          reason: _TrimTimelineInteraction.playhead,
+                        );
+                        _requestTrimUiRebuild();
+                      },
+                      onHorizontalDragEnd: (_) {
+                        if (_activeTrimTimelineInteraction !=
+                            _TrimTimelineInteraction.playhead) {
+                          return;
+                        }
+                        _isTrimPlayheadDragging = false;
+                        _setTrimTimelineInteraction(
+                          _TrimTimelineInteraction.none,
+                        );
+                        _commitTrimGesture();
+                      },
+                      onTapDown: (details) {
+                        if (_isTrimStartHandleDragging ||
+                            _isTrimEndHandleDragging) {
+                          _commitTrimGesture();
+                          _isTrimStartHandleDragging = false;
+                          _isTrimEndHandleDragging = false;
+                        }
+                        _setTrimTimelineInteraction(
+                          _TrimTimelineInteraction.playhead,
+                        );
+                        _startTrimGesture();
+                        _isTrimPlayheadDragging = false;
+                        _isTrimStartHandleDragging = false;
+                        _isTrimEndHandleDragging = false;
+                        final state = _trimUiStateNotifier?.value ?? uiState;
+                        final timelineBox =
+                            timelineContext.findRenderObject() as RenderBox?;
+                        if (timelineBox == null) return;
+                        final localX = timelineBox
+                            .globalToLocal(details.globalPosition)
+                            .dx;
+                        final targetMs = _trimTimelineMsFromLocalX(
+                          localX: localX,
+                          state: state,
+                          timelineWidth: itemWidth,
+                        );
+                        _trimUiStateNotifier?.value = state.copyWith(
+                          currentMs: targetMs,
+                        );
+                        _trimGestureDirty = true;
+                        _scheduleTrimPreviewSeek(
+                          Duration(milliseconds: targetMs.toInt()),
+                          reason: _TrimTimelineInteraction.playhead,
+                        );
+                        _requestTrimUiRebuild();
+                      },
+                      child: Container(
+                        width: 28,
+                        alignment: Alignment.center,
+                        child: Center(
+                          child: Container(
+                            width: 2,
+                            height: trackHeight,
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(999),
+                              boxShadow: const [
+                                BoxShadow(
+                                  color: Colors.black45,
+                                  blurRadius: 3,
+                                  offset: Offset(0, 1),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
                     ),
                   ),
-                ),
-              ],
-            ),
-          );
-        },
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -4742,9 +5664,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     VlogClip clip,
     int durationMs,
   ) {
-    final clipPath = clip.path;
+    final clipPath = _timelineSourcePathForClip(clip);
     final count = VideoManager.trimTimelineThumbCount;
-    final key = '$clipPath|$durationMs|$count';
+    final key = '${clip.path}|$clipPath|$durationMs|$count';
     final cached = _trimTimelineFutureCache[key];
     if (cached != null) {
       return cached;
@@ -4786,9 +5708,15 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   Future<void> _moveToAdjacentClip(int direction) async {
-    if (_clips.isEmpty || _isDisposed || _isPlaybackLockedForEditing) return;
+    if (_clips.isEmpty || _isDisposed || !_canUseTopClipNavigation) return;
     final target = (_currentClipIndex + direction).clamp(0, _clips.length - 1);
     if (target == _currentClipIndex) return;
+    if (_isTransformModeActive) {
+      _commitTransformGesture();
+    }
+    if (_isBrightnessMode) {
+      _commitBrightnessGesture();
+    }
     await _loadClip(target, autoPlay: _isPlaying);
   }
 
@@ -4808,12 +5736,18 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   // 'Done' / 'Export' 버튼 클릭 시 호출
-  void _handleExport() {
+  Future<void> _handleExport() async {
     if (_isExportInProgress) return;
+    final exportTier = await _refreshSubscriptionRuntimeTier(
+      reason: 'export_button',
+      notifyUser: true,
+    );
+    if (!mounted || _isDisposed) return;
 
-    // Safety Net: Check all files before export dialog
+    // Safety Net: Check local files before export dialog.
+    // Cloud-only clips are materialized after the user confirms export.
     for (final clip in _clips) {
-      if (!File(clip.path).existsSync()) {
+      if (!_isCloudOnlyClipPath(clip.path) && !File(clip.path).existsSync()) {
         showDialog(
           context: context,
           builder: (context) => AlertDialog(
@@ -4837,18 +5771,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         return;
       }
     }
-    _showExportDialog();
+    _showExportDialog(exportTier);
   }
 
-  void _showExportDialog() {
+  void _showExportDialog(UserTier exportTier) {
     if (_isExportInProgress) return;
 
-    final userStatus = Provider.of<UserStatusManager>(context, listen: false);
-    final userTier = userStatus.currentTier;
-    String selectedQuality = clampExportQualityForTier(
-      requestedQuality: normalizeExportQuality(widget.project.quality),
-      tier: userTier,
-    );
+    final exportQualities = availableExportQualities(exportTier);
+    String selectedQuality = defaultExportQuality(exportTier);
 
     showDialog(
       context: context,
@@ -4863,38 +5793,21 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               ),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
-                children: [
-                  _buildQualityOption(
-                    label: "720p (Basic)",
-                    value: kQuality720p,
-                    selected: selectedQuality == kQuality720p,
-                    enabled: userStatus.currentTier == UserTier.free,
-                    onChanged: (val) {
-                      setStateDialog(() => selectedQuality = val);
-                      _updateProjectQuality(val);
-                    },
-                  ),
-                  _buildQualityOption(
-                    label: "1080p",
-                    value: kQuality1080p,
-                    selected: selectedQuality == kQuality1080p,
-                    enabled: userStatus.isStandardOrAbove(),
-                    onChanged: (val) {
-                      setStateDialog(() => selectedQuality = val);
-                      _updateProjectQuality(val);
-                    },
-                  ),
-                  _buildQualityOption(
-                    label: "4K",
-                    value: kQuality4k,
-                    selected: selectedQuality == kQuality4k,
-                    enabled: userStatus.isPremium(),
-                    onChanged: (val) {
-                      setStateDialog(() => selectedQuality = val);
-                      _updateProjectQuality(val);
-                    },
-                  ),
-                ],
+                children: exportQualities
+                    .map(
+                      (quality) => _buildQualityOption(
+                        label: _exportQualityOptionLabel(quality),
+                        value: quality,
+                        selected: selectedQuality == quality,
+                        enabled: true,
+                        onChanged: (val) {
+                          final clamped = clampExportQuality(exportTier, val);
+                          setStateDialog(() => selectedQuality = clamped);
+                          _updateProjectQuality(clamped, tier: exportTier);
+                        },
+                      ),
+                    )
+                    .toList(),
               ),
               actions: [
                 TextButton(
@@ -4912,10 +5825,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   onPressed: () {
                     Navigator.pop(context);
                     _performNativeExport(
-                      clampExportQualityForTier(
-                        requestedQuality: selectedQuality,
-                        tier: userTier,
-                      ),
+                      clampExportQuality(exportTier, selectedQuality),
                     );
                   },
                   child: const Text("Export"),
@@ -4928,14 +5838,30 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     );
   }
 
-  void _updateProjectQuality(String newQuality) {
-    final normalized = normalizeExportQuality(newQuality);
+  String _exportQualityOptionLabel(String quality) {
+    final label = exportQualityLabel(quality);
+    if (quality == kQuality720p) return '$label (Basic)';
+    return label;
+  }
+
+  String _runtimeTierKey(UserTier tier) {
+    switch (normalizeRuntimeUserTier(tier)) {
+      case UserTier.standard:
+        return kUserTierStandard;
+      case UserTier.premium:
+        return kUserTierStandard;
+      case UserTier.free:
+        return kUserTierFree;
+    }
+  }
+
+  void _updateProjectQuality(String newQuality, {UserTier? tier}) {
+    final userStatus = Provider.of<UserStatusManager>(context, listen: false);
+    final resolvedTier = tier ?? _effectiveTierForEditWrite(userStatus);
+    final normalized = clampExportQuality(resolvedTier, newQuality);
     if (widget.project.quality != normalized) {
       widget.project.quality = normalized;
-      Provider.of<VideoManager>(
-        context,
-        listen: false,
-      ).saveProject(widget.project);
+      unawaited(_enqueueAutosave(reason: 'quality_change'));
     }
   }
 
@@ -4968,13 +5894,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     if (_isExportInProgress) return;
 
     final videoManager = Provider.of<VideoManager>(context, listen: false);
-    final userStatus = Provider.of<UserStatusManager>(context, listen: false);
-    final userTier = userStatus.currentTier;
-    final finalQuality = clampExportQualityForTier(
-      requestedQuality: quality,
-      tier: userTier,
+    var exportTier = await _refreshSubscriptionRuntimeTier(
+      reason: 'export_start',
+      notifyUser: true,
     );
-    final userTierKey = userTierKeyFromManager(userStatus);
+    var finalQuality = clampExportQuality(exportTier, quality);
+    var userTierKey = _runtimeTierKey(exportTier);
 
     if (!mounted || _isDisposed) return;
     setState(() {
@@ -4999,34 +5924,80 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       return;
     }
 
-    _setExportProgress(
-      phase: 'rendering',
-      label: '내보내기 렌더링 중',
-      progress: _defaultExportProgressForPhase('rendering'),
+    exportTier = await _refreshSubscriptionRuntimeTier(
+      reason: 'export_pre_save',
+      notifyUser: true,
     );
+    finalQuality = clampExportQuality(exportTier, finalQuality);
+    userTierKey = _runtimeTierKey(exportTier);
 
     debugPrint('[EditScreen][Export] open loading dialog mounted=$mounted');
+    final exportSessionCachePaths = <String>[];
 
     try {
       // Sync State to Project before Export
       // widget.project.clips is already updated via reference in _clips (if we modified objects directly)
       // If _clips are copies, we'd need to sync back.
       // Assuming _clips are references or we need to update project.clips:
-      widget.project.clips = _clips;
+      widget.project.clips = _clips.map((clip) => clip.copyWith()).toList();
 
       widget.project.bgmPath = _currentState.bgmPath;
       widget.project.bgmVolume = _currentState.bgmVolume;
       widget.project.quality = finalQuality;
+      widget.project.brightnessAdjustmentScope =
+          kBrightnessAdjustmentScopeProjectWide;
+      widget.project.brightnessAdjustments = normalizeBrightnessAdjustments(
+        _brightnessAdjustments,
+      );
 
-      await videoManager.saveProject(widget.project);
+      await _runExportPreflight(
+        videoManager: videoManager,
+        quality: finalQuality,
+      );
+
+      _setExportProgress(
+        phase: 'materialize',
+        label: 'Preparing export sources',
+        progress: 0.32,
+      );
+
+      final exportClips = await _resolveExportClips();
+      if (exportClips == null || _isExportCancelRequested) {
+        await _closeExportProgressDialog();
+        return;
+      }
+      exportSessionCachePaths.addAll(
+        exportClips
+            .map((clip) => clip.path)
+            .where((path) => path.contains('export_session_cache')),
+      );
+
+      final hasCachePathInProject = widget.project.clips.any(
+        (clip) => clip.path.contains('cloud_clip_session_cache'),
+      );
+      debugPrint(
+        '[EditScreen][Export][CloudClip][inputs_ready] '
+        'clipCount=${exportClips.length} '
+        'cloudOnlyProjectClipCount=${widget.project.clips.where((clip) => _isCloudOnlyClipPath(clip.path)).length} '
+        'materializedClipCount=${exportClips.where((clip) => clip.path.contains('export_session_cache')).length} '
+        'projectHasCachePath=$hasCachePathInProject',
+      );
+
+      _setExportProgress(
+        phase: 'rendering',
+        label: '내보내기 렌더링 중',
+        progress: _defaultExportProgressForPhase('rendering'),
+      );
 
       final resultPath = await videoManager.exportVlog(
-        clips: widget.project.clips,
+        clips: exportClips,
         audioConfig: widget.project.audioConfig,
         bgmPath: widget.project.bgmPath,
         bgmVolume: widget.project.bgmVolume,
         quality: widget.project.quality,
         userTier: userTierKey,
+        canvasAspectRatioPreset: widget.project.canvasAspectRatioPreset,
+        brightnessAdjustments: _currentState.brightnessAdjustments,
         mergeSessionId: _editExportSessionId,
         debugTag: 'VideoEditScreen_export',
         isCancelRequested: () => _isExportCancelRequested,
@@ -5059,19 +6030,55 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           progress: _defaultExportProgressForPhase('done'),
         );
         await _closeExportProgressDialog();
+        if (!mounted || _isDisposed) return;
         Fluttertoast.showToast(msg: "Vlog가 생성되어 갤러리에 저장되었습니다. 🎉");
-        Navigator.pop(context, resultPath); // Return export result path for in-app preview
+        Navigator.pop(
+          context,
+          resultPath,
+        ); // Return export result path for in-app preview
       } else {
         await _closeExportProgressDialog();
+        if (!mounted || _isDisposed) return;
         Fluttertoast.showToast(msg: "Vlog 생성에 실패했습니다.");
         Navigator.pop(context, false);
       }
+    } on _ExportClipResolveException catch (e) {
+      if (mounted) {
+        await _closeExportProgressDialog();
+      }
+      final reason = e.cloudFailureCode?.name ?? e.message;
+      final isCloudFailure = e.cloudFailureCode != null;
+      _markExportSourceFailureForUi(e);
+      Fluttertoast.showToast(
+        msg: isCloudFailure
+            ? "Cloud Clip을 불러오지 못해 내보내기를 진행할 수 없습니다. ($reason)"
+            : "원본 파일이 손상되어 내보낼 수 없습니다. ($reason)",
+      );
+      debugPrint(
+        '[EditScreen][Export][CloudClip][failed] '
+        'index=${e.index} reason=$reason',
+      );
+    } on _ExportPreflightException catch (e) {
+      if (mounted) {
+        await _closeExportProgressDialog();
+      }
+      Fluttertoast.showToast(msg: "Export preflight failed: ${e.message}");
+      debugPrint(
+        '[EditScreen][Export][Preflight][failed] '
+        'code=${e.code} message=${e.message}',
+      );
     } catch (e) {
       if (mounted) {
         await _closeExportProgressDialog();
       }
       Fluttertoast.showToast(msg: "Error: $e");
     } finally {
+      unawaited(
+        _cleanupSessionCacheBestEffort(
+          trigger: 'export_end',
+          protectedPaths: exportSessionCachePaths,
+        ),
+      );
       if (mounted) {
         setState(() {
           _isExportInProgress = false;
@@ -5427,7 +6434,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   const SizedBox(height: 12),
                   Wrap(
                     spacing: 8,
-                    children: ['r9_16', 'r1_1', 'r16_9'].map((preset) {
+                    children: ['r9_16', 'r3_4', 'r4_3', 'r1_1', 'r16_9'].map((
+                      preset,
+                    ) {
                       final selected = selectedAspect == preset;
                       return ChoiceChip(
                         label: Text(_canvasAspectLabel(preset)),
@@ -5484,7 +6493,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     );
   }
 
+  // ignore: unused_element
   void _showFilterDialog() {
+    if (!_enableDormantEditFeatures) return;
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.black,
@@ -5539,6 +6550,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   // For brevity, I'll need to adapt _showAdvancedCaptionDialog similarly.
   // ignore: unused_element
   Future<void> _showAdvancedCaptionDialog({SubtitleModel? editing}) async {
+    if (!_enableDormantEditFeatures) return;
     final controller = TextEditingController(text: editing?.text ?? '');
 
     final result = await showDialog<String>(
@@ -5605,6 +6617,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   // ignore: unused_element
   void _showStickerLibrary() {
+    if (!_enableDormantEditFeatures) return;
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.black,
@@ -5643,6 +6656,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   void _addSticker(String assetPath) {
+    if (!_enableDormantEditFeatures) return;
     final nextStickers = List<StickerModel>.from(_stickers)
       ..add(StickerModel(imagePath: assetPath, dx: 0.5, dy: 0.5));
 

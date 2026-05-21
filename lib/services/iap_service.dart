@@ -731,13 +731,13 @@ class IAPService {
 
         print(
           '[IAPService][OrderId] android 후보 상태: '
-          'orderIdNull=${orderId == null} orderIdEmpty=${orderId?.isEmpty ?? true} '
+          'orderIdEmpty=${orderId.isEmpty} '
           'purchaseIdNull=${purchaseId == null} purchaseIdEmpty=${purchaseId?.isEmpty ?? true} '
           'transactionDateNull=${transactionDate == null} '
           'transactionDateEmpty=${transactionDate?.isEmpty ?? true}',
         );
 
-        if (orderId != null && orderId.isNotEmpty) {
+        if (orderId.isNotEmpty) {
           return _redactedOrderId(orderId);
         }
 

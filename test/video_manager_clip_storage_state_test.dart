@@ -1,10 +1,13 @@
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:three_s/managers/video_manager.dart';
+import 'package:three_s/models/vlog_project.dart';
 import 'package:three_s/services/cloud_service.dart';
+import 'package:three_s/services/local_index_service.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -81,6 +84,100 @@ void main() {
     );
     expect(counts['localFileCount'], 0);
     expect(counts['cloudOnlyCount'], 1);
+  });
+
+  test(
+    'clearUserScopedLocalCache removes stale cloud-only local index entries',
+    () async {
+      const placeholder = 'cloud_only://album/video-id/file.mp4';
+      final localClip = await createClip('local_retained.mp4');
+      final index = LocalIndexService();
+      await index.saveEntries([
+        LocalIndexEntry(
+          id: 'cloud-video-id',
+          type: 'clip',
+          pathOrKey: placeholder,
+          ownerAccountId: 'old-uid',
+          lockState: 'owned',
+          updatedAt: DateTime.utc(2026),
+          cloudVideoId: 'cloud-video-id',
+          cloudStoragePath: 'users/old-uid/videos/cloud-video-id/file.mp4',
+          cloudStorageTier: 'cloud',
+          cloudState: 'completed',
+          cloudFileName: 'file.mp4',
+          cloudFileSize: 4,
+          albumName: 'album',
+        ),
+        LocalIndexEntry(
+          id: 'local-id',
+          type: 'clip',
+          pathOrKey: localClip.path,
+          ownerAccountId: 'old-uid',
+          lockState: 'owned',
+          updatedAt: DateTime.utc(2026),
+          albumName: 'album',
+        ),
+      ]);
+      manager.recordedVideoPaths = [placeholder, localClip.path];
+
+      await manager.clearUserScopedLocalCache(trigger: 'test');
+
+      final entries = await index.loadEntries();
+      expect(entries.map((entry) => entry.pathOrKey), [localClip.path]);
+      expect(manager.recordedVideoPaths, [localClip.path]);
+    },
+  );
+
+  test('cloud_only duration uses cloud metadata without local file', () async {
+    const placeholder = 'cloud_only://album/video-id/file.mp4';
+    manager.debugSetCloudMetadataForPath(
+      placeholder,
+      VideoMetadata.fromMap('video-id', const {
+        'uid': 'uid-redacted',
+        'fileName': 'file.mp4',
+        'storagePath': 'storage/path/redacted',
+        'albumName': 'album',
+        'fileSize': 8,
+        'uploadStatus': 'completed',
+        'durationMs': 2100,
+      }),
+    );
+
+    final duration = await manager.getVideoDuration(placeholder);
+
+    expect(duration, const Duration(milliseconds: 2100));
+  });
+
+  test('getThumbnail uses completed cloud thumbnail metadata', () async {
+    const placeholder = 'cloud_only://album/video-id/file.mp4';
+    var fetchCount = 0;
+    manager.debugSetCloudMetadataForPath(
+      placeholder,
+      VideoMetadata.fromMap('video-id', const {
+        'uid': 'uid-redacted',
+        'fileName': 'file.mp4',
+        'storagePath': 'storage/path/redacted',
+        'albumName': 'album',
+        'fileSize': 8,
+        'uploadStatus': 'completed',
+        'thumbnailStoragePath': 'storage/path/thumb',
+        'thumbnailStatus': 'completed',
+      }),
+    );
+    manager.debugSetCloudThumbnailFetcher((_) async {
+      fetchCount++;
+      return Uint8List.fromList(const [7, 8, 9]);
+    });
+
+    final bytes = await manager.getThumbnail(placeholder);
+
+    expect(bytes, const [7, 8, 9]);
+    expect(fetchCount, 1);
+    expect(
+      manager
+          .getCloudThumbnailRuntimeDebugCounts()['cloud_thumbnail_fetch_success_count'],
+      1,
+    );
   });
 
   test('album clip counts include local and cloud-only clips', () async {
@@ -586,4 +683,108 @@ void main() {
       expect(counts['uploadableCount'], 1);
     },
   );
+
+  test(
+    'saveProject restores cloud placeholder before persisting session cache path',
+    () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProviderChannel, (call) async {
+            if (call.method == 'getApplicationDocumentsDirectory') {
+              return tempDir.path;
+            }
+            return null;
+          });
+
+      const placeholder = 'cloud_only://album/video-id/file.mp4';
+      final metadata = VideoMetadata.fromMap('video-id', const {
+        'uid': 'uid-redacted',
+        'fileName': 'file.mp4',
+        'storagePath': 'storage/path/redacted',
+        'albumName': 'album',
+        'fileSize': 8,
+        'uploadStatus': 'completed',
+      });
+      manager.debugSetCloudMetadataForPath(placeholder, metadata);
+
+      final cachePath =
+          '${tempDir.path}${Platform.pathSeparator}cloud_clip_session_cache'
+          '${Platform.pathSeparator}edit_session_cache'
+          '${Platform.pathSeparator}video-id'
+          '${Platform.pathSeparator}file.mp4';
+      final now = DateTime(2026, 5, 21);
+      final project = VlogProject(
+        id: 'project-session-cache',
+        title: 'Session Cache Guard',
+        clips: <VlogClip>[VlogClip(path: cachePath)],
+        createdAt: now,
+        updatedAt: now,
+      );
+
+      final result = await manager.saveProject(
+        project,
+        reason: 'test_session_cache_guard',
+      );
+      expect(result.localStatus, ProjectSaveLocalStatus.success);
+      expect(result.cloudStatus, ProjectSaveCloudStatus.skippedGuest);
+      expect(result.localSaved, isTrue);
+      expect(result.cloudSaved, isFalse);
+
+      final file = File(
+        '${tempDir.path}${Platform.pathSeparator}vlog_projects'
+        '${Platform.pathSeparator}${project.id}.json',
+      );
+      expect(await file.exists(), isTrue);
+
+      final json =
+          jsonDecode(await file.readAsString()) as Map<String, Object?>;
+      final clips = json['clips'] as List<Object?>;
+      final firstClip = clips.first as Map<String, Object?>;
+      expect(firstClip['path'], placeholder);
+      expect('${firstClip['path']}', isNot(contains('edit_session_cache')));
+      expect(project.clips.first.path, placeholder);
+    },
+  );
+
+  test('saveProject blocks unresolved export session cache paths', () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(pathProviderChannel, (call) async {
+          if (call.method == 'getApplicationDocumentsDirectory') {
+            return tempDir.path;
+          }
+          return null;
+        });
+
+    final cachePath =
+        '${tempDir.path}${Platform.pathSeparator}export_session_cache'
+        '${Platform.pathSeparator}detached-video'
+        '${Platform.pathSeparator}file.mp4';
+    final now = DateTime(2026, 5, 21);
+    final project = VlogProject(
+      id: 'project-unresolved-session-cache',
+      title: 'Unresolved Session Cache Guard',
+      clips: <VlogClip>[VlogClip(path: cachePath)],
+      createdAt: now,
+      updatedAt: now,
+    );
+
+    final result = await manager.saveProject(
+      project,
+      reason: 'test_unresolved_session_cache_guard',
+    );
+
+    expect(result.localStatus, ProjectSaveLocalStatus.blocked);
+    expect(
+      result.cloudStatus,
+      ProjectSaveCloudStatus.skippedSessionCachePathGuard,
+    );
+    expect(result.localSaved, isFalse);
+    expect(result.cloudSaved, isFalse);
+    expect(project.clips.first.path, cachePath);
+
+    final file = File(
+      '${tempDir.path}${Platform.pathSeparator}vlog_projects'
+      '${Platform.pathSeparator}${project.id}.json',
+    );
+    expect(await file.exists(), isFalse);
+  });
 }

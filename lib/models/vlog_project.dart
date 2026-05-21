@@ -1,4 +1,5 @@
 import '../utils/quality_policy.dart';
+import '../utils/brightness_adjustment_policy.dart';
 
 class VlogClip {
   final String id; // Unique ID
@@ -154,7 +155,7 @@ class VlogProject {
   audioConfig; // Deprecated, kept for compatibility if needed, or moved to Clip?
   String? bgmPath;
   double bgmVolume;
-  String quality; // '720p', '1080p', '4k'
+  String quality; // '720p' or '1080p'. Legacy '4k' restores as '1080p'.
   bool isFavorite;
   String folderName;
   String? ownerAccountId;
@@ -164,6 +165,8 @@ class VlogProject {
   DateTime? cloudSyncedAt;
   String canvasAspectRatioPreset;
   String canvasBackgroundMode;
+  String brightnessAdjustmentScope;
+  Map<String, double> brightnessAdjustments;
   DateTime createdAt;
   DateTime updatedAt;
 
@@ -184,9 +187,16 @@ class VlogProject {
     this.cloudSyncedAt,
     this.canvasAspectRatioPreset = 'r9_16',
     this.canvasBackgroundMode = 'crop_fill',
+    String? brightnessAdjustmentScope,
+    Map<String, double>? brightnessAdjustments,
     required this.createdAt,
     required this.updatedAt,
-  });
+  }) : brightnessAdjustmentScope = normalizeBrightnessAdjustmentScope(
+         brightnessAdjustmentScope,
+       ),
+       brightnessAdjustments = normalizeBrightnessAdjustments(
+         brightnessAdjustments,
+       );
 
   // JSON -> Object
   factory VlogProject.fromJson(Map<String, dynamic> json) {
@@ -210,7 +220,7 @@ class VlogProject {
       audioConfig: Map<String, double>.from(json['audioConfig'] ?? {}),
       bgmPath: json['bgmPath'],
       bgmVolume: (json['bgmVolume'] as num?)?.toDouble() ?? 0.5,
-      quality: normalizeExportQuality(json['quality'] as String?),
+      quality: restoreProjectExportQuality(json['quality'] as String?),
       isFavorite: json['isFavorite'] as bool? ?? false,
       folderName: json['folderName'] ?? '기본',
       ownerAccountId: json['ownerAccountId'] as String?,
@@ -224,6 +234,12 @@ class VlogProject {
           json['canvasAspectRatioPreset'] as String? ?? 'r9_16',
       canvasBackgroundMode:
           json['canvasBackgroundMode'] as String? ?? 'crop_fill',
+      brightnessAdjustmentScope: normalizeBrightnessAdjustmentScope(
+        json['brightnessAdjustmentScope'] as String?,
+      ),
+      brightnessAdjustments: brightnessAdjustmentsForProjectJson(
+        json['brightnessAdjustments'],
+      ),
       createdAt: DateTime.parse(json['createdAt']),
       updatedAt: DateTime.parse(json['updatedAt']),
     );
@@ -249,6 +265,10 @@ class VlogProject {
       'cloudSyncedAt': cloudSyncedAt?.toIso8601String(),
       'canvasAspectRatioPreset': canvasAspectRatioPreset,
       'canvasBackgroundMode': canvasBackgroundMode,
+      'brightnessAdjustmentScope': kBrightnessAdjustmentScopeProjectWide,
+      'brightnessAdjustments': brightnessAdjustmentsForProjectJson(
+        brightnessAdjustments,
+      ),
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
     };
@@ -271,6 +291,8 @@ class VlogProject {
     DateTime? cloudSyncedAt,
     String? canvasAspectRatioPreset,
     String? canvasBackgroundMode,
+    String? brightnessAdjustmentScope,
+    Map<String, double>? brightnessAdjustments,
     DateTime? updatedAt,
   }) {
     return VlogProject(
@@ -293,6 +315,12 @@ class VlogProject {
       canvasAspectRatioPreset:
           canvasAspectRatioPreset ?? this.canvasAspectRatioPreset,
       canvasBackgroundMode: canvasBackgroundMode ?? this.canvasBackgroundMode,
+      brightnessAdjustmentScope: normalizeBrightnessAdjustmentScope(
+        brightnessAdjustmentScope ?? this.brightnessAdjustmentScope,
+      ),
+      brightnessAdjustments:
+          brightnessAdjustments ??
+          Map<String, double>.from(this.brightnessAdjustments),
       createdAt: createdAt,
       updatedAt: updatedAt ?? DateTime.now(), // 수정 시 시간 갱신
     );

@@ -51,8 +51,12 @@ class NotificationSettingsService {
     'camera': 0,
     'library': 1,
     'album': 1,
-    'profile': 2,
-    'settings': 2,
+    'project': 2,
+    'projects': 2,
+    'vlog': 2,
+    'vlog_project': 2,
+    'profile': 3,
+    'settings': 3,
   };
 
   static const Map<NotificationCategory, bool> _categoryDefaults = {
@@ -174,7 +178,9 @@ class NotificationSettingsService {
 
     if (!shouldEnable || !granted) {
       for (final category in NotificationCategory.values) {
-        await FirebaseMessaging.instance.unsubscribeFromTopic(category.topicKey);
+        await FirebaseMessaging.instance.unsubscribeFromTopic(
+          category.topicKey,
+        );
       }
       return;
     }
@@ -184,7 +190,9 @@ class NotificationSettingsService {
       if (isOn) {
         await FirebaseMessaging.instance.subscribeToTopic(category.topicKey);
       } else {
-        await FirebaseMessaging.instance.unsubscribeFromTopic(category.topicKey);
+        await FirebaseMessaging.instance.unsubscribeFromTopic(
+          category.topicKey,
+        );
       }
     }
 
@@ -211,7 +219,7 @@ class NotificationSettingsService {
   /// 알림 payload에서 메인 탭 인덱스를 안전하게 해석한다.
   ///
   /// 지원 키: tab, targetTab, route, screen
-  /// 지원 값: capture/camera, library/album, profile/settings 또는 0/1/2
+  /// 지원 값: capture/camera, library/album, project/vlog, profile/settings 또는 0/1/2/3
   int? resolveMainTabIndexFromPayload(Map<String, dynamic>? payload) {
     if (payload == null || payload.isEmpty) {
       return null;
@@ -223,7 +231,7 @@ class NotificationSettingsService {
 
       if (raw is num) {
         final index = raw.toInt();
-        if (index >= 0 && index <= 2) {
+        if (index >= 0 && index <= 3) {
           return index;
         }
         continue;
@@ -233,7 +241,7 @@ class NotificationSettingsService {
       if (normalized.isEmpty) continue;
 
       final parsedAsInt = int.tryParse(normalized);
-      if (parsedAsInt != null && parsedAsInt >= 0 && parsedAsInt <= 2) {
+      if (parsedAsInt != null && parsedAsInt >= 0 && parsedAsInt <= 3) {
         return parsedAsInt;
       }
 
@@ -246,4 +254,3 @@ class NotificationSettingsService {
     return null;
   }
 }
-

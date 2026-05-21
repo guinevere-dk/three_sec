@@ -99,4 +99,55 @@ void main() {
       expect(isUploadMoveEligibleFromPrePendingState(state), isFalse);
     }
   });
+
+  test(
+    'download transfer button uses read permission without write permission',
+    () {
+      expect(
+        shouldShowLibraryClipTransferButton(
+          action: LibraryClipTransferAction.download,
+          isGuest: false,
+          canStartNewCloudWrite: false,
+          canReadExistingCloudClips: true,
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'download transfer button is hidden for never-paid free and guest users',
+    () {
+      expect(
+        shouldShowLibraryClipTransferButton(
+          action: LibraryClipTransferAction.download,
+          isGuest: false,
+          canStartNewCloudWrite: false,
+          canReadExistingCloudClips: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldShowLibraryClipTransferButton(
+          action: LibraryClipTransferAction.download,
+          isGuest: true,
+          canStartNewCloudWrite: true,
+          canReadExistingCloudClips: true,
+        ),
+        isFalse,
+      );
+    },
+  );
+
+  test('upload transfer button still requires write permission', () {
+    expect(
+      shouldShowLibraryClipTransferButton(
+        action: LibraryClipTransferAction.upload,
+        isGuest: false,
+        canStartNewCloudWrite: false,
+        canReadExistingCloudClips: true,
+      ),
+      isFalse,
+    );
+  });
 }

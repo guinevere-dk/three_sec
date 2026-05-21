@@ -2165,6 +2165,8 @@ class AuthService {
     );
     print('[AuthService][Session] handleLogoutLocalData done');
 
+    await VideoManager().clearUserScopedLocalCache(trigger: 'session_end');
+
     // 사용자 종속 캐시 정리
     await _clearUserScopedLocalState();
   }
@@ -2177,6 +2179,7 @@ class AuthService {
 
       await userManager.resetToFree();
       await userManager.setUserId(_generateGuestUserId());
+      await VideoManager().clearUserScopedLocalCache(trigger: 'guest_sign_in');
       await _clearUserScopedLocalState();
       await _setAuthMode(AuthMode.guest);
       print('[AuthService] ✓ 게스트 모드 시작 완료');
@@ -2204,6 +2207,7 @@ class AuthService {
       final userManager = UserStatusManager();
       await userManager.resetToFree();
       await userManager.clearUserId();
+      await VideoManager().clearUserScopedLocalCache(trigger: 'guest_sign_out');
       await _clearUserScopedLocalState();
       await _setAuthMode(AuthMode.signedIn);
       print('[AuthService] ✓ 게스트 모드 종료 완료');

@@ -157,7 +157,7 @@ class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
     final previewPaths = _previewPaths;
     final bool canSwipePreview = previewPaths.length > 1;
     final int currentIndex = _currentPageIndex;
-    
+
     return GestureDetector(
       onTap: () => setState(() => _showControls = !_showControls),
       child: SizedBox.expand(
@@ -185,7 +185,11 @@ class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
                   top: 40,
                   left: 20,
                   child: IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white, size: 30),
+                    icon: const Icon(
+                      Icons.close,
+                      color: Colors.white,
+                      size: 30,
+                    ),
                     onPressed: widget.onClose,
                   ),
                 ),
@@ -225,10 +229,14 @@ class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
                     children: [
                       IconButton(
                         icon: Icon(
-                            widget.isTrashMode
-                                ? Icons.settings_backup_restore
-                                : (isFav ? Icons.favorite : Icons.favorite_border),
-                          color: (isFav && !widget.isTrashMode) ? Colors.red : Colors.white,
+                          widget.isTrashMode
+                              ? Icons.settings_backup_restore
+                              : (isFav
+                                    ? Icons.favorite
+                                    : Icons.favorite_border),
+                          color: (isFav && !widget.isTrashMode)
+                              ? Colors.red
+                              : Colors.white,
                           size: 30,
                         ),
                         onPressed: () {
@@ -241,9 +249,13 @@ class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
                         },
                       ),
                       IconButton(
-                        icon: const Icon(Icons.delete_outline, color: Colors.white, size: 30),
+                        icon: const Icon(
+                          Icons.delete_outline,
+                          color: Colors.white,
+                          size: 30,
+                        ),
                         onPressed: () => widget.onDelete(currentFilePath),
-                      )
+                      ),
                     ],
                   ),
                 ),
@@ -263,10 +275,7 @@ class _VideoPreviewWidgetState extends State<VideoPreviewWidget> {
       return Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            _initError!,
-            style: const TextStyle(color: Colors.white70),
-          ),
+          Text(_initError!, style: const TextStyle(color: Colors.white70)),
           const SizedBox(height: 12),
           TextButton(
             onPressed: _initializePreviewController,
@@ -290,7 +299,7 @@ class ResultPreviewWidget extends StatefulWidget {
   final String videoPath;
   final VoidCallback onClose; // 필수: 닫기 버튼 콜백
   final VoidCallback? onShare; // 선택: 공유 버튼 콜백
-  final VoidCallback? onEdit;  // 선택: 편집 버튼 콜백
+  final VoidCallback? onEdit; // 선택: 편집 버튼 콜백
   final VoidCallback? onOpenGallery; // 선택: 갤러리 이동 버튼 콜백
   final VoidCallback? onRetry; // 선택: 종료 버튼 콜백
 
@@ -392,11 +401,23 @@ class _ResultPreviewWidgetState extends State<ResultPreviewWidget> {
                         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                         children: [
                           if (widget.onShare != null)
-                            _buildPremiumActionButton(Icons.share_rounded, "공유", widget.onShare!),
+                            _buildPremiumActionButton(
+                              Icons.share_rounded,
+                              "공유",
+                              widget.onShare!,
+                            ),
                           if (widget.onRetry != null)
-                            _buildPremiumActionButton(Icons.close, "X 종료", widget.onRetry!),
+                            _buildPremiumActionButton(
+                              Icons.close,
+                              "X 종료",
+                              widget.onRetry!,
+                            ),
                           if (widget.onEdit != null)
-                            _buildPremiumActionButton(Icons.auto_awesome, "편집", widget.onEdit!),
+                            _buildPremiumActionButton(
+                              Icons.auto_awesome,
+                              "편집",
+                              widget.onEdit!,
+                            ),
                         ],
                       ),
                       const SizedBox(height: 14),
@@ -412,7 +433,7 @@ class _ResultPreviewWidgetState extends State<ResultPreviewWidget> {
                           border: Border.all(color: Colors.white24),
                         ),
                         child: Text(
-                          '갤러리 앱에 저장되었습니다.\n저장 경로: 갤러리/2S_Vlog',
+                          '갤러리 앱에 저장되었습니다.\n저장 경로: 갤러리/MOA',
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 12,
@@ -432,7 +453,11 @@ class _ResultPreviewWidgetState extends State<ResultPreviewWidget> {
   }
 
   /// 💡 [Ver 2.8.6] 세련된 화이트 액션 버튼 위젯
-  Widget _buildPremiumActionButton(IconData icon, String label, VoidCallback onTap) {
+  Widget _buildPremiumActionButton(
+    IconData icon,
+    String label,
+    VoidCallback onTap,
+  ) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -443,7 +468,10 @@ class _ResultPreviewWidgetState extends State<ResultPreviewWidget> {
           child: Icon(icon, color: Colors.black87),
         ),
         const SizedBox(height: 8),
-        Text(label, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        Text(
+          label,
+          style: const TextStyle(color: Colors.white70, fontSize: 12),
+        ),
       ],
     );
   }

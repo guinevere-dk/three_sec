@@ -1,16 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // 💡 MethodChannel 사용을 위한 핵심 임포트
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui';
-import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:video_player/video_player.dart';
 import 'package:path/path.dart' as p;
-import 'package:gal/gal.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -30,15 +26,16 @@ import 'services/notification_settings_service.dart';
 import 'services/app_update_service.dart';
 import 'screens/login_screen.dart';
 import 'screens/profile_screen.dart';
+import 'screens/subscription_management_screen.dart';
 import 'screens/capture_screen.dart';
 import 'screens/library_screen.dart';
+import 'screens/project_screen.dart';
 import 'managers/video_manager.dart';
 import 'models/import_state.dart';
 import 'models/vlog_project.dart';
 import 'screens/video_edit_screen.dart';
 import 'screens/clip_extractor_screen.dart'; // ✅ 추가
 import 'widgets/video_widgets.dart';
-import 'utils/haptics.dart';
 import 'utils/quality_policy.dart';
 
 late List<CameraDescription> cameras;
@@ -390,10 +387,13 @@ class MainNavigationScreen extends StatefulWidget {
 
 class _MainNavigationScreenState extends State<MainNavigationScreen>
     with TickerProviderStateMixin, WidgetsBindingObserver {
-  // 💡 [핵심] 네이티브 엔진과 통신하는 직통 채널 개설
-  static const platform = MethodChannel('com.dk.three_sec/video_engine');
+  static const int _cameraTabIndex = 0;
+  static const int _libraryTabIndex = 1;
+  static const int _projectTabIndex = 2;
+  static const int _profileTabIndex = 3;
+  static const int _lastMainTabIndex = _profileTabIndex;
 
-  int _selectedIndex = 0;
+  int _selectedIndex = _cameraTabIndex;
   StreamSubscription<RemoteMessage>? _onMessageSubscription;
   StreamSubscription<RemoteMessage>? _onMessageOpenedAppSubscription;
   final List<Map<String, dynamic>> _pendingNotificationRouteQueue =
@@ -686,7 +686,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
       final index = NotificationSettingsService.instance
           .resolveMainTabIndexFromPayload(payload);
-      if (index == null || index < 0 || index > 2) {
+      if (index == null || index < 0 || index > _lastMainTabIndex) {
         debugPrint(
           '[Main][NotificationRoute] ignored (invalid target tab) '
           'source=$source payload=$payload',
@@ -698,7 +698,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       if (_selectedIndex != index) {
         setState(() {
           _selectedIndex = index;
-          if (index == 0 &&
+          if (index == _cameraTabIndex &&
               _didBindVideoManager &&
               videoManager.currentAlbum == '휴지통') {
             videoManager.currentAlbum = '일상';
@@ -706,8 +706,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         });
       }
 
-      if (index == 1) {
-        // 라이브러리 라우팅 시 비동기 초기화 레이스를 줄이기 위해 안전 리프레시.
+      if (index == _libraryTabIndex || index == _projectTabIndex) {
+        // 라이브러리/프로젝트 라우팅 시 비동기 초기화 레이스를 줄이기 위해 안전 리프레시.
         unawaited(_refreshData());
       }
 
@@ -777,7 +777,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       );
 
       setState(() {
-        _selectedIndex = 1;
+        _selectedIndex = _libraryTabIndex;
         _isTutorialFlowActive = true;
       });
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1196,7 +1196,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     if (!mounted || !_isTutorialFlowActive) return;
     _phase4RetryCount = 0;
     setState(() {
-      _selectedIndex = 1;
+      _selectedIndex = _libraryTabIndex;
       if (videoManager.currentAlbum == '휴지통') {
         videoManager.currentAlbum = '일상';
       }
@@ -1217,7 +1217,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     );
     if (!mounted || !_isTutorialFlowActive) return;
     setState(() {
-      _selectedIndex = 0;
+      _selectedIndex = _cameraTabIndex;
       if (videoManager.currentAlbum == '휴지통') {
         videoManager.currentAlbum = '일상';
       }
@@ -1313,6 +1313,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
               children: [
                 _buildCaptureTab(),
                 _buildLibraryTab(),
+                _buildProjectTab(),
                 _buildProfileTab(),
               ],
             ),
@@ -1778,6 +1779,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     final items = const [
       (icon: Icons.photo_camera, label: 'Camera'),
       (icon: Icons.folder, label: 'Library'),
+      (icon: Icons.video_collection_outlined, label: 'Project'),
       (icon: Icons.person, label: 'Profile'),
     ];
 
@@ -1801,7 +1803,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
               return Expanded(
                 child: InkWell(
                   onTap: () {
-                    if (index == 2) {
+                    if (index == _profileTabIndex) {
                       final profileTapManager = UserStatusManager();
                       debugPrint(
                         '[Main][ProfileTab][Diag] before_select '
@@ -1815,15 +1817,17 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
                     setState(() {
                       _selectedIndex = index;
-                      if (index == 0 && videoManager.currentAlbum == '휴지통') {
+                      if (index == _cameraTabIndex &&
+                          videoManager.currentAlbum == '휴지통') {
                         videoManager.currentAlbum = '일상';
                       }
-                      if (index == 1) {
+                      if (index == _libraryTabIndex ||
+                          index == _projectTabIndex) {
                         _refreshData();
                       }
                     });
 
-                    if (index == 2) {
+                    if (index == _profileTabIndex) {
                       final profileTapAfterManager = UserStatusManager();
                       debugPrint(
                         '[Main][ProfileTab][Diag] after_select '
@@ -2361,6 +2365,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       // Create a project
       project = await videoManager.createProject(
         selectedPaths,
+        persist: userStatusManager.isStandardOrAbove(),
         onClipPrepared: (current, total, path) {
           if (!mounted) return;
           setState(() {
@@ -2550,7 +2555,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         setState(() {
           // Library 다중선택 -> 프로젝트 생성 -> 편집 종료(X) 흐름에서는
           // 프로젝트 목록으로 복귀시키는 UX가 자연스럽다.
-          _selectedIndex = 1;
+          _selectedIndex = _projectTabIndex;
         });
       }
       await _refreshData();
@@ -2566,7 +2571,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         setState(() {
           // Library 다중선택 -> 프로젝트 생성 -> 편집 종료(X) 흐름에서는
           // 프로젝트 목록으로 복귀시키는 UX가 자연스럽다.
-          _selectedIndex = 1;
+          _selectedIndex = _projectTabIndex;
         });
       }
       await _refreshData();
@@ -2613,13 +2618,31 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       onAlbumDetailVisibilityChanged: _onAlbumDetailVisibilityChanged,
       onCreateProjectButtonVisibilityChanged:
           _onCreateProjectButtonVisibilityChanged,
-      isActive: _selectedIndex == 1,
+      isActive: _selectedIndex == _libraryTabIndex,
     );
+  }
+
+  Widget _buildProjectTab() {
+    return ProjectScreen(
+      onRefresh: _refreshData,
+      isActive: _selectedIndex == _projectTabIndex,
+      onOpenSubscriptionManagement: _openSubscriptionManagementFromProject,
+    );
+  }
+
+  Future<void> _openSubscriptionManagementFromProject() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const SubscriptionManagementScreen()),
+    );
+    if (!mounted) return;
+    _refreshData();
   }
 
   // --- [편집 요청 핸들러] ---
 
   /// 편집 요청 처리 (구매 트리거 포함)
+  // ignore: unused_element
   Future<void> _handleEditRequest(String videoPath) async {
     final userStatusManager = UserStatusManager();
 
@@ -2627,7 +2650,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     if (!userStatusManager.isStandardOrAbove()) {
       // Fluttertoast.showToast(msg: '편집은 Standard부터 지원합니다. 720p로 바로 내보냅니다.');
 
-      final project = await videoManager.createProject([videoPath]);
+      final project = await videoManager.createProject([
+        videoPath,
+      ], persist: false);
       final audioConfig = <String, double>{
         for (final clip in project.clips) clip.path: 1.0,
       };

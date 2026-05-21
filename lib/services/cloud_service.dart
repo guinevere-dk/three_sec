@@ -444,6 +444,7 @@ class CloudService {
   }
 
   /// Standard 등급 이상 확인
+  // ignore: unused_element
   bool _checkStandardOrAbove() {
     if (!_userStatusManager.isStandardOrAbove()) {
       print(
@@ -1663,7 +1664,7 @@ class CloudService {
     }
   }
 
-  Future<SyncStatusSummary> getSyncStatusSummary() async {
+  Future<SyncStatusSummary> getSyncStatusSummary({bool emit = true}) async {
     final uid = _getCurrentUserId();
     if (uid == null) {
       return const SyncStatusSummary();
@@ -1742,7 +1743,9 @@ class CloudService {
         failedCount: failed,
         completedCount: completed,
       );
-      _syncSummaryController.add(summary);
+      if (emit) {
+        _syncSummaryController.add(summary);
+      }
       return summary;
     } catch (_) {
       return const SyncStatusSummary();
@@ -1792,7 +1795,7 @@ class CloudService {
 
     final count = await getCompletedVideoCount();
     final usage = await getStorageUsageGB();
-    final summary = await getSyncStatusSummary();
+    final summary = await getSyncStatusSummary(emit: false);
     final snapshot = CloudStatsSnapshot(
       cloudClipCount: count,
       storageUsageGB: usage,
@@ -2586,6 +2589,16 @@ class CloudService {
     VlogProject project,
   ) async {
     if (!_ensureNotGuestForCloud('프로젝트 메타데이터 업서트')) return null;
+    final hasSessionCachePath = project.clips.any(
+      (clip) => _isSessionCachePath(clip.path),
+    );
+    if (hasSessionCachePath) {
+      print(
+        '[CloudService][Diag][vlogMeta][upsert][blocked] '
+        'reason=session_cache_path_guard localProjectId=${_maskId(project.id, label: 'local-project-id')}',
+      );
+      return null;
+    }
 
     final uid = _getCurrentUserId();
     if (uid == null) return null;
@@ -2668,6 +2681,12 @@ class CloudService {
       );
       return null;
     }
+  }
+
+  bool _isSessionCachePath(String path) {
+    return path.contains('edit_session_cache') ||
+        path.contains('export_session_cache') ||
+        path.contains('cloud_clip_session_cache');
   }
 
   Future<Map<String, ProjectCloudMetadata>>

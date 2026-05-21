@@ -71,6 +71,25 @@ IconData libraryClipTransferIconForAction(LibraryClipTransferAction action) {
   }
 }
 
+bool shouldShowLibraryClipTransferButton({
+  required LibraryClipTransferAction action,
+  required bool isGuest,
+  required bool canStartNewCloudWrite,
+  required bool canReadExistingCloudClips,
+}) {
+  if (isGuest) return false;
+  switch (action) {
+    case LibraryClipTransferAction.upload:
+      return canStartNewCloudWrite;
+    case LibraryClipTransferAction.download:
+      return canReadExistingCloudClips;
+    case LibraryClipTransferAction.cloudDone:
+    case LibraryClipTransferAction.progress:
+    case LibraryClipTransferAction.disabled:
+      return canStartNewCloudWrite || canReadExistingCloudClips;
+  }
+}
+
 bool isUploadMoveEligibleFromPrePendingState(ClipStorageState? state) {
   return state == ClipStorageState.localOnly ||
       state == ClipStorageState.failedUpload;
@@ -605,7 +624,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     final int count = visibleClipPaths.length;
     final String subtitle = "$count Clips";
     final selectionState = _resolveSelectionActionState();
-    final showTransferButton = _userStatusManager.isStandardOrAbove();
+    final showTransferButton = _shouldShowTransferButton(selectionState);
     _logTransferRenderIfChanged(
       action: selectionState,
       showTransferButton: showTransferButton,
@@ -1234,6 +1253,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
     return libraryClipTransferIconForAction(action);
   }
 
+  bool _shouldShowTransferButton(LibraryClipTransferAction action) {
+    return shouldShowLibraryClipTransferButton(
+      action: action,
+      isGuest: AuthService().isGuest,
+      canStartNewCloudWrite: _userStatusManager.canStartNewCloudWrite(),
+      canReadExistingCloudClips: _userStatusManager.canReadExistingCloudClips(),
+    );
+  }
+
   VoidCallback? _transferHandlerForSelectionState(
     LibraryClipTransferAction action,
   ) {
@@ -1244,7 +1272,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           action: action,
           branch: branch,
           handlerInvoked: true,
-          showTransferButton: _userStatusManager.isStandardOrAbove(),
+          showTransferButton: _shouldShowTransferButton(action),
         );
         handler();
       };
@@ -1263,9 +1291,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
       case LibraryClipTransferAction.download:
         if (!_userStatusManager.canReadExistingCloudClips()) {
           return wrap('read_gate_blocked', _showCloudReadBlockedToast);
-        }
-        if (!_userStatusManager.canStartNewCloudWrite()) {
-          return wrap('write_gate_blocked', _showCloudWriteBlockedToast);
         }
         return wrap('download_move', _removeSelectedCloudBackup);
       case LibraryClipTransferAction.cloudDone:

@@ -11,7 +11,11 @@ import '../services/auth_service.dart';
 /// - Kakao (Android/iOS)
 /// - Naver (출시 이후 토큰 발급 전까지 숨김)
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key, this.popOnSuccess = false, this.allowGuest = true});
+  const LoginScreen({
+    super.key,
+    this.popOnSuccess = false,
+    this.allowGuest = true,
+  });
 
   final bool popOnSuccess;
   final bool allowGuest;
@@ -353,6 +357,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   /// Naver 로그인 처리 (추후 구현)
+  // ignore: unused_element
   Future<void> _handleNaverSignIn() async {
     setState(() => _isLoading = true);
     try {

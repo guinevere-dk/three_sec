@@ -190,10 +190,29 @@ String normalizeUserTierKey(String? raw) {
   return kUserTierFree;
 }
 
+UserTier normalizeRuntimeUserTier(UserTier tier) {
+  if (tier == UserTier.premium) return UserTier.standard;
+  return tier;
+}
+
+String normalizeRuntimeUserTierKey(String? raw) {
+  final normalized = normalizeUserTierKey(raw);
+  if (normalized == kUserTierPremium) return kUserTierStandard;
+  return normalized;
+}
+
+bool canAccessVideoEditScreenForTier(UserTier tier) {
+  return normalizeRuntimeUserTier(tier) == UserTier.standard;
+}
+
 String userTierKeyFromManager(UserStatusManager manager) {
   if (manager.isPremium()) return kUserTierPremium;
   if (manager.isStandardOrAbove()) return kUserTierStandard;
   return kUserTierFree;
+}
+
+String runtimeUserTierKeyFromManager(UserStatusManager manager) {
+  return normalizeRuntimeUserTierKey(userTierKeyFromManager(manager));
 }
 
 UserTier userTierFromKey(String key) {
@@ -207,19 +226,62 @@ UserTier userTierFromKey(String key) {
   }
 }
 
-String clampExportQualityForTier({
-  required String requestedQuality,
-  required UserTier tier,
-}) {
+List<String> availableExportQualities(UserTier tier) {
+  switch (normalizeRuntimeUserTier(tier)) {
+    case UserTier.free:
+      return const <String>[kQuality720p];
+    case UserTier.standard:
+      return const <String>[kQuality720p, kQuality1080p];
+    case UserTier.premium:
+      return const <String>[kQuality720p, kQuality1080p];
+  }
+}
+
+String defaultExportQuality(UserTier tier) {
+  switch (normalizeRuntimeUserTier(tier)) {
+    case UserTier.free:
+      return kQuality720p;
+    case UserTier.standard:
+      return kQuality1080p;
+    case UserTier.premium:
+      return kQuality1080p;
+  }
+}
+
+String maxExportQuality(UserTier tier) {
+  switch (normalizeRuntimeUserTier(tier)) {
+    case UserTier.free:
+      return kQuality720p;
+    case UserTier.standard:
+      return kQuality1080p;
+    case UserTier.premium:
+      return kQuality1080p;
+  }
+}
+
+String clampExportQuality(UserTier tier, String requestedQuality) {
   final q = normalizeExportQuality(requestedQuality);
-  switch (tier) {
+  switch (normalizeRuntimeUserTier(tier)) {
     case UserTier.free:
       return kQuality720p;
     case UserTier.standard:
       if (q == kQuality4k) return kQuality1080p;
-      return kQuality1080p;
+      return q;
     case UserTier.premium:
-      if (q == kQuality720p) return kQuality1080p;
+      if (q == kQuality4k) return kQuality1080p;
       return q;
   }
+}
+
+String clampExportQualityForTier({
+  required String requestedQuality,
+  required UserTier tier,
+}) {
+  return clampExportQuality(tier, requestedQuality);
+}
+
+String restoreProjectExportQuality(String? raw) {
+  final normalized = normalizeExportQuality(raw);
+  if (normalized == kQuality4k) return kQuality1080p;
+  return normalized;
 }

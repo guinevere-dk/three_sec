@@ -4,6 +4,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.opengl.GLES20
 import android.graphics.Color
 import android.graphics.Typeface
 import android.text.Spannable
@@ -22,6 +23,7 @@ import androidx.activity.enableEdgeToEdge
 // Media3 Imports
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.VideoFrameProcessingException
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.audio.ChannelMixingAudioProcessor
 import androidx.media3.common.audio.BaseAudioProcessor
@@ -37,14 +39,21 @@ import androidx.media3.transformer.EncoderUtil
 import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.TextOverlay
 import androidx.media3.effect.BitmapOverlay
+import androidx.media3.effect.BaseGlShaderProgram
 import androidx.media3.effect.StaticOverlaySettings
 import androidx.media3.transformer.DefaultAssetLoaderFactory // ✅ 추가
 import androidx.media3.datasource.DataSourceBitmapLoader // ✅ 추가
 import androidx.media3.effect.Contrast
+import androidx.media3.effect.ConvolutionFunction1D
+import androidx.media3.effect.GaussianBlur
 import androidx.media3.effect.RgbMatrix
+import androidx.media3.effect.SeparableConvolution
 import androidx.media3.effect.Presentation // ✅ 추가
 import androidx.media3.common.Effect // ✅ 추가
 import androidx.media3.effect.GlEffect
+import androidx.media3.common.util.GlProgram
+import androidx.media3.common.util.GlUtil
+import androidx.media3.common.util.Size
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import java.io.File
@@ -125,17 +134,27 @@ class MainActivity: FlutterFragmentActivity() {
         }
     }
 
+    private fun redactedPath(path: String?): String {
+        if (path.isNullOrBlank()) return "<path-empty>"
+        return "<redacted-path>"
+    }
+
+    private fun redactedPathList(paths: List<String>?): String {
+        val count = paths?.size ?: 0
+        return "<redacted-path-list:$count>"
+    }
+
     private fun validateReadableInput(inputPath: String): Pair<Uri, String?> {
         val uri = toMediaUri(inputPath)
         return when (uri.scheme?.lowercase()) {
             "file" -> {
                 val filePath = uri.path
                 if (filePath.isNullOrBlank()) {
-                    uri to "File URI path is invalid: $inputPath"
+                    uri to "File URI path is invalid: ${redactedPath(inputPath)}"
                 } else {
                     val inputFile = File(filePath)
                     if (!inputFile.exists()) {
-                        uri to "Input file does not exist: $filePath"
+                        uri to "Input file does not exist: ${redactedPath(filePath)}"
                     } else {
                         uri to null
                     }
@@ -410,6 +429,7 @@ class MainActivity: FlutterFragmentActivity() {
                     val forceWatermark = call.argument<Boolean>("forceWatermark") ?: false
                     val quality = call.argument<String>("quality") ?: "1080p"
                     val userTier = call.argument<String>("userTier") ?: "free"
+                    val canvasAspectRatioPreset = call.argument<String>("canvasAspectRatioPreset") ?: "r9_16"
                     
                     // Audio Mixing
                     val bgmPath = call.argument<String>("bgmPath")
@@ -432,11 +452,11 @@ class MainActivity: FlutterFragmentActivity() {
                     
                     Log.d("3S_4K", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                     Log.d("3S_4K", "mergeVideos 호출 (Flutter -> Native)")
-                    Log.d("3S_4K", "  - paths: $paths")
+                    Log.d("3S_4K", "  - paths: ${redactedPathList(paths)}")
                     Log.d("3S_4K", "  - trim: start=$startTimes, end=$endTimes") // Log trim info
-                    Log.d("3S_4K", "  - outputPath: $outputPath")
+                    Log.d("3S_4K", "  - outputPath: ${redactedPath(outputPath)}")
                     Log.d("3S_4K", "  - audioConfig: $audioChanges (To be implemented)")
-                    Log.d("3S_4K", "  - bgmPath: $bgmPath, vol: $bgmVolume")
+                    Log.d("3S_4K", "  - bgmPath: ${redactedPath(bgmPath)}, vol: $bgmVolume")
                     Log.w(
                         "3S_LIFECYCLE",
                         "[MergeArgs] sessionId=${mergeSessionId ?: "none"} traceId=${mergeTraceId ?: "none"} " +
@@ -453,6 +473,7 @@ class MainActivity: FlutterFragmentActivity() {
                             forceWatermark,
                             quality,
                             userTier,
+                            canvasAspectRatioPreset,
                             videoEffects,
                             bgmPath,
                             forceMuteOriginal,
@@ -555,7 +576,7 @@ class MainActivity: FlutterFragmentActivity() {
                         else -> parsedDurationMs
                     }
 
-                    Log.d("3S_CONVERT", "convertImageToVideo 호출: $imagePath")
+                    Log.d("3S_CONVERT", "convertImageToVideo 호출: ${redactedPath(imagePath)}")
 
                     if (imagePath != null && outputPath != null) {
                         convertImageToVideo(imagePath, outputPath, durationMs, result)
@@ -801,7 +822,7 @@ class MainActivity: FlutterFragmentActivity() {
                         Handler(Looper.getMainLooper()).post {
                             Log.d(
                                 "3S_NORMALIZE",
-                                "normalizeVideoDuration complete: $outputPath " +
+                                "normalizeVideoDuration complete: ${redactedPath(outputPath)} " +
                                     "sourceDurationMs=$sourceDurationMs " +
                                     "targetDurationMs=$targetDurationMs " +
                                     "normalizedDurationMs=${exportResult.durationMs} " +
@@ -859,6 +880,26 @@ class MainActivity: FlutterFragmentActivity() {
         }
     }
 
+    private fun normalizeEditCanvasAspectPreset(aspectPreset: String): String {
+        return when (aspectPreset.lowercase()) {
+            "r1_1", "1:1", "1x1" -> "r1_1"
+            "r3_4", "3:4", "3x4" -> "r3_4"
+            "r4_3", "4:3", "4x3" -> "r4_3"
+            "r16_9", "16:9", "16x9" -> "r16_9"
+            else -> "r9_16"
+        }
+    }
+
+    private fun editCanvasAspectRatio(aspectPreset: String): Float {
+        return when (normalizeEditCanvasAspectPreset(aspectPreset)) {
+            "r1_1" -> 1f
+            "r3_4" -> 3f / 4f
+            "r4_3" -> 4f / 3f
+            "r16_9" -> 16f / 9f
+            else -> 9f / 16f
+        }
+    }
+
     private fun sourceDisplayAspectRatio(width: Int, height: Int, rotation: Int): Float {
         if (width <= 0 || height <= 0) return 0f
         val displayWidth = if (rotation == 90 || rotation == 270) height else width
@@ -876,12 +917,12 @@ class MainActivity: FlutterFragmentActivity() {
         // 1. 파일 검사
         val file = File(imagePath) // ✅ 누락된 변수 선언 복원
         if (!file.exists()) {
-            Log.e("3S_CONVERT", "파일 없음: $imagePath")
+            Log.e("3S_CONVERT", "파일 없음: ${redactedPath(imagePath)}")
             result.error("FILE_NOT_FOUND", "파일이 존재하지 않습니다.", null)
             return
         }
         if (!file.canRead()) {
-            Log.e("3S_CONVERT", "읽기 권한 없음: $imagePath")
+            Log.e("3S_CONVERT", "읽기 권한 없음: ${redactedPath(imagePath)}")
             result.error("PERMISSION_DENIED", "파일 읽기 권한이 없습니다.", null)
             return
         }
@@ -949,7 +990,7 @@ class MainActivity: FlutterFragmentActivity() {
             outStream.flush()
             outStream.close()
             
-            Log.d("3S_CONVERT_V2", "리사이징/회전 완료(V2): ${srcWidth}x${srcHeight} -> ${rotatedBitmap.width}x${rotatedBitmap.height}, path=$resizedPath")
+            Log.d("3S_CONVERT_V2", "리사이징/회전 완료(V2): ${srcWidth}x${srcHeight} -> ${rotatedBitmap.width}x${rotatedBitmap.height}, path=${redactedPath(resizedPath)}")
             
         } catch (e: Exception) {
             Log.e("3S_CONVERT_V2", "리사이징 에러: $e")
@@ -959,7 +1000,7 @@ class MainActivity: FlutterFragmentActivity() {
 
         val transcodeFile = File(resizedPath)
         val uri = Uri.fromFile(transcodeFile)
-        Log.d("3S_CONVERT_V2", "변환 URI(V2): $uri")
+        Log.d("3S_CONVERT_V2", "변환 URI(V2): ${redactedPath(uri.toString())}")
 
         // 출력 파일이 이미 존재하면 삭제
         val outFile = File(outputPath)
@@ -990,7 +1031,7 @@ class MainActivity: FlutterFragmentActivity() {
         transformer.addListener(object : Transformer.Listener {
             override fun onCompleted(composition: Composition, exportResult: ExportResult) {
                 Handler(Looper.getMainLooper()).post {
-                    Log.d("3S_CONVERT", "변환 성공: $outputPath")
+                    Log.d("3S_CONVERT", "변환 성공: ${redactedPath(outputPath)}")
                     // 임시 파일 삭제
                     File(resizedPath).delete()
                     result.success("SUCCESS")
@@ -1017,6 +1058,7 @@ class MainActivity: FlutterFragmentActivity() {
         forceWatermark: Boolean,
         quality: String,
         userTier: String,
+        canvasAspectRatioPreset: String,
         videoEffects: Map<String, Any>,
         bgmPath: String?,
         forceMuteOriginal: Boolean,
@@ -1050,10 +1092,11 @@ class MainActivity: FlutterFragmentActivity() {
         Log.d("3S_4K", "병합 시작: ${paths.size}개 클립")
         Log.d("3S_4K", "  - 품질: $quality")
         Log.d("3S_4K", "  - 사용자 등급: $userTier")
+        Log.d("3S_4K", "  - 캔버스: $canvasAspectRatioPreset")
         Log.d("3S_4K", "  - 자막: ${subtitles.size}개")
         Log.d("3S_4K", "  - 비디오 이펙트: ${videoEffects.keys}")
         Log.d("3S_AUDIO", "  - 원본 음소거: $forceMuteOriginal")
-        Log.d("3S_AUDIO", "  - BGM: ${bgmPath ?: "없음"}")
+        Log.d("3S_AUDIO", "  - BGM: ${if (bgmPath == null) "없음" else redactedPath(bgmPath)}")
         Log.d("3S_AUDIO", "  - 노이즈 억제: $enableNoiseSuppression")
         Log.d("3S_4K", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
@@ -1068,19 +1111,19 @@ class MainActivity: FlutterFragmentActivity() {
                     hasVideo = false,
                     reason = inputError,
                 )
-                Log.e("3S_AUDIO", "[preflight] index=$index path=$path FAILED: ${failed.reason}")
+                Log.e("3S_AUDIO", "[preflight] index=$index path=${redactedPath(path)} FAILED: ${failed.reason}")
                 failed
             } else {
                 inspectMediaAudioTrack(path, uri).also { info ->
                     Log.d(
                         "3S_AUDIO",
-                        "[preflight] index=$index path=${info.path} hasAudio=${info.hasAudio} " +
+                        "[preflight] index=$index path=${redactedPath(info.path)} hasAudio=${info.hasAudio} " +
                             "audioTracks=${info.audioTrackCount} hasVideo=${info.hasVideo} reason=${info.reason}"
                     )
                     if (!info.hasAudio) {
                         Log.w(
                             "3S_AUDIO",
-                            "[preflight] 경고: 오디오 트랙이 없습니다. index=$index path=${info.path}"
+                            "[preflight] 경고: 오디오 트랙이 없습니다. index=$index path=${redactedPath(info.path)}"
                         )
                     }
                 }
@@ -1115,6 +1158,8 @@ class MainActivity: FlutterFragmentActivity() {
 
         // 3. 🎨 GPU 필터 생성 (Premium)
         val gpuFilters = createGpuFilters(videoEffects, userTier)
+        val normalizedCanvasAspectPreset = normalizeEditCanvasAspectPreset(canvasAspectRatioPreset)
+        val canvasAspectRatio = editCanvasAspectRatio(normalizedCanvasAspectPreset)
         
         // 4. EditedMediaItem 리스트 생성 (비디오 트랙)
         val videoSequence = ArrayList<EditedMediaItem>()
@@ -1144,6 +1189,13 @@ class MainActivity: FlutterFragmentActivity() {
             
             // GPU 필터 추가
             allVideoEffects.addAll(gpuFilters)
+
+            allVideoEffects.add(
+                Presentation.createForAspectRatio(
+                    canvasAspectRatio,
+                    Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
+                )
+            )
             
             // 오버레이 추가
             if (overlayEffect != null) {
@@ -1170,7 +1222,7 @@ class MainActivity: FlutterFragmentActivity() {
                     forceAudioTrackFailedItemCount += 1
                     Log.w(
                         "3S_AUDIO",
-                        "[fallback] index=$i path=${preflight.path}: forceAudioTrack API 미지원. 기존 멀티트랙 방식 유지"
+                        "[fallback] index=$i path=${redactedPath(preflight.path)}: forceAudioTrack API 미지원. 기존 멀티트랙 방식 유지"
                     )
                 } else {
                     forceAudioTrackAppliedItemCount += 1
@@ -1216,7 +1268,7 @@ class MainActivity: FlutterFragmentActivity() {
         // 4-2. BGM 시퀀스 추가 (있는 경우)
         if (bgmPath != null && File(bgmPath).exists()) {
             try {
-                Log.d("3S_AUDIO", "✓ BGM 추가: $bgmPath")
+                Log.d("3S_AUDIO", "✓ BGM 추가: ${redactedPath(bgmPath)}")
                 Log.d("3S_AUDIO", "  - 볼륨: ${(bgmVolume * 100).toInt()}%")
                 
                 // BGM 길이 추출 (Fade Out을 위해 필요)
@@ -1255,7 +1307,7 @@ class MainActivity: FlutterFragmentActivity() {
                 Log.e("3S_AUDIO", "✗ BGM 추가 실패: ${e.message}", e)
             }
         } else if (bgmPath != null) {
-            Log.w("3S_AUDIO", "⚠️ BGM 파일을 찾을 수 없음: $bgmPath")
+            Log.w("3S_AUDIO", "⚠️ BGM 파일을 찾을 수 없음: ${redactedPath(bgmPath)}")
         }
 
         // 5. Composition 생성 (멀티트랙)
@@ -1265,6 +1317,10 @@ class MainActivity: FlutterFragmentActivity() {
             .build()
         
         Log.d("3S_AUDIO", "✓ Composition 생성 완료: ${sequences.size}개 트랙")
+        Log.d(
+            "3S_AUDIO",
+            "✓ Canvas aspect 적용: preset=$normalizedCanvasAspectPreset ratio=$canvasAspectRatio"
+        )
 
         // 6. 2단계 이내 Fallback(4K → 1080p) 포함 재시도
         val attemptQualities = if (quality.equals("4K", ignoreCase = true) && userTier == "premium") {
@@ -1309,7 +1365,7 @@ class MainActivity: FlutterFragmentActivity() {
                                 "traceId=${mergeTraceId ?: "none"} attempt=${attemptIndex + 1} status=success"
                         )
                         Log.d("3S_AUDIO", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                        Log.d("3S_AUDIO", "✓ 병합 완료: $outputPath")
+                        Log.d("3S_AUDIO", "✓ 병합 완료: ${redactedPath(outputPath)}")
                         Log.d("3S_AUDIO", "  - 사용 품질: $attemptQuality")
                         Log.d("3S_AUDIO", "  - 파일 크기: ${exportResult.fileSizeBytes / 1024 / 1024}MB")
                         Log.d("3S_AUDIO", "  - 처리 시간: ${exportResult.durationMs}ms")
@@ -1366,7 +1422,7 @@ class MainActivity: FlutterFragmentActivity() {
 
             val file = File(outputPath)
             if (file.exists()) {
-                Log.d("3S_AUDIO", "기존 파일 삭제: $outputPath")
+                Log.d("3S_AUDIO", "기존 파일 삭제: ${redactedPath(outputPath)}")
                 file.delete()
             }
 
@@ -1571,7 +1627,7 @@ class MainActivity: FlutterFragmentActivity() {
                 val startTimeMs = (sticker["startTime"] as? Number)?.toLong()
                 val endTimeMs = (sticker["endTime"] as? Number)?.toLong()
                 
-                Log.d("3S_STICKER", "스티커 ${index + 1}: $imagePath")
+                Log.d("3S_STICKER", "스티커 ${index + 1}: ${redactedPath(imagePath)}")
                 Log.d("3S_STICKER", "  - 위치: (x=$x, y=$y)")
                 Log.d("3S_STICKER", "  - 크기: ${width}x${height}")
                 Log.d("3S_STICKER", "  - 회전: ${rotation}°")
@@ -1583,13 +1639,13 @@ class MainActivity: FlutterFragmentActivity() {
                 // 이미지 파일 로드
                 val imageFile = File(imagePath)
                 if (!imageFile.exists()) {
-                    Log.e("3S_STICKER", "✗ 스티커 파일 없음: $imagePath")
+                    Log.e("3S_STICKER", "✗ 스티커 파일 없음: ${redactedPath(imagePath)}")
                     continue
                 }
                 
                 val bitmap = BitmapFactory.decodeFile(imagePath)
                 if (bitmap == null) {
-                    Log.e("3S_STICKER", "✗ 비트맵 디코딩 실패: $imagePath")
+                    Log.e("3S_STICKER", "✗ 비트맵 디코딩 실패: ${redactedPath(imagePath)}")
                     continue
                 }
                 
@@ -1651,6 +1707,37 @@ class MainActivity: FlutterFragmentActivity() {
         Log.d("3S_4K", "GPU 필터 생성 (등급: $userTier)")
         
         // Premium 전용 필터
+        if ((effects["moaColorAdjustmentV1"] as? Number)?.toInt() == 1) {
+            val contrast = DEFAULT_CONTRAST + normalizedEffectPercent(effects, "contrast")
+            if (contrast != DEFAULT_CONTRAST) {
+                filters.add(Contrast(contrast.coerceIn(0.01f, 2.0f)))
+                Log.d("3S_4K", "  colorAdjust base_contrast=$contrast")
+            }
+
+            if (hasRgbColorAdjustment(effects)) {
+                val matrix = createColorAdjustmentMatrix(effects)
+                filters.add(RgbMatrix { _, _ -> matrix })
+                Log.d(
+                    "3S_4K",
+                    "  colorAdjust brightness=${effects["brightness"] ?: 0} " +
+                        "exposure=${effects["exposure"] ?: 0} " +
+                        "highlights=${effects["highlights"] ?: 0} " +
+                        "shadows=${effects["shadows"] ?: 0} " +
+                        "saturation=${effects["saturation"] ?: 0} " +
+                        "temperature=${effects["temperature"] ?: 0} " +
+                        "tint=${effects["tint"] ?: 0} " +
+                        "sharpness=${effects["sharpness"] ?: 0} " +
+                        "clarity=${effects["clarity"] ?: 0}"
+                )
+            }
+
+            addAdvancedColorAdjustmentFilters(filters, effects)
+
+            Log.d("3S_4K", "??珥?${filters.size}媛?GPU ?꾪꽣 ?앹꽦")
+            Log.d("3S_4K", "?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺")
+            return filters
+        }
+
         if (userTier == "premium") {
             
             // 🎨 Contrast (대비)
@@ -1692,6 +1779,303 @@ class MainActivity: FlutterFragmentActivity() {
         Log.d("3S_4K", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         
         return filters
+    }
+
+    private fun normalizedEffectPercent(
+        effects: Map<String, Any>,
+        key: String
+    ): Float {
+        return ((effects[key] as? Number)?.toFloat() ?: 0f)
+            .coerceIn(-100f, 100f) / 100f
+    }
+
+    private fun hasRgbColorAdjustment(effects: Map<String, Any>): Boolean {
+        return listOf(
+            "brightness",
+            "exposure",
+            "saturation",
+            "temperature",
+            "tint"
+        )
+            .any { key -> normalizedEffectPercent(effects, key) != 0f }
+    }
+
+    private fun createColorAdjustmentMatrix(effects: Map<String, Any>): FloatArray {
+        val brightness = normalizedEffectPercent(effects, "brightness")
+        val exposure = normalizedEffectPercent(effects, "exposure")
+        val saturation = DEFAULT_SATURATION + normalizedEffectPercent(effects, "saturation")
+        val temperature = normalizedEffectPercent(effects, "temperature")
+        val tint = normalizedEffectPercent(effects, "tint")
+
+        val baseGain = ((1f + (brightness * 0.35f)) *
+            Math.pow(2.0, exposure.toDouble()).toFloat()).coerceIn(0.01f, 3.0f)
+        val redGain = (baseGain * (1f + (temperature * 0.18f) + (tint * 0.08f)))
+            .coerceIn(0.01f, 3.0f)
+        val greenGain = (baseGain * (1f - (tint * 0.10f))).coerceIn(0.01f, 3.0f)
+        val blueGain = (baseGain * (1f - (temperature * 0.18f) + (tint * 0.08f)))
+            .coerceIn(0.01f, 3.0f)
+
+        val matrix = createSaturationMatrix(saturation.coerceIn(0f, 2f))
+        for (column in 0..2) {
+            matrix[column] *= redGain
+            matrix[4 + column] *= greenGain
+            matrix[8 + column] *= blueGain
+        }
+        return matrix
+    }
+
+    private fun addAdvancedColorAdjustmentFilters(
+        filters: MutableList<GlEffect>,
+        effects: Map<String, Any>
+    ) {
+        val highlights = normalizedEffectPercent(effects, "highlights")
+        val shadows = normalizedEffectPercent(effects, "shadows")
+        if (highlights != 0f || shadows != 0f) {
+            filters.add(
+                SelectiveToneCurveEffect(
+                    highlights = highlights,
+                    shadows = shadows,
+                    fallbackMatrix = createSelectiveToneFallbackMatrix(highlights, shadows)
+                )
+            )
+            Log.d(
+                "3S_4K",
+                "  colorAdjust selective_tone_curve highlights=$highlights shadows=$shadows"
+            )
+        }
+
+        val sharpness = normalizedEffectPercent(effects, "sharpness")
+        if (sharpness != 0f) {
+            if (sharpness > 0f) {
+                filters.add(SharpnessConvolution(sharpness.coerceIn(0f, 1f)))
+                Log.d("3S_4K", "  colorAdjust advanced_sharpness=$sharpness kernel=unsharp")
+            } else {
+                val sigma = (1f + ((-sharpness).coerceIn(0f, 1f) * 2.5f))
+                filters.add(GaussianBlur(sigma))
+                Log.d("3S_4K", "  colorAdjust advanced_sharpness=$sharpness kernel=gaussian_blur sigma=$sigma")
+            }
+        }
+
+        val clarity = normalizedEffectPercent(effects, "clarity")
+        if (clarity != 0f) {
+            val clarityContrast = (DEFAULT_CONTRAST + (clarity * 0.22f))
+                .coerceIn(0.01f, 2.0f)
+            val claritySaturation = (DEFAULT_SATURATION + (clarity * 0.12f))
+                .coerceIn(0f, 2f)
+            filters.add(Contrast(clarityContrast))
+            filters.add(RgbMatrix { _, _ -> createSaturationMatrix(claritySaturation) })
+            Log.d(
+                "3S_4K",
+                "  colorAdjust advanced_clarity=$clarity contrast=$clarityContrast saturation=$claritySaturation"
+            )
+        }
+    }
+
+    private fun createHighlightAdjustmentMatrix(highlights: Float): FloatArray {
+        val factor = (1f + (highlights * 0.18f)).coerceIn(0.01f, 2f)
+        val offset = highlights * 0.047f
+        return createRgbGainOffsetMatrix(factor, factor, factor, offset)
+    }
+
+    private fun createShadowAdjustmentMatrix(shadows: Float): FloatArray {
+        val factor = (1f + (shadows * 0.10f)).coerceIn(0.01f, 2f)
+        val offset = shadows * 0.071f
+        return createRgbGainOffsetMatrix(factor, factor, factor, offset)
+    }
+
+    private fun createSelectiveToneFallbackMatrix(highlights: Float, shadows: Float): FloatArray {
+        var matrix = createIdentityRgbMatrix()
+        if (highlights != 0f) {
+            matrix = multiplyRgbMatrices(createHighlightAdjustmentMatrix(highlights), matrix)
+        }
+        if (shadows != 0f) {
+            matrix = multiplyRgbMatrices(createShadowAdjustmentMatrix(shadows), matrix)
+        }
+        return matrix
+    }
+
+    private fun createIdentityRgbMatrix(): FloatArray {
+        return floatArrayOf(
+            1f, 0f, 0f, 0f,
+            0f, 1f, 0f, 0f,
+            0f, 0f, 1f, 0f,
+            0f, 0f, 0f, 1f
+        )
+    }
+
+    private fun multiplyRgbMatrices(a: FloatArray, b: FloatArray): FloatArray {
+        val result = FloatArray(16)
+        for (row in 0..3) {
+            for (column in 0..3) {
+                var value = 0f
+                for (i in 0..3) {
+                    value += a[(row * 4) + i] * b[(i * 4) + column]
+                }
+                result[(row * 4) + column] = value
+            }
+        }
+        return result
+    }
+
+    private fun createRgbGainOffsetMatrix(
+        redGain: Float,
+        greenGain: Float,
+        blueGain: Float,
+        offset: Float
+    ): FloatArray {
+        return floatArrayOf(
+            redGain, 0f, 0f, offset,
+            0f, greenGain, 0f, offset,
+            0f, 0f, blueGain, offset,
+            0f, 0f, 0f, 1f
+        )
+    }
+
+    private class SelectiveToneCurveEffect(
+        private val highlights: Float,
+        private val shadows: Float,
+        private val fallbackMatrix: FloatArray
+    ) : GlEffect {
+        override fun toGlShaderProgram(
+            context: android.content.Context,
+            useHdr: Boolean
+        ): androidx.media3.effect.GlShaderProgram {
+            return try {
+                SelectiveToneCurveShaderProgram(useHdr, highlights, shadows)
+            } catch (e: Exception) {
+                Log.w(
+                    "3S_4K",
+                    "selective_tone_curve_fallback reason=${e.javaClass.simpleName} " +
+                        "highlights=$highlights shadows=$shadows"
+                )
+                RgbMatrix { _, _ -> fallbackMatrix }.toGlShaderProgram(context, useHdr)
+            }
+        }
+
+        override fun isNoOp(inputWidth: Int, inputHeight: Int): Boolean {
+            return highlights == 0f && shadows == 0f
+        }
+    }
+
+    private class SelectiveToneCurveShaderProgram(
+        useHdr: Boolean,
+        private val highlights: Float,
+        private val shadows: Float
+    ) : BaseGlShaderProgram(useHdr, 1) {
+        private val glProgram: GlProgram = GlProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+
+        init {
+            glProgram.setBufferAttribute(
+                "aFramePosition",
+                GlUtil.getNormalizedCoordinateBounds(),
+                2
+            )
+            glProgram.setBufferAttribute(
+                "aTexCoords",
+                GlUtil.getTextureCoordinateBounds(),
+                2
+            )
+        }
+
+        override fun configure(inputWidth: Int, inputHeight: Int): Size {
+            return Size(inputWidth, inputHeight)
+        }
+
+        override fun drawFrame(inputTexId: Int, presentationTimeUs: Long) {
+            try {
+                glProgram.use()
+                glProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
+                glProgram.setFloatUniform("uHighlights", highlights.coerceIn(-1f, 1f))
+                glProgram.setFloatUniform("uShadows", shadows.coerceIn(-1f, 1f))
+                glProgram.setFloatUniform("uShadowStart", 0.02f)
+                glProgram.setFloatUniform("uShadowEnd", 0.55f)
+                glProgram.setFloatUniform("uHighlightStart", 0.45f)
+                glProgram.setFloatUniform("uHighlightEnd", 0.98f)
+                glProgram.bindAttributesAndUniforms()
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+                GlUtil.checkGlError()
+            } catch (e: Exception) {
+                throw VideoFrameProcessingException.from(e, presentationTimeUs)
+            }
+        }
+
+        override fun release() {
+            try {
+                glProgram.delete()
+            } catch (e: Exception) {
+                throw VideoFrameProcessingException.from(e)
+            } finally {
+                super.release()
+            }
+        }
+
+        companion object {
+            private const val VERTEX_SHADER = """
+                attribute vec4 aFramePosition;
+                attribute vec2 aTexCoords;
+                varying vec2 vTexCoords;
+
+                void main() {
+                  gl_Position = aFramePosition;
+                  vTexCoords = aTexCoords;
+                }
+            """
+
+            private const val FRAGMENT_SHADER = """
+                precision mediump float;
+
+                uniform sampler2D uTexSampler;
+                uniform float uHighlights;
+                uniform float uShadows;
+                uniform float uShadowStart;
+                uniform float uShadowEnd;
+                uniform float uHighlightStart;
+                uniform float uHighlightEnd;
+                varying vec2 vTexCoords;
+
+                vec3 adjustHighlights(vec3 color, float amount, float mask) {
+                  if (amount > 0.0) {
+                    return mix(color, color + ((1.0 - color) * amount), mask);
+                  }
+                  return mix(color, color * (1.0 + amount), mask);
+                }
+
+                vec3 adjustShadows(vec3 color, float amount, float mask) {
+                  if (amount > 0.0) {
+                    return mix(color, color + ((1.0 - color) * amount), mask);
+                  }
+                  return mix(color, color * (1.0 + amount), mask);
+                }
+
+                void main() {
+                  vec4 color = texture2D(uTexSampler, vTexCoords);
+                  float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
+                  float shadowMask = 1.0 - smoothstep(uShadowStart, uShadowEnd, luma);
+                  float highlightMask = smoothstep(uHighlightStart, uHighlightEnd, luma);
+                  vec3 adjusted = color.rgb;
+                  adjusted = adjustShadows(adjusted, uShadows, shadowMask * abs(uShadows));
+                  adjusted = adjustHighlights(adjusted, uHighlights, highlightMask * abs(uHighlights));
+                  gl_FragColor = vec4(clamp(adjusted, 0.0, 1.0), color.a);
+                }
+            """
+        }
+    }
+
+    private class SharpnessConvolution(private val amount: Float) : SeparableConvolution() {
+        override fun getConvolution(presentationTimeUs: Long): ConvolutionFunction1D {
+            val strength = (amount * 0.28f).coerceIn(0f, 0.28f)
+            return object : ConvolutionFunction1D {
+                override fun domainStart(): Float = -1f
+                override fun domainEnd(): Float = 1f
+                override fun value(samplePosition: Float): Float {
+                    return when (Math.round(samplePosition)) {
+                        0 -> 1f + (2f * strength)
+                        -1, 1 -> -strength
+                        else -> 0f
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -1786,8 +2170,8 @@ class MainActivity: FlutterFragmentActivity() {
     ) {
         Log.d("3S_EDIT", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         Log.d("3S_EDIT", "클립 추출 시작: ${segments.size}개 구간")
-        Log.d("3S_EDIT", "입력: $inputPath")
-        Log.d("3S_EDIT", "출력: $outputDir")
+        Log.d("3S_EDIT", "입력: ${redactedPath(inputPath)}")
+        Log.d("3S_EDIT", "출력: ${redactedPath(outputDir)}")
         Log.d("3S_EDIT", "품질: $quality")
         Log.d("3S_EDIT", "노이즈 억제: $enableNoiseSuppression")
         Log.d("3S_SUBTITLE", "자막: ${subtitles.size}개, 등급: $userTier")
@@ -1797,7 +2181,7 @@ class MainActivity: FlutterFragmentActivity() {
             val outputDirectory = File(outputDir)
             if (!outputDirectory.exists()) {
                 outputDirectory.mkdirs()
-                Log.d("3S_EDIT", "✓ 출력 디렉토리 생성: $outputDir")
+                Log.d("3S_EDIT", "✓ 출력 디렉토리 생성: ${redactedPath(outputDir)}")
             }
 
             // 생성된 파일 경로 추적
@@ -1909,7 +2293,7 @@ class MainActivity: FlutterFragmentActivity() {
                                 Log.d("3S_EDIT", "  ✓ 구간 ${index + 1} 추출 성공")
                                 Log.d("3S_EDIT", "    - 파일 크기: ${fileSizeMB}MB")
                                 Log.d("3S_EDIT", "    - 처리 시간: ${durationSec}초")
-                                Log.d("3S_EDIT", "    - 저장 경로: $outputPath")
+                                Log.d("3S_EDIT", "    - 저장 경로: ${redactedPath(outputPath)}")
                                 
                                 extractedFilePaths.add(outputPath)
                                 
@@ -2005,8 +2389,8 @@ class MainActivity: FlutterFragmentActivity() {
     ) {
         Log.d("3S_EDIT", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         Log.d("3S_EDIT", "영상 편집 시작")
-        Log.d("3S_EDIT", "  - 입력: $inputPath")
-        Log.d("3S_EDIT", "  - 출력: $outputPath")
+        Log.d("3S_EDIT", "  - 입력: ${redactedPath(inputPath)}")
+        Log.d("3S_EDIT", "  - 출력: ${redactedPath(outputPath)}")
         Log.d("3S_EDIT", "  - 자막: ${subtitles.size}개")
         Log.d("3S_EDIT", "  - 스티커: ${stickers.size}개")
         Log.d("3S_EDIT", "  - GPU 이펙트: ${videoEffects.keys}")
@@ -2066,7 +2450,7 @@ class MainActivity: FlutterFragmentActivity() {
             // 6. BGM 추가 (선택적)
             val sequences = mutableListOf(sequence)
             if (bgmPath != null && File(bgmPath).exists()) {
-                Log.d("3S_EDIT", "✓ BGM 추가: $bgmPath")
+                Log.d("3S_EDIT", "✓ BGM 추가: ${redactedPath(bgmPath)}")
                 
                 val retriever = MediaMetadataRetriever()
                 retriever.setDataSource(bgmPath)

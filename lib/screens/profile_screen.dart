@@ -87,11 +87,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
   static const Color _cardColor = Colors.white;
   static const Color _primaryBlue = Color(0xFF2BADEE);
 
+  bool _isSameSyncSummary(SyncStatusSummary a, SyncStatusSummary b) {
+    return a.queuedCount == b.queuedCount &&
+        a.uploadingCount == b.uploadingCount &&
+        a.failedCount == b.failedCount &&
+        a.completedCount == b.completedCount;
+  }
+
+  bool _isSameCloudStatsSnapshot(CloudStatsSnapshot snapshot) {
+    return _cloudClipCount == snapshot.cloudClipCount &&
+        _cloudStorageUsageGB == snapshot.storageUsageGB &&
+        _cloudStorageLimitGB == snapshot.storageLimitGB &&
+        _isSameSyncSummary(_syncSummary, snapshot.syncSummary);
+  }
+
   @override
   void initState() {
     super.initState();
     _cloudStatsSubscription = _cloudService.cloudStatsStream.listen((snapshot) {
       if (!mounted) return;
+      if (_isSameCloudStatsSnapshot(snapshot)) return;
       setState(() {
         _cloudClipCount = snapshot.cloudClipCount;
         _cloudStorageUsageGB = snapshot.storageUsageGB;
@@ -103,6 +118,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       summary,
     ) {
       if (!mounted) return;
+      if (_isSameSyncSummary(_syncSummary, summary)) return;
       setState(() => _syncSummary = summary);
       unawaited(
         _cloudService.refreshCloudStatsSnapshot(trigger: 'sync_summary_update'),

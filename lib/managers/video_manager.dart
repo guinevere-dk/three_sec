@@ -19,10 +19,12 @@ import 'user_status_manager.dart';
 import '../models/vlog_project.dart';
 import '../services/cloud_service.dart';
 import '../services/auth_service.dart';
+import '../services/cloud_clip_session_resolver.dart';
 import '../services/local_index_service.dart';
 import '../constants/clip_policy.dart';
 import '../models/clip_save_job_state.dart';
 import '../models/import_state.dart';
+import '../utils/brightness_adjustment_policy.dart';
 import '../utils/quality_policy.dart';
 
 enum ClipTransferUiState {
@@ -39,6 +41,44 @@ enum ClipStorageState {
   cloudOnly,
   failedUpload,
   failedDownload,
+}
+
+enum ProjectSaveLocalStatus { success, blocked, failed }
+
+enum ProjectSaveCloudStatus {
+  success,
+  skippedGuest,
+  skippedNoCloudWrite,
+  skippedSessionCachePathGuard,
+  failedOrUnavailable,
+}
+
+class ProjectSaveResult {
+  final ProjectSaveLocalStatus localStatus;
+  final ProjectSaveCloudStatus cloudStatus;
+  final String reason;
+  final String projectId;
+  final DateTime completedAt;
+  final Object? error;
+
+  const ProjectSaveResult({
+    required this.localStatus,
+    required this.cloudStatus,
+    required this.reason,
+    required this.projectId,
+    required this.completedAt,
+    this.error,
+  });
+
+  bool get localSaved => localStatus == ProjectSaveLocalStatus.success;
+  bool get cloudSaved => cloudStatus == ProjectSaveCloudStatus.success;
+  bool get cloudFailed =>
+      cloudStatus == ProjectSaveCloudStatus.failedOrUnavailable;
+
+  bool get canRetry =>
+      localStatus == ProjectSaveLocalStatus.failed ||
+      localStatus == ProjectSaveLocalStatus.blocked ||
+      cloudFailed;
 }
 
 class ImportPreviewData {
@@ -94,6 +134,7 @@ class VideoManager extends ChangeNotifier {
   String currentVlogFolder = "";
   List<String> clipAlbums = List.from(_systemClipAlbums);
   List<String> vlogAlbums = List.from(_systemVlogAlbums);
+  List<String> get projectFolders => List.unmodifiable(vlogAlbums);
   List<String> recordedVideoPaths = [];
   List<String> vlogProjectPaths = [];
   Set<String> favorites = {};
@@ -928,6 +969,22 @@ class VideoManager extends ChangeNotifier {
   // 앱 시작 시 호출 (initAlbumSystem 등에서 호출)
   Future<void> loadProjects() async {
     try {
+      final authService = AuthService();
+      final userStatus = UserStatusManager();
+      final canReadProjectDatabase =
+          !authService.isGuest && userStatus.canReadExistingCloudClips();
+
+      if (!canReadProjectDatabase) {
+        vlogProjects = [];
+        debugPrint(
+          '[VideoManager][ProjectAccess] loadProjects skipped '
+          'reason=${authService.isGuest ? 'guest' : 'free_without_paid_history'} '
+          'tier=${userStatus.currentTier}',
+        );
+        notifyListeners();
+        return;
+      }
+
       final appDir = await getApplicationDocumentsDirectory();
       final projectDir = Directory(p.join(appDir.path, 'vlog_projects'));
 
@@ -958,14 +1015,40 @@ class VideoManager extends ChangeNotifier {
       }
 
       await _hydrateProjectCloudMetadata();
+      vlogProjects = _filterProjectsForCurrentSession(vlogProjects);
       notifyListeners();
     } catch (e) {
       print("Error loading projects: $e");
     }
   }
 
+  List<VlogProject> _filterProjectsForCurrentSession(
+    List<VlogProject> projects,
+  ) {
+    final authService = AuthService();
+    final userStatus = UserStatusManager();
+    if (authService.isGuest || !userStatus.canReadExistingCloudClips()) {
+      return const [];
+    }
+
+    final currentOwner = userStatus.userId?.trim();
+    if (currentOwner == null || currentOwner.isEmpty) {
+      return const [];
+    }
+
+    final allowLegacyOwnerlessProjects = userStatus.isStandardOrAbove();
+    return projects.where((project) {
+      final owner = project.ownerAccountId?.trim();
+      if (owner != null && owner.isNotEmpty) {
+        return owner == currentOwner;
+      }
+      return allowLegacyOwnerlessProjects;
+    }).toList();
+  }
+
   Future<void> _hydrateProjectCloudMetadata() async {
-    if (AuthService().isGuest) {
+    if (AuthService().isGuest ||
+        !UserStatusManager().canReadExistingCloudClips()) {
       return;
     }
 
@@ -1033,7 +1116,7 @@ class VideoManager extends ChangeNotifier {
       folderName: targetFolder,
       trashedFromFolderName: null,
     );
-    await saveProject(updatedProject);
+    await saveProject(updatedProject, reason: 'project_folder_move');
     notifyListeners();
   }
 
@@ -1056,7 +1139,7 @@ class VideoManager extends ChangeNotifier {
       folderName: targetFolder,
       trashedFromFolderName: null,
     );
-    await saveProject(restoredProject);
+    await saveProject(restoredProject, reason: 'project_restore_from_trash');
     notifyListeners();
   }
 
@@ -1089,7 +1172,7 @@ class VideoManager extends ChangeNotifier {
     );
 
     vlogProjects.insert(0, copiedProject);
-    await saveProject(copiedProject);
+    await saveProject(copiedProject, reason: 'project_copy_to_folder');
     notifyListeners();
   }
 
@@ -1097,6 +1180,7 @@ class VideoManager extends ChangeNotifier {
   Future<VlogProject> createProject(
     List<String> videoPaths, {
     void Function(int current, int total, String path)? onClipPrepared,
+    bool persist = true,
   }) async {
     final timestamp = DateTime.now();
     final ownerUid = UserStatusManager().userId;
@@ -1210,34 +1294,119 @@ class VideoManager extends ChangeNotifier {
       updatedAt: timestamp,
     );
 
-    vlogProjects.insert(0, newProject); // 리스트 맨 앞에 추가
-    await saveProject(newProject);
-    notifyListeners();
+    if (persist) {
+      vlogProjects.insert(0, newProject); // 리스트 맨 앞에 추가
+      await saveProject(newProject, reason: 'project_create');
+      notifyListeners();
+    } else {
+      debugPrint(
+        '[VideoManager][CreateProject] transient_project_created '
+        'projectId=${newProject.id} clipCount=${newProject.clips.length}',
+      );
+    }
     return newProject;
   }
 
   // 프로젝트 저장 (파일 덮어쓰기)
-  Future<void> saveProject(VlogProject project) async {
+  Future<ProjectSaveResult> saveProject(
+    VlogProject project, {
+    String reason = 'unspecified',
+  }) async {
     try {
       final appDir = await getApplicationDocumentsDirectory();
       final projectDir = Directory(p.join(appDir.path, 'vlog_projects'));
       if (!await projectDir.exists()) await projectDir.create(recursive: true);
 
-      var projectToSave = project;
+      var projectToSave = _sanitizeProjectSessionCacheReferences(project);
+      final isGuest = _isGuestForLocalProjectSave();
+      final clipPaths = projectToSave.clips.map((clip) => clip.path).toList();
+      final cloudOnlyClipCount = clipPaths
+          .where((path) => _isCloudOnlyPlaceholderPath(path))
+          .length;
+      final cacheLikeClipCount = clipPaths
+          .where(_isProjectSessionCachePath)
+          .length;
+      final folderNameForLog = _projectFolderNameForLog(project.folderName);
 
-      final cloudMeta = AuthService().isGuest
-          ? null
-          : await CloudService().upsertVlogProjectMetadata(project);
+      debugPrint(
+        '[VideoManager][ProjectCloudSave][start] '
+        'reason=$reason '
+        'folderName=$folderNameForLog '
+        'isGuest=$isGuest '
+        'clipCount=${clipPaths.length} '
+        'cloudOnlyClipCount=$cloudOnlyClipCount '
+        'cacheLikeClipCount=$cacheLikeClipCount '
+        'hasCloudProjectId=${projectToSave.cloudProjectId?.isNotEmpty == true} '
+        'hasCloudSyncedAt=${projectToSave.cloudSyncedAt != null}',
+      );
+
+      if (cacheLikeClipCount > 0) {
+        debugPrint(
+          '[VideoManager][ProjectCloudSave][blocked] '
+          'reason=$reason '
+          'folderName=$folderNameForLog '
+          'localWrite=skipped '
+          'cloudSaveStatus=skipped_session_cache_path_guard '
+          'clipCount=${clipPaths.length} '
+          'cloudOnlyClipCount=$cloudOnlyClipCount '
+          'cacheLikeClipCount=$cacheLikeClipCount',
+        );
+        return ProjectSaveResult(
+          localStatus: ProjectSaveLocalStatus.blocked,
+          cloudStatus: ProjectSaveCloudStatus.skippedSessionCachePathGuard,
+          reason: reason,
+          projectId: project.id,
+          completedAt: DateTime.now(),
+        );
+      }
+
+      final canWriteProjectCloud =
+          !isGuest && UserStatusManager().canStartNewCloudWrite();
+      ProjectCloudMetadata? cloudMeta;
+      var cloudStatus = ProjectSaveCloudStatus.skippedGuest;
+      if (canWriteProjectCloud) {
+        try {
+          cloudMeta = await CloudService().upsertVlogProjectMetadata(
+            projectToSave,
+          );
+          cloudStatus = cloudMeta != null
+              ? ProjectSaveCloudStatus.success
+              : ProjectSaveCloudStatus.failedOrUnavailable;
+        } catch (e) {
+          cloudStatus = ProjectSaveCloudStatus.failedOrUnavailable;
+          debugPrint(
+            '[VideoManager][ProjectCloudSave][cloud_fail_local_continue] '
+            'reason=$reason errorType=${e.runtimeType}',
+          );
+        }
+      } else if (!isGuest) {
+        cloudStatus = ProjectSaveCloudStatus.skippedNoCloudWrite;
+      }
       if (cloudMeta != null) {
-        projectToSave = project.copyWith(
+        projectToSave.cloudProjectId = cloudMeta.projectId;
+        projectToSave.cloudSyncedAt = cloudMeta.lastSyncedAt;
+        projectToSave = projectToSave.copyWith(
           cloudProjectId: cloudMeta.projectId,
           cloudSyncedAt: cloudMeta.lastSyncedAt,
-          updatedAt: project.updatedAt,
+          updatedAt: projectToSave.updatedAt,
         );
       }
 
       final file = File(p.join(projectDir.path, '${project.id}.json'));
       await file.writeAsString(jsonEncode(projectToSave.toJson()));
+
+      debugPrint(
+        '[VideoManager][ProjectCloudSave][done] '
+        'reason=$reason '
+        'folderName=$folderNameForLog '
+        'localWrite=success '
+        'cloudSaveStatus=${_projectCloudStatusLogValue(cloudStatus)} '
+        'clipCount=${projectToSave.clips.length} '
+        'cloudOnlyClipCount=$cloudOnlyClipCount '
+        'cacheLikeClipCount=$cacheLikeClipCount '
+        'hasCloudProjectId=${projectToSave.cloudProjectId?.isNotEmpty == true} '
+        'hasCloudSyncedAt=${projectToSave.cloudSyncedAt != null}',
+      );
 
       // 리스트 내 상태 업데이트 (필요 시)
       final index = vlogProjects.indexWhere((p) => p.id == project.id);
@@ -1246,8 +1415,42 @@ class VideoManager extends ChangeNotifier {
       }
 
       await _upsertLocalIndexProject(projectToSave);
+      return ProjectSaveResult(
+        localStatus: ProjectSaveLocalStatus.success,
+        cloudStatus: cloudStatus,
+        reason: reason,
+        projectId: project.id,
+        completedAt: DateTime.now(),
+      );
     } catch (e) {
+      debugPrint(
+        '[VideoManager][ProjectCloudSave][fail] '
+        'reason=$reason localWrite=failed errorType=${e.runtimeType}',
+      );
       print("Error saving project: $e");
+      return ProjectSaveResult(
+        localStatus: ProjectSaveLocalStatus.failed,
+        cloudStatus: ProjectSaveCloudStatus.failedOrUnavailable,
+        reason: reason,
+        projectId: project.id,
+        completedAt: DateTime.now(),
+        error: e,
+      );
+    }
+  }
+
+  String _projectCloudStatusLogValue(ProjectSaveCloudStatus status) {
+    switch (status) {
+      case ProjectSaveCloudStatus.success:
+        return 'success';
+      case ProjectSaveCloudStatus.skippedGuest:
+        return 'skipped_guest';
+      case ProjectSaveCloudStatus.skippedNoCloudWrite:
+        return 'skipped_no_cloud_write';
+      case ProjectSaveCloudStatus.skippedSessionCachePathGuard:
+        return 'skipped_session_cache_path_guard';
+      case ProjectSaveCloudStatus.failedOrUnavailable:
+        return 'failed_or_unavailable';
     }
   }
 
@@ -1264,7 +1467,8 @@ class VideoManager extends ChangeNotifier {
           break;
         }
       }
-      if (!AuthService().isGuest) {
+      if (!AuthService().isGuest &&
+          UserStatusManager().canStartNewCloudWrite()) {
         await CloudService().deleteVlogProjectMetadata(
           localProjectId: id,
           cloudProjectId: target?.cloudProjectId,
@@ -1485,6 +1689,7 @@ class VideoManager extends ChangeNotifier {
 
   bool _isReservedClipAlbum(String name) => _systemClipAlbums.contains(name);
   bool _isReservedVlogAlbum(String name) => _systemVlogAlbums.contains(name);
+  bool isReservedProjectFolder(String name) => _isReservedVlogAlbum(name);
 
   Future<void> _updateAlbumClipCounts() async {
     final rawBase = await _rawBaseDir();
@@ -1586,7 +1791,9 @@ class VideoManager extends ChangeNotifier {
   }
 
   Future<Uint8List?> getThumbnail(String videoPath) async {
-    if (_isCloudOnlyPlaceholderPath(videoPath)) return null;
+    if (_isCloudOnlyPlaceholderPath(videoPath)) {
+      return getCloudThumbnail(videoPath);
+    }
 
     _logThumbnailEvent(
       event: 'request',
@@ -1878,7 +2085,13 @@ class VideoManager extends ChangeNotifier {
   // Get multiple thumbnails distributed evenly across duration
   /// Get cached video duration. Creates a temporary controller only on first call.
   Future<Duration> getVideoDuration(String videoPath) async {
-    if (_isCloudOnlyPlaceholderPath(videoPath)) return Duration.zero;
+    if (_isCloudOnlyPlaceholderPath(videoPath)) {
+      final durationMs = _cloudMetadataByPath[videoPath]?.durationMs;
+      if (durationMs != null && durationMs > 0) {
+        return Duration(milliseconds: durationMs);
+      }
+      return Duration.zero;
+    }
 
     if (_durationCache.containsKey(videoPath)) {
       return _durationCache[videoPath]!;
@@ -2331,6 +2544,8 @@ class VideoManager extends ChangeNotifier {
     double bgmVolume = 0.5,
     String quality = kQualityDefaultCaptureQuality,
     String userTier = 'free',
+    String canvasAspectRatioPreset = 'r9_16',
+    Map<String, double>? brightnessAdjustments,
     String? mergeSessionId,
     String? debugTag,
     bool Function()? isCancelRequested,
@@ -2468,10 +2683,10 @@ class VideoManager extends ChangeNotifier {
 
     try {
       final String abGroup = _resolvedMergeAbGroup();
-      final normalizedTier = normalizeUserTierKey(userTier);
-      final clampedQuality = clampExportQualityForTier(
-        requestedQuality: normalizeExportQuality(quality),
-        tier: userTierFromKey(normalizedTier),
+      final normalizedTier = normalizeRuntimeUserTierKey(userTier);
+      final clampedQuality = clampExportQuality(
+        userTierFromKey(normalizedTier),
+        normalizeExportQuality(quality),
       );
       final exportProfile = videoQualityProfile(clampedQuality);
       final String fallbackQuality = _downgradeQualityForRetry(clampedQuality);
@@ -2607,6 +2822,9 @@ class VideoManager extends ChangeNotifier {
       final videoPaths = clips.map((c) => c.path).toList();
       final startTimes = clips.map((c) => c.startTime.inMilliseconds).toList();
       final endTimes = clips.map((c) => c.endTime.inMilliseconds).toList();
+      final videoEffects = brightnessAdjustmentsForExportVideoEffects(
+        brightnessAdjustments,
+      );
 
       Future<String?> invokeMergeAttempt({
         required int attempt,
@@ -2624,6 +2842,8 @@ class VideoManager extends ChangeNotifier {
           'bgmVolume': bgmVolume,
           'quality': qualityValue,
           'userTier': normalizedTier,
+          'canvasAspectRatioPreset': canvasAspectRatioPreset,
+          'videoEffects': videoEffects,
           'targetFps': videoQualityProfile(qualityValue).targetFps,
           'targetBitrate': videoQualityProfile(qualityValue).targetBitrate,
           'videoCodec': videoQualityProfile(qualityValue).videoCodec,
@@ -2640,6 +2860,7 @@ class VideoManager extends ChangeNotifier {
         debugPrint(
           '[VideoManager][Export] invoking_merge start clipCount=${clips.length} '
           'quality=$qualityValue tier=$normalizedTier totalDurationMs=$totalDurationMs '
+          'videoEffects=${videoEffects.keys.join("|")} '
           'targetFps=${videoQualityProfile(qualityValue).targetFps} '
           'targetBitrate=${videoQualityProfile(qualityValue).targetBitrate} '
           'attempt=$attempt retryPlan=$retryPlan audioSimplify=$audioSimplify '
@@ -2722,8 +2943,10 @@ class VideoManager extends ChangeNotifier {
 
         // 갤러리에 저장 (Gal 패키지 사용)
         if (result != null) {
+          var gallerySaved = false;
           try {
-            await Gal.putVideo(result, album: '2S_Vlog');
+            await Gal.putVideo(result, album: 'MOA');
+            gallerySaved = true;
             _logExportState(
               phase: 'saving',
               state: 'done',
@@ -2734,7 +2957,7 @@ class VideoManager extends ChangeNotifier {
               reason: 'Gal.putVideo',
             );
             debugPrint(
-              '[VideoManager][Export] SavedToGallery result=$result album=2S_Vlog',
+              '[VideoManager][Export] SavedToGallery result=$result album=MOA',
             );
           } catch (e) {
             _logExportState(
@@ -2747,6 +2970,25 @@ class VideoManager extends ChangeNotifier {
               details: e.toString(),
             );
             debugPrint('[VideoManager][Export] save_gallery_failed message=$e');
+          }
+
+          if (!gallerySaved) {
+            try {
+              final partial = File(result);
+              if (await partial.exists()) {
+                await partial.delete();
+              }
+              debugPrint(
+                '[VideoManager][Export][PartialOutput] '
+                'deleted_unregistered_partial_output=true',
+              );
+            } catch (deleteError) {
+              debugPrint(
+                '[VideoManager][Export][PartialOutput] '
+                'delete_failed errorType=${deleteError.runtimeType}',
+              );
+            }
+            return null;
           }
 
           final resultDurationMs = await _getVideoDurationMsNative(result);
@@ -3154,7 +3396,7 @@ class VideoManager extends ChangeNotifier {
             ? project.trashedFromFolderName
             : currentFolder,
       );
-      await saveProject(updated);
+      await saveProject(updated, reason: 'project_move_to_trash');
       notifyListeners();
     }
   }
@@ -3305,8 +3547,34 @@ class VideoManager extends ChangeNotifier {
     // Phase 5: 프로젝트 로드
     await loadProjects();
     await _cleanupClipOwnershipMetadata();
+    await _cleanupExpiredCloudClipSessionCache(trigger: 'app_start');
 
     // notifyListeners(); // _updateVlogProjectCount calls notifyListeners
+  }
+
+  Future<void> _cleanupExpiredCloudClipSessionCache({
+    required String trigger,
+    Iterable<String> protectedPaths = const <String>[],
+  }) async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final result = await CloudClipSessionResolver.cleanupExpiredSessionCache(
+        appDocumentsDirectory: appDir,
+        protectedPaths: protectedPaths,
+      );
+      debugPrint(
+        '[VideoManager][SessionCacheCleanup] trigger=$trigger '
+        'deleted=${result.deletedFileCount} '
+        'protected=${result.skippedProtectedCount} '
+        'fresh=${result.skippedFreshCount} '
+        'failed=${result.failedDeleteCount}',
+      );
+    } catch (e) {
+      debugPrint(
+        '[VideoManager][SessionCacheCleanup] trigger=$trigger failed '
+        'errorType=${e.runtimeType}',
+      );
+    }
   }
 
   void clearClips() {
@@ -3336,8 +3604,18 @@ class VideoManager extends ChangeNotifier {
   }
 
   Future<void> syncCloudMetadataToLibrary({String trigger = 'manual'}) async {
-    if (AuthService().isGuest ||
-        !UserStatusManager().canReadExistingCloudClips()) {
+    final isGuest = AuthService().isGuest;
+    final canReadExistingCloudClips = UserStatusManager()
+        .canReadExistingCloudClips();
+    if (isGuest || !canReadExistingCloudClips) {
+      final reason = isGuest ? 'guest' : 'read_gate_blocked';
+      await clearUserScopedLocalCache(
+        trigger: 'cloud_metadata_pull_skipped_$reason:$trigger',
+      );
+      debugPrint(
+        '[VideoManager][CloudSync] metadata_pull_skipped_clear_stale '
+        'trigger=$trigger reason=$reason',
+      );
       return;
     }
 
@@ -3416,6 +3694,90 @@ class VideoManager extends ChangeNotifier {
 
   bool _isCloudOnlyPlaceholderPath(String path) =>
       path.startsWith('cloud_only://');
+
+  bool _isProjectSessionCachePath(String path) {
+    return path.contains('edit_session_cache') ||
+        path.contains('export_session_cache') ||
+        path.contains('cloud_clip_session_cache');
+  }
+
+  VlogProject _sanitizeProjectSessionCacheReferences(VlogProject project) {
+    var changed = false;
+    final sanitizedClips = project.clips
+        .map((clip) {
+          if (!_isProjectSessionCachePath(clip.path)) return clip;
+          final restoredPath = _restoreCloudPlaceholderForSessionCachePath(
+            clip.path,
+          );
+          if (restoredPath == null) return clip;
+          changed = true;
+          debugPrint(
+            '[VideoManager][ProjectSessionCacheGuard][restored] '
+            'projectId=${project.id} cachePath=<redacted-cache-path>',
+          );
+          return clip.copyWith(path: restoredPath);
+        })
+        .toList(growable: false);
+
+    if (!changed) return project;
+
+    final sanitized = project.copyWith(
+      clips: sanitizedClips,
+      updatedAt: project.updatedAt,
+    );
+    project.clips = sanitizedClips;
+    return sanitized;
+  }
+
+  String? _restoreCloudPlaceholderForSessionCachePath(String cachePath) {
+    final cacheFileName = p.basename(cachePath);
+    final cacheVideoId = p.basename(p.dirname(cachePath));
+    for (final entry in _cloudMetadataByPath.entries) {
+      final placeholder = entry.key;
+      final metadata = entry.value;
+      if (!_isCloudOnlyPlaceholderPath(placeholder)) continue;
+      if (_safeSessionCacheSegment(metadata.videoId) != cacheVideoId) continue;
+
+      final metadataFileName = metadata.fileName.trim().isEmpty
+          ? p.basename(placeholder)
+          : metadata.fileName;
+      if (_safeSessionCacheFileName(metadataFileName) != cacheFileName) {
+        continue;
+      }
+      return placeholder;
+    }
+    return null;
+  }
+
+  String _safeSessionCacheSegment(String value) {
+    final sanitized = value.trim().replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    return sanitized.isEmpty ? 'unknown' : sanitized;
+  }
+
+  String _safeSessionCacheFileName(String value) {
+    final baseName = p.basename(value.trim());
+    final sanitized = baseName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    return sanitized.toLowerCase().endsWith('.mp4')
+        ? sanitized
+        : '${sanitized.isEmpty ? 'clip' : sanitized}.mp4';
+  }
+
+  bool _isGuestForLocalProjectSave() {
+    try {
+      return AuthService().isGuest;
+    } catch (e) {
+      debugPrint(
+        '[VideoManager][ProjectCloudSave][auth_unavailable_local_only] '
+        'errorType=${e.runtimeType}',
+      );
+      return true;
+    }
+  }
+
+  String _projectFolderNameForLog(String folderName) {
+    if (folderName == '기본' || folderName == '휴지통') return folderName;
+    return folderName.trim().isEmpty ? '<empty>' : '<custom>';
+  }
 
   String _cloudPlaceholderAlbum(String path) {
     if (!_isCloudOnlyPlaceholderPath(path)) return '';
@@ -3683,7 +4045,7 @@ class VideoManager extends ChangeNotifier {
     final bool shouldFavorite = selected.any((project) => !project.isFavorite);
     for (final project in selected) {
       final updated = project.copyWith(isFavorite: shouldFavorite);
-      await saveProject(updated);
+      await saveProject(updated, reason: 'project_toggle_favorite_batch');
     }
 
     notifyListeners();
@@ -4900,12 +5262,46 @@ class VideoManager extends ChangeNotifier {
       _clipTransferUiStateByPath[path];
 
   /// 사용자 전환(로그아웃/계정 변경) 시 사용자 종속 로컬 캐시 초기화
-  Future<void> clearUserScopedLocalCache() async {
+  Future<void> clearUserScopedLocalCache({String trigger = 'manual'}) async {
+    final cloudSyncedRemoved = _cloudSyncedPaths.length;
+    final cloudMetadataRemoved = _cloudMetadataByPath.length;
+    final recordedPlaceholderRemoved = recordedVideoPaths
+        .where(_isCloudOnlyPlaceholderPath)
+        .length;
+    final favoritePlaceholderRemoved = favorites
+        .where(_isCloudOnlyPlaceholderPath)
+        .length;
+    final transferUiStateRemoved = _clipTransferUiStateByPath.keys
+        .where(_isCloudOnlyPlaceholderPath)
+        .length;
+
+    recordedVideoPaths.removeWhere(_isCloudOnlyPlaceholderPath);
+    favorites.removeWhere(_isCloudOnlyPlaceholderPath);
+    _clipTransferUiStateByPath.removeWhere(
+      (path, _) => _isCloudOnlyPlaceholderPath(path),
+    );
     _cloudSyncedPaths.clear();
     _cloudMetadataByPath.clear();
     _cloudThumbnailMemoryCache.clear();
     _cloudThumbnailRuntimeCounts.updateAll((key, value) => 0);
+    final localIndexRemoved = await _removeCloudOnlyLocalIndexEntries();
     await _persistCloudSyncedPaths();
+    try {
+      await _updateAlbumClipCounts();
+    } catch (e) {
+      debugPrint(
+        '[VideoManager][UserScopedCache] album_count_refresh_failed '
+        'trigger=$trigger errorType=${e.runtimeType}',
+      );
+    }
+    debugPrint(
+      '[VideoManager][UserScopedCache] cleared trigger=$trigger '
+      'cloudSynced=$cloudSyncedRemoved cloudMetadata=$cloudMetadataRemoved '
+      'recordedPlaceholders=$recordedPlaceholderRemoved '
+      'favoritePlaceholders=$favoritePlaceholderRemoved '
+      'transferUiState=$transferUiStateRemoved '
+      'localIndexCloudOnly=$localIndexRemoved',
+    );
     notifyListeners();
   }
 
@@ -4922,17 +5318,28 @@ class VideoManager extends ChangeNotifier {
     await initAlbumSystem();
   }
 
-  Future<void> createNewVlogAlbum(String name) async {
-    final trimmed = name.trim();
-    if (trimmed.isEmpty) return;
-    if (_isReservedVlogAlbum(trimmed)) return;
+  String normalizeProjectFolderName(String name) {
+    return name.trim().replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+  }
 
-    final safeName = trimmed.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+  Future<void> createNewVlogAlbum(String name) async {
+    await createProjectFolder(name);
+  }
+
+  Future<String?> createProjectFolder(String name) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return null;
+    if (_isReservedVlogAlbum(trimmed)) return null;
+
+    final safeName = normalizeProjectFolderName(trimmed);
+    if (safeName.isEmpty) return null;
     final base = await _vlogFoldersBaseDir();
     final target = Directory(p.join(base.path, safeName));
-    if (await target.exists()) return;
-    await target.create(recursive: true);
+    if (!await target.exists()) {
+      await target.create(recursive: true);
+    }
     await initAlbumSystem();
+    return safeName;
   }
 
   Future<void> deleteClipAlbums(Set<String> names) async {
@@ -4974,6 +5381,7 @@ class VideoManager extends ChangeNotifier {
           folderName: '휴지통',
           trashedFromFolderName: project.folderName,
         ),
+        reason: 'project_folder_delete_to_trash',
       );
     }
 
@@ -4998,6 +5406,11 @@ class VideoManager extends ChangeNotifier {
     }
 
     notifyListeners();
+  }
+
+  Future<void> deleteProjectFolders(Set<String> names) async {
+    await deleteVlogAlbums(names);
+    await initAlbumSystem();
   }
 
   Future<void> moveToTrash(String path) async {
@@ -5695,6 +6108,13 @@ class VideoManager extends ChangeNotifier {
   }
 
   Future<void> _upsertLocalIndexClip(String path) async {
+    if (_isProjectSessionCachePath(path)) {
+      debugPrint(
+        '[VideoManager][LocalIndex][skip_session_cache_clip] '
+        'path=<redacted-cache-path>',
+      );
+      return;
+    }
     final entries = await _localIndexService.loadEntries();
     final owner = getClipOwnerAccountId(path) ?? UserStatusManager().userId;
 
@@ -5719,6 +6139,13 @@ class VideoManager extends ChangeNotifier {
   }
 
   Future<void> _upsertLocalIndexProject(VlogProject project) async {
+    if (project.clips.any((clip) => _isProjectSessionCachePath(clip.path))) {
+      debugPrint(
+        '[VideoManager][LocalIndex][skip_session_cache_project] '
+        'projectId=${project.id}',
+      );
+      return;
+    }
     final entries = await _localIndexService.loadEntries();
     final entry = LocalIndexEntry(
       id: project.id,
@@ -5744,6 +6171,13 @@ class VideoManager extends ChangeNotifier {
     required VideoMetadata video,
     required String albumName,
   }) async {
+    if (_isProjectSessionCachePath(placeholderPath)) {
+      debugPrint(
+        '[VideoManager][LocalIndex][skip_session_cache_cloud_clip] '
+        'path=<redacted-cache-path>',
+      );
+      return;
+    }
     final entries = await _localIndexService.loadEntries();
     final owner =
         getClipOwnerAccountId(placeholderPath) ?? UserStatusManager().userId;
@@ -5783,6 +6217,22 @@ class VideoManager extends ChangeNotifier {
     final entries = await _localIndexService.loadEntries();
     entries.removeWhere((e) => e.pathOrKey == key);
     await _localIndexService.saveEntries(entries);
+  }
+
+  Future<int> _removeCloudOnlyLocalIndexEntries() async {
+    final entries = await _localIndexService.loadEntries();
+    final before = entries.length;
+    entries.removeWhere(
+      (entry) =>
+          entry.type == 'clip' &&
+          (entry.pathOrKey.startsWith('cloud_only://') ||
+              entry.cloudStorageTier == 'cloud'),
+    );
+    final removed = before - entries.length;
+    if (removed > 0) {
+      await _localIndexService.saveEntries(entries);
+    }
+    return removed;
   }
 
   Future<void> _loadClipOwnershipMetadata() async {
