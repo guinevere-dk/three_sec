@@ -3,6 +3,31 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// 사용자 등급 타입
 enum UserTier { free, standard, premium }
 
+enum CloudAccessState {
+  activeStandard,
+  expiredGracePeriod,
+  readOnlyCloud,
+  scheduledForCleanup,
+  deleted,
+}
+
+extension CloudAccessStateKey on CloudAccessState {
+  String get key {
+    switch (this) {
+      case CloudAccessState.activeStandard:
+        return 'active_standard';
+      case CloudAccessState.expiredGracePeriod:
+        return 'expired_grace_period';
+      case CloudAccessState.readOnlyCloud:
+        return 'read_only_cloud';
+      case CloudAccessState.scheduledForCleanup:
+        return 'scheduled_for_cleanup';
+      case CloudAccessState.deleted:
+        return 'deleted';
+    }
+  }
+}
+
 /// 사용자 상태 및 등급 관리 매니저
 ///
 /// - 사용자의 구독 등급(Free, Standard, Premium)을 관리
@@ -66,6 +91,19 @@ class UserStatusManager {
     return _inferExpiryAt(_purchaseDate!, _productId);
   }
 
+  DateTime? get cloudEntitlementExpiryAt {
+    final inferredExpiryAt = estimatedExpiryAt;
+    final pendingFreeAt = _nextTier == UserTier.free
+        ? _nextTierEffectiveAt
+        : null;
+
+    if (pendingFreeAt == null) return inferredExpiryAt;
+    if (inferredExpiryAt == null) return pendingFreeAt;
+    return pendingFreeAt.isBefore(inferredExpiryAt)
+        ? pendingFreeAt
+        : inferredExpiryAt;
+  }
+
   /// 마지막으로 확인된 유료 구독의 추정 만료 시각
   ///
   /// 자동 만료 강등 후에도 Cloud read grace 판단을 위해 기존 구매일/productId를
@@ -89,13 +127,7 @@ class UserStatusManager {
   ///
   /// Standard/Premium이어도 추정 만료 시각이 지났으면 즉시 신규 Cloud write를 차단한다.
   bool canStartNewCloudWrite({DateTime? now}) {
-    if (!isStandardOrAbove()) return false;
-
-    final expiryAt = estimatedExpiryAt;
-    if (expiryAt == null) return true;
-
-    final current = now ?? DateTime.now();
-    return current.isBefore(expiryAt);
+    return cloudAccessState(now: now) == CloudAccessState.activeStandard;
   }
 
   /// R3 정책: 기존 Cloud clip 목록/read/download 가능 여부.
@@ -103,27 +135,52 @@ class UserStatusManager {
   /// 활성 Standard/Premium은 허용한다. Free로 강등된 경우에도 구매 이력에서 추정한
   /// 만료 후 30일 grace 안이면 기존 Cloud clip read/download만 허용한다.
   bool canReadExistingCloudClips({DateTime? now}) {
-    if (isStandardOrAbove()) {
-      final expiryAt = estimatedExpiryAt;
-      if (expiryAt == null) return true;
+    final state = cloudAccessState(now: now);
+    return state == CloudAccessState.activeStandard ||
+        state == CloudAccessState.expiredGracePeriod ||
+        state == CloudAccessState.readOnlyCloud;
+  }
 
-      final current = now ?? DateTime.now();
-      if (current.isBefore(expiryAt)) return true;
+  CloudAccessState cloudAccessState({DateTime? now}) {
+    final current = now ?? DateTime.now();
+
+    if (isStandardOrAbove()) {
+      final expiryAt = cloudEntitlementExpiryAt;
+      if (expiryAt == null || current.isBefore(expiryAt)) {
+        return CloudAccessState.activeStandard;
+      }
+
       final graceEndsAt = expiryAt.add(const Duration(days: 30));
-      return current.isBefore(graceEndsAt);
+      if (current.isBefore(graceEndsAt)) {
+        return CloudAccessState.expiredGracePeriod;
+      }
+      return CloudAccessState.scheduledForCleanup;
     }
 
     final expiryAt = lastKnownPaidExpiryAt;
     final graceEndsAt = cloudReadGraceEndsAt;
-    if (expiryAt == null || graceEndsAt == null) return false;
+    if (expiryAt == null || graceEndsAt == null) {
+      return CloudAccessState.deleted;
+    }
 
-    final current = now ?? DateTime.now();
-    return (current.isAfter(expiryAt) || current.isAtSameMomentAs(expiryAt)) &&
-        current.isBefore(graceEndsAt);
+    final hasExpired =
+        current.isAfter(expiryAt) || current.isAtSameMomentAs(expiryAt);
+    if (hasExpired && current.isBefore(graceEndsAt)) {
+      return CloudAccessState.readOnlyCloud;
+    }
+    return hasExpired
+        ? CloudAccessState.scheduledForCleanup
+        : CloudAccessState.deleted;
   }
 
   bool isInCloudReadGrace({DateTime? now}) {
-    return _currentTier == UserTier.free && canReadExistingCloudClips(now: now);
+    final state = cloudAccessState(now: now);
+    return state == CloudAccessState.expiredGracePeriod ||
+        state == CloudAccessState.readOnlyCloud;
+  }
+
+  String cloudAccessStateKey({DateTime? now}) {
+    return cloudAccessState(now: now).key;
   }
 
   DateTime _inferExpiryAt(DateTime purchaseDate, String? productId) {
@@ -157,7 +214,7 @@ class UserStatusManager {
   ///
   /// 반환값은 KST 기준 자정 시각(타임존 미지정 DateTime 로컬 표현)이다.
   DateTime? get autoDowngradeAt {
-    final expiryAt = estimatedExpiryAt;
+    final expiryAt = cloudEntitlementExpiryAt;
     if (expiryAt == null) return null;
     final expiryKst = _toKst(expiryAt);
     return DateTime(expiryKst.year, expiryKst.month, expiryKst.day + 1);

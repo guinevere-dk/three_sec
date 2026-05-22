@@ -20,6 +20,7 @@ import '../models/vlog_project.dart';
 import '../services/cloud_service.dart';
 import '../services/auth_service.dart';
 import '../services/cloud_clip_session_resolver.dart';
+import '../services/cloud_video_cache_service.dart';
 import '../services/local_index_service.dart';
 import '../constants/clip_policy.dart';
 import '../models/clip_save_job_state.dart';
@@ -3562,12 +3563,19 @@ class VideoManager extends ChangeNotifier {
         appDocumentsDirectory: appDir,
         protectedPaths: protectedPaths,
       );
+      final videoCacheResult = await const CloudVideoCacheService()
+          .cleanupCache(
+            appDocumentsDirectory: appDir,
+            protectedPaths: protectedPaths,
+          );
       debugPrint(
         '[VideoManager][SessionCacheCleanup] trigger=$trigger '
         'deleted=${result.deletedFileCount} '
         'protected=${result.skippedProtectedCount} '
         'fresh=${result.skippedFreshCount} '
-        'failed=${result.failedDeleteCount}',
+        'failed=${result.failedDeleteCount} '
+        'videoCacheDeleted=${videoCacheResult.deletedFileCount} '
+        'videoCacheBytesAfter=${videoCacheResult.bytesAfter}',
       );
     } catch (e) {
       debugPrint(
@@ -3698,7 +3706,8 @@ class VideoManager extends ChangeNotifier {
   bool _isProjectSessionCachePath(String path) {
     return path.contains('edit_session_cache') ||
         path.contains('export_session_cache') ||
-        path.contains('cloud_clip_session_cache');
+        path.contains('cloud_clip_session_cache') ||
+        path.contains('cloud_video_cache');
   }
 
   VlogProject _sanitizeProjectSessionCacheReferences(VlogProject project) {
@@ -3732,11 +3741,13 @@ class VideoManager extends ChangeNotifier {
   String? _restoreCloudPlaceholderForSessionCachePath(String cachePath) {
     final cacheFileName = p.basename(cachePath);
     final cacheVideoId = p.basename(p.dirname(cachePath));
+    final isCanonicalVideoCachePath = cachePath.contains('cloud_video_cache');
     for (final entry in _cloudMetadataByPath.entries) {
       final placeholder = entry.key;
       final metadata = entry.value;
       if (!_isCloudOnlyPlaceholderPath(placeholder)) continue;
       if (_safeSessionCacheSegment(metadata.videoId) != cacheVideoId) continue;
+      if (isCanonicalVideoCachePath) return placeholder;
 
       final metadataFileName = metadata.fileName.trim().isEmpty
           ? p.basename(placeholder)

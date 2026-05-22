@@ -7,6 +7,8 @@ import 'package:in_app_purchase/in_app_purchase.dart';
 import '../managers/user_status_manager.dart';
 import '../services/auth_service.dart';
 import '../services/iap_service.dart';
+import '../services/standard_annual_offer_service.dart';
+import 'legal_document_screen.dart';
 import 'login_screen.dart';
 
 class PaywallScreen extends StatefulWidget {
@@ -24,6 +26,8 @@ class _PaywallScreenState extends State<PaywallScreen> {
 
   final IAPService _iapService = IAPService();
   final AuthService _authService = AuthService();
+  final StandardAnnualOfferService _standardAnnualOfferService =
+      const StandardAnnualOfferService();
   VideoPlayerController? _videoController;
   bool _isPurchaseLoading = false;
   bool _isCatalogLoading = false;
@@ -98,6 +102,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
         _isCatalogLoading = false;
         _catalogError = initialized ? null : '스토어 연결 또는 상품 조회에 실패했습니다.';
       });
+      _logAnnualOfferDiagnostics('catalog_loaded');
     }
   }
 
@@ -160,7 +165,11 @@ class _PaywallScreenState extends State<PaywallScreen> {
   }
 
   Future<bool> _waitForLocalTierSync(String productId) async {
-    final targetTier = _tierFromProductId(productId);
+    final targetTier = IAPEntitlementPolicy.tierForProductId(productId);
+    if (targetTier == null) {
+      debugPrint('[Paywall] unsupported purchase productId=$productId');
+      return false;
+    }
     final userStatus = UserStatusManager();
     final deadline = DateTime.now().add(const Duration(seconds: 5));
 
@@ -173,43 +182,6 @@ class _PaywallScreenState extends State<PaywallScreen> {
       await Future.delayed(const Duration(milliseconds: 120));
     }
     return false;
-  }
-
-  UserTier _tierFromProductId(String productId) {
-    if (productId == IAPService.standardMonthly ||
-        productId == IAPService.standardAnnual) {
-      return UserTier.standard;
-    }
-    return UserTier.premium;
-  }
-
-  Future<void> _handleRestorePressed() async {
-    if (!mounted) {
-      return;
-    }
-
-    if (!await _ensureAuthenticatedAccountForPaidAction()) {
-      return;
-    }
-
-    setState(() => _isPurchaseLoading = true);
-
-    final success = await _iapService.restorePurchases();
-
-    if (!mounted) {
-      return;
-    }
-
-    setState(() => _isPurchaseLoading = false);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          success
-              ? '구매 복원 요청을 처리했습니다. 잠시 후 상태가 반영됩니다.'
-              : '구매 복원에 실패했습니다. 네트워크 상태를 확인하고 다시 시도해주세요.',
-        ),
-      ),
-    );
   }
 
   Future<bool> _ensureAuthenticatedAccountForPaidAction() async {
@@ -447,7 +419,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
                 flex: 2,
                 child: _buildPricingCard(
                   title: "Monthly",
-                  price: _getPrice(_currentMonthlyProductId),
+                  price: _monthlyPriceText,
                   periodLabel: '/ month',
                   isHero: false,
                   isSelected: _selectedPricingIndex == 1,
@@ -459,9 +431,10 @@ class _PaywallScreenState extends State<PaywallScreen> {
                 flex: 3,
                 child: _buildPricingCard(
                   title: "Annual",
-                  price: _getPrice(_currentAnnualProductId),
+                  price: _annualPriceText,
                   periodLabel: '/ year',
-                  subtitle: "Best value",
+                  subtitle: _annualSubtitleText,
+                  detailText: _annualDetailText,
                   isHero: true,
                   isSelected: _selectedPricingIndex == 0,
                   onTap: () => setState(() => _selectedPricingIndex = 0),
@@ -498,14 +471,29 @@ class _PaywallScreenState extends State<PaywallScreen> {
             width: double.infinity,
             height: 54,
             child: ElevatedButton(
-              onPressed: _isPurchaseLoading
+              onPressed: _isPurchaseLoading || !_canStartSelectedPurchase
                   ? null
                   : () async {
                       if (!await _ensureAuthenticatedAccountForPaidAction()) {
                         return;
                       }
-                      final selectedProductId = _selectedProductId;
-                      final ok = await _iapService.purchase(selectedProductId);
+                      final purchaseRequest = _selectedPurchaseRequest;
+                      if (purchaseRequest == null) {
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('가격 정보를 불러온 뒤 다시 시도해주세요.'),
+                          ),
+                        );
+                        return;
+                      }
+                      _logPurchaseStartDiagnostics(purchaseRequest);
+                      final ok = await _iapService.purchase(
+                        purchaseRequest.productId,
+                        offerToken: purchaseRequest.offerToken,
+                        requireOfferToken: purchaseRequest.requireOfferToken,
+                        purchaseContext: purchaseRequest.purchaseContext,
+                      );
                       if (!ok && mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
@@ -550,27 +538,35 @@ class _PaywallScreenState extends State<PaywallScreen> {
   }
 
   Widget _buildBenefitList() {
-    final benefits = [
-      "1080p Export",
-      "Cloud 백업/이동",
-      "편집 기능",
-      "Standard Support",
-    ];
+    final benefits = ["50GB Cloud 백업", "1080p 내보내기", "편집 기능"];
 
-    return Column(
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
       children: benefits
           .map(
-            (b) => Padding(
-              padding: const EdgeInsets.only(bottom: 8),
+            (benefit) => Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              decoration: BoxDecoration(
+                color: Colors.white.withAlpha(16),
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: Colors.white.withAlpha(28)),
+              ),
               child: Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.check_circle, color: Colors.white54, size: 20),
-                  const SizedBox(width: 8),
+                  const Icon(
+                    Icons.check_circle,
+                    color: Colors.white54,
+                    size: 16,
+                  ),
+                  const SizedBox(width: 6),
                   Text(
-                    b,
+                    benefit,
                     style: TextStyle(
                       color: Colors.white.withAlpha(235),
-                      fontWeight: FontWeight.w500,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
                 ],
@@ -586,6 +582,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
     required String price,
     required String periodLabel,
     String? subtitle,
+    String? detailText,
     required bool isHero,
     required bool isSelected,
     required VoidCallback onTap,
@@ -670,10 +667,24 @@ class _PaywallScreenState extends State<PaywallScreen> {
               const SizedBox(height: 4),
               Text(
                 subtitle,
+                textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: _goldDark,
                   fontSize: 12,
                   fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+            if (detailText != null) ...[
+              const SizedBox(height: 3),
+              Text(
+                detailText,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white.withAlpha(isSelected ? 170 : 120),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  height: 1.2,
                 ),
               ),
             ],
@@ -687,44 +698,21 @@ class _PaywallScreenState extends State<PaywallScreen> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        _buildLegalTextButton('RESTORE'),
+        _buildLegalTextButton('TERMS', LegalDocumentType.terms),
         Text('  •  ', style: TextStyle(color: Colors.white.withAlpha(70))),
-        _buildLegalTextButton('TERMS'),
-        Text('  •  ', style: TextStyle(color: Colors.white.withAlpha(70))),
-        _buildLegalTextButton('PRIVACY'),
+        _buildLegalTextButton('PRIVACY', LegalDocumentType.privacy),
       ],
     );
   }
 
-  Widget _buildLegalTextButton(String label) {
+  Widget _buildLegalTextButton(String label, LegalDocumentType type) {
     return InkWell(
       onTap: () async {
         if (!mounted) {
           return;
         }
 
-        if (label == 'RESTORE') {
-          await _handleRestorePressed();
-          return;
-        }
-
-        if (label == 'TERMS') {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('이용약관이 준비되지 않았습니다.')));
-          return;
-        }
-
-        if (label == 'PRIVACY') {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('개인정보 처리방침이 준비되지 않았습니다.')),
-          );
-          return;
-        }
-
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('준비되지 않은 링크입니다.')));
+        await openLegalDocument(context, type);
       },
       borderRadius: BorderRadius.circular(8),
       child: Padding(
@@ -742,29 +730,120 @@ class _PaywallScreenState extends State<PaywallScreen> {
     );
   }
 
-  String _getPrice(String productId) {
-    try {
-      if (_products.isEmpty) return '---';
-      final product = _products.firstWhere((p) => p.id == productId);
-      return product.price;
-    } catch (e) {
-      return '---';
-    }
-  }
-
   String get _currentMonthlyProductId {
     return IAPService.standardMonthly;
   }
 
-  String get _currentAnnualProductId {
-    return IAPService.standardAnnual;
+  ProductDetails? _findProduct(String productId) {
+    for (final product in _products) {
+      if (product.id == productId) {
+        return product;
+      }
+    }
+    return null;
   }
 
-  String get _selectedProductId {
-    return _selectedPricingIndex == 0
-        ? _currentAnnualProductId
-        : _currentMonthlyProductId;
+  StandardAnnualOfferViewModel get _annualOfferViewModel {
+    return _standardAnnualOfferService.buildFromProductDetails(_products);
   }
+
+  void _logAnnualOfferDiagnostics(String trigger) {
+    final annualOffer = _annualOfferViewModel;
+    final selectedPurchase = _selectedPurchaseRequest;
+    debugPrint(
+      '[Paywall][StandardAnnualOffer] '
+      'trigger=$trigger '
+      'annualProductFound=${annualOffer.annualProductFound} '
+      'annualProductCount=${annualOffer.annualProductCount} '
+      'androidOfferDetailsCount=${annualOffer.androidOfferDetailsCount} '
+      'launchTagOfferFound=${annualOffer.launchTagOfferFound} '
+      'selectedOfferTokenExists=${selectedPurchase?.offerToken != null} '
+      'displayedAnnualBasePriceAvailable=${annualOffer.basePlanPriceText != null} '
+      'displayedLaunchPriceAvailable=${annualOffer.launchOfferPriceText != null} '
+      'canPurchase=${annualOffer.canPurchase} '
+      'purchaseMode=${annualOffer.purchaseMode.name} '
+      'diagnosticReason=${annualOffer.diagnosticReason}',
+    );
+  }
+
+  void _logPurchaseStartDiagnostics(_PaywallPurchaseRequest purchaseRequest) {
+    debugPrint(
+      '[Paywall][StandardAnnualOffer] '
+      'purchaseStarted=true '
+      'productId=${purchaseRequest.productId} '
+      'purchaseContext=${purchaseRequest.purchaseContext} '
+      'purchaseStartedWithLaunchOffer=${purchaseRequest.isLaunchOfferPurchase} '
+      'selectedOfferTokenExists=${purchaseRequest.offerToken != null} '
+      'requireOfferToken=${purchaseRequest.requireOfferToken}',
+    );
+  }
+
+  String get _monthlyPriceText {
+    if (_isCatalogLoading) return '...';
+    return _findProduct(_currentMonthlyProductId)?.price ?? '---';
+  }
+
+  String get _annualPriceText {
+    if (_isCatalogLoading) return '...';
+    final annualOffer = _annualOfferViewModel;
+    return annualOffer.launchOfferPriceText ??
+        annualOffer.basePlanPriceText ??
+        '---';
+  }
+
+  String? get _annualSubtitleText {
+    final annualOffer = _annualOfferViewModel;
+    if (annualOffer.hasLaunchOffer) {
+      return '첫해 선택';
+    }
+    if (annualOffer.purchaseMode ==
+        StandardAnnualOfferPurchaseMode.regularAnnual) {
+      return 'Best value';
+    }
+    return null;
+  }
+
+  String? get _annualDetailText {
+    final annualOffer = _annualOfferViewModel;
+    if (!annualOffer.hasLaunchOffer) return null;
+    final basePlanPrice = annualOffer.basePlanPriceText;
+    if (basePlanPrice == null) return null;
+    return '이후 $basePlanPrice / year';
+  }
+
+  _PaywallPurchaseRequest? get _selectedPurchaseRequest {
+    if (_isCatalogLoading || _catalogError != null) return null;
+    if (_selectedPricingIndex == 1) {
+      final product = _findProduct(_currentMonthlyProductId);
+      if (product == null) return null;
+      return const _PaywallPurchaseRequest(
+        productId: IAPService.standardMonthly,
+        purchaseContext: 'standard_monthly_regular',
+      );
+    }
+
+    final annualOffer = _annualOfferViewModel;
+    if (!annualOffer.canPurchase) return null;
+    switch (annualOffer.purchaseMode) {
+      case StandardAnnualOfferPurchaseMode.launchOffer:
+        return _PaywallPurchaseRequest(
+          productId: IAPService.standardAnnual,
+          offerToken: annualOffer.launchOfferToken,
+          requireOfferToken: true,
+          purchaseContext: 'standard_annual_launch',
+        );
+      case StandardAnnualOfferPurchaseMode.regularAnnual:
+        return _PaywallPurchaseRequest(
+          productId: IAPService.standardAnnual,
+          offerToken: annualOffer.regularAnnualOfferToken,
+          purchaseContext: 'standard_annual_regular',
+        );
+      case StandardAnnualOfferPurchaseMode.unavailable:
+        return null;
+    }
+  }
+
+  bool get _canStartSelectedPurchase => _selectedPurchaseRequest != null;
 
   bool get _isDowngradeSelection {
     final currentTier = UserStatusManager().currentTier;
@@ -785,4 +864,20 @@ class _PaywallScreenState extends State<PaywallScreen> {
 
     return '구매 전 로그인한 계정에 Standard 구독 권한이 안전하게 연결됩니다.';
   }
+}
+
+class _PaywallPurchaseRequest {
+  final String productId;
+  final String? offerToken;
+  final bool requireOfferToken;
+  final String purchaseContext;
+
+  const _PaywallPurchaseRequest({
+    required this.productId,
+    this.offerToken,
+    this.requireOfferToken = false,
+    required this.purchaseContext,
+  });
+
+  bool get isLaunchOfferPurchase => purchaseContext == 'standard_annual_launch';
 }

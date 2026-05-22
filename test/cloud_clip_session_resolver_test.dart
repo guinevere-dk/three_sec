@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:three_s/services/cloud_clip_session_resolver.dart';
 import 'package:three_s/services/cloud_service.dart';
+import 'package:three_s/services/cloud_video_cache_service.dart';
 
 void main() {
   late Directory tempDir;
@@ -189,6 +190,45 @@ void main() {
     expect(downloadClient.markMovedToDeviceCalls, 0);
   });
 
+  test(
+    'edit then export reuses canonical video cache without redownload',
+    () async {
+      metadataSource.items[placeholder] = metadata(fileSize: 4);
+      downloadClient.bytesToWrite = 4;
+
+      final editResult = await resolver.resolve(
+        placeholderPath: placeholder,
+        appDocumentsDirectory: tempDir,
+        purpose: CloudClipSessionPurpose.edit,
+      );
+      final exportResult = await resolver.resolve(
+        placeholderPath: placeholder,
+        appDocumentsDirectory: tempDir,
+        purpose: CloudClipSessionPurpose.export,
+      );
+
+      expect(editResult.isSuccess, isTrue);
+      expect(exportResult.isSuccess, isTrue);
+      expect(editResult.source!.fromCache, isFalse);
+      expect(exportResult.source!.fromCache, isTrue);
+      expect(
+        editResult.source!.sessionLocalPath,
+        contains('edit_session_cache'),
+      );
+      expect(
+        exportResult.source!.sessionLocalPath,
+        contains('export_session_cache'),
+      );
+      expect(downloadClient.downloadCalls, 1);
+
+      final canonicalPath = const CloudVideoCacheService().canonicalPath(
+        appDocumentsDirectory: tempDir,
+        videoId: 'video-123',
+      );
+      expect(await File(canonicalPath).exists(), isTrue);
+    },
+  );
+
   test('fails on cache path collision with unexpected size', () async {
     metadataSource.items[placeholder] = metadata(fileSize: 4);
     final cachedPath = CloudClipSessionResolver.buildSessionLocalPath(
@@ -352,6 +392,34 @@ void main() {
       isFalse,
     );
   });
+
+  test(
+    'nonpersistent materialization guard includes canonical video cache',
+    () {
+      final canonicalPath = const CloudVideoCacheService().canonicalPath(
+        appDocumentsDirectory: tempDir,
+        videoId: 'video-123',
+      );
+      final outsidePath =
+          '${tempDir.path}${Platform.pathSeparator}vlog_projects'
+          '${Platform.pathSeparator}cloud_video_cache.mp4';
+
+      expect(
+        CloudClipSessionResolver.isNonPersistentCloudMaterializationPath(
+          appDocumentsDirectory: tempDir,
+          path: canonicalPath,
+        ),
+        isTrue,
+      );
+      expect(
+        CloudClipSessionResolver.isNonPersistentCloudMaterializationPath(
+          appDocumentsDirectory: tempDir,
+          path: outsidePath,
+        ),
+        isFalse,
+      );
+    },
+  );
 }
 
 class FakeMetadataSource implements CloudClipMetadataSource {
@@ -371,6 +439,7 @@ class FakeDownloadClient implements CloudClipSessionDownloadClient {
   Future<bool> downloadSessionCopy({
     required VideoMetadata metadata,
     required String localPath,
+    required CloudClipSessionPurpose purpose,
   }) async {
     downloadCalls++;
     if (!shouldSucceed) return false;

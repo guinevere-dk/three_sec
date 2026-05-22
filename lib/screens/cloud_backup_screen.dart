@@ -8,6 +8,7 @@ import '../managers/user_status_manager.dart';
 import '../managers/video_manager.dart';
 import '../services/auth_service.dart';
 import '../services/cloud_service.dart';
+import '../utils/cloud_cost_policy.dart';
 import 'subscription_management_screen.dart';
 
 class CloudBackupScreen extends StatefulWidget {
@@ -118,6 +119,8 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
         .where((video) => _selectedVideoIds.contains(video.videoId))
         .toList(growable: false);
     if (targets.isEmpty || _downloadingVideoIds.isNotEmpty) return;
+    if (!await _confirmBulkRestoreIfNeeded(targets)) return;
+    if (!mounted) return;
 
     var success = 0;
     var failed = 0;
@@ -210,6 +213,50 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text('복원 완료 $success개, 실패 $failed개')));
+  }
+
+  Future<bool> _confirmBulkRestoreIfNeeded(List<VideoMetadata> targets) async {
+    if (!shouldShowBulkRestoreEstimate(selectedCount: targets.length)) {
+      return true;
+    }
+
+    final estimatedBytes = estimateBulkRestoreBytes(
+      targets.map((video) => video.fileSize),
+    );
+    final shouldStage = shouldSuggestStagedBulkRestore(
+      estimatedBytes: estimatedBytes,
+    );
+    final stageCount = suggestedBulkRestoreStageCount(
+      estimatedBytes: estimatedBytes,
+    );
+    final estimateBody = shouldStage
+        ? '선택한 Cloud 클립의 예상 다운로드 용량은 ${formatCloudBytes(estimatedBytes)}입니다.\n'
+              '${formatCloudBytes(kBulkRestoreDailyLimitBytes)} 단위로 나누면 약 $stageCount회에 걸쳐 안정적으로 복원할 수 있습니다.'
+        : '선택한 Cloud 클립의 예상 다운로드 용량은 ${formatCloudBytes(estimatedBytes)}입니다.';
+    final body = '$estimateBody\n\n반복 재생과 내보내기는 가능한 경우 로컬 캐시를 우선 사용합니다.';
+
+    if (!mounted) return false;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Cloud 복원 용량 확인'),
+          content: Text(body),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('취소'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('복원'),
+            ),
+          ],
+        );
+      },
+    );
+
+    return confirmed == true;
   }
 
   @override

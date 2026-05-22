@@ -56,6 +56,78 @@ class IapVerificationException implements Exception {
   String toString() => 'IapVerificationException(code=$code, message=$message)';
 }
 
+class IAPPurchaseIntent {
+  IAPPurchaseIntent({
+    required this.productId,
+    String? offerToken,
+    this.requireOfferToken = false,
+    String purchaseContext = 'regular',
+  }) : offerToken = normalizeOfferToken(offerToken),
+       purchaseContext = normalizePurchaseContext(purchaseContext);
+
+  final String productId;
+  final String? offerToken;
+  final bool requireOfferToken;
+  final String purchaseContext;
+
+  bool get hasOfferToken => offerToken != null;
+  bool get canStart => !requireOfferToken || hasOfferToken;
+  String? get guardFailureReason => canStart ? null : 'offer_token_required';
+
+  static String? normalizeOfferToken(String? token) {
+    final normalized = token?.trim();
+    if (normalized == null || normalized.isEmpty) return null;
+    return normalized;
+  }
+
+  static String normalizePurchaseContext(String context) {
+    final trimmed = context.trim();
+    if (trimmed.isEmpty) return 'regular';
+    final safe = trimmed.replaceAll(RegExp(r'[^A-Za-z0-9_.-]'), '_');
+    if (safe.length <= 64) return safe;
+    return safe.substring(0, 64);
+  }
+}
+
+class IAPEntitlementPolicy {
+  const IAPEntitlementPolicy._();
+
+  static String normalizeProductId(String productId) =>
+      productId.trim().toLowerCase();
+
+  static bool isSupportedProductId(String productId) {
+    return IAPService._productIds.contains(normalizeProductId(productId));
+  }
+
+  static UserTier? tierForProductId(String productId) {
+    switch (normalizeProductId(productId)) {
+      case IAPService.standardMonthly:
+      case IAPService.standardAnnual:
+        return UserTier.standard;
+      case IAPService.premiumMonthly:
+      case IAPService.premiumAnnual:
+        return UserTier.premium;
+      default:
+        return null;
+    }
+  }
+
+  static String? canonicalVerifiedProductId({
+    required String purchaseProductId,
+    required String verifiedProductId,
+  }) {
+    final purchase = normalizeProductId(purchaseProductId);
+    final verified = normalizeProductId(verifiedProductId);
+    if (!isSupportedProductId(purchase) || !isSupportedProductId(verified)) {
+      return null;
+    }
+    if (purchase != verified) {
+      return null;
+    }
+    return verified;
+  }
+}
+
 class _EntitlementStoreRefreshStats {
   const _EntitlementStoreRefreshStats({
     this.candidateCount = 0,
@@ -356,7 +428,37 @@ class IAPService {
   ///
   /// [productId] 구매할 상품 ID
   /// 반환: 구매 요청 성공 여부 (실제 구매 완료는 _onPurchaseUpdate에서 처리)
-  Future<bool> purchase(String productId) async {
+  Future<bool> purchase(
+    String productId, {
+    String? offerToken,
+    bool requireOfferToken = false,
+    String purchaseContext = 'regular',
+  }) async {
+    final intent = IAPPurchaseIntent(
+      productId: productId,
+      offerToken: offerToken,
+      requireOfferToken: requireOfferToken,
+      purchaseContext: purchaseContext,
+    );
+
+    // ignore: avoid_print
+    print(
+      '[IAPService][PurchaseIntent] request '
+      'productId=${intent.productId} context=${intent.purchaseContext} '
+      'offerTokenExists=${intent.hasOfferToken} '
+      'requireOfferToken=${intent.requireOfferToken}',
+    );
+
+    if (!intent.canStart) {
+      // ignore: avoid_print
+      print(
+        '[IAPService][PurchaseIntent] blocked '
+        'productId=${intent.productId} context=${intent.purchaseContext} '
+        'reason=${intent.guardFailureReason} offerTokenExists=false',
+      );
+      return false;
+    }
+
     // 초기화 확인
     if (!_isInitialized || !_isAvailable) {
       print('[IAPService] 서비스가 초기화되지 않았습니다');
@@ -372,9 +474,9 @@ class IAPService {
     // 상품 찾기
     ProductDetails? product;
     try {
-      product = _products.firstWhere((p) => p.id == productId);
+      product = _products.firstWhere((p) => p.id == intent.productId);
     } catch (e) {
-      print('[IAPService] 상품을 찾을 수 없습니다: $productId');
+      print('[IAPService] 상품을 찾을 수 없습니다: ${intent.productId}');
       return false;
     }
 
@@ -384,7 +486,7 @@ class IAPService {
       final userManager = UserStatusManager();
       final currentTier = userManager.currentTier;
       final currentProductId = userManager.productId;
-      final targetTier = _tierFromProductId(productId);
+      final targetTier = _tierFromProductId(intent.productId);
       final changeType = _resolvePlanChangeType(
         currentTier: currentTier,
         targetTier: targetTier,
@@ -393,7 +495,9 @@ class IAPService {
       print(
         '[IAPService][PlanChange] request '
         'currentTier=$currentTier currentProductId=$currentProductId '
-        'targetTier=$targetTier targetProductId=$productId changeType=$changeType',
+        'targetTier=$targetTier targetProductId=${intent.productId} '
+        'changeType=$changeType purchaseContext=${intent.purchaseContext} '
+        'offerTokenExists=${intent.hasOfferToken}',
       );
 
       // 구매 파라미터 생성
@@ -403,6 +507,8 @@ class IAPService {
           product: product,
           currentProductId: currentProductId,
           changeType: changeType,
+          offerToken: intent.offerToken,
+          purchaseContext: intent.purchaseContext,
         );
       } else {
         purchaseParam = PurchaseParam(productDetails: product);
@@ -412,7 +518,7 @@ class IAPService {
       final success = await _iap.buyNonConsumable(purchaseParam: purchaseParam);
 
       if (!success) {
-        print('[IAPService] 구매 요청 실패: $productId');
+        print('[IAPService] 구매 요청 실패: ${intent.productId}');
         _isPurchasing = false;
         return false;
       }
@@ -420,11 +526,14 @@ class IAPService {
       if (changeType == IAPPlanChangeType.downgrade) {
         await _reservePendingDowngrade(
           targetTier: targetTier,
-          targetProductId: productId,
+          targetProductId: intent.productId,
         );
       }
 
-      print('[IAPService] 구매 요청 성공: $productId');
+      print(
+        '[IAPService] 구매 요청 성공: ${intent.productId} '
+        'context=${intent.purchaseContext} offerTokenExists=${intent.hasOfferToken}',
+      );
       // _isPurchasing은 _onPurchaseUpdate에서 false로 변경됨
       return true;
     } catch (e, stackTrace) {
@@ -543,7 +652,7 @@ class IAPService {
   ) async {
     try {
       // 1. 기본 검증: productID가 유효한지 확인
-      if (!_productIds.contains(purchase.productID)) {
+      if (!IAPEntitlementPolicy.isSupportedProductId(purchase.productID)) {
         final orderId = _safePurchaseOrderId(purchase);
         print(
           '[IAPService] 검증 실패: 유효하지 않은 상품 ID '
@@ -1249,16 +1358,34 @@ class IAPService {
       return;
     }
 
+    final verifiedProductId = verificationResult.productId.isEmpty
+        ? productId
+        : verificationResult.productId;
+    final canonicalProductId = IAPEntitlementPolicy.canonicalVerifiedProductId(
+      purchaseProductId: productId,
+      verifiedProductId: verifiedProductId,
+    );
+    if (canonicalProductId == null) {
+      // ignore: avoid_print
+      print(
+        '[IAPService][Deliver] product id mismatch/unsupported. skip. '
+        'purchaseProductId=$productId verifiedProductId=$verifiedProductId '
+        'orderId=${orderId ?? 'unknown'}',
+      );
+      return;
+    }
+
     final status = verificationResult.status.toUpperCase();
     if (!verificationResult.active) {
       final previousProductId = userManager.productId;
 
       if (_isTerminalInactiveStatus(status)) {
         final shouldDowngrade =
-            previousProductId == null || previousProductId == productId;
+            previousProductId == null ||
+            previousProductId == canonicalProductId;
         if (shouldDowngrade) {
           await _applyInactiveSubscriptionToFree(
-            productId: productId,
+            productId: canonicalProductId,
             orderId: orderId,
             status: status,
           );
@@ -1267,7 +1394,7 @@ class IAPService {
 
         print(
           '[IAPService][Deliver] 비활성 상태이지만 다른 상품 보류: '
-          'productId=$productId orderId=${orderId ?? 'unknown'} '
+          'productId=$canonicalProductId orderId=${orderId ?? 'unknown'} '
           'status=$status currentProductId=$previousProductId',
         );
         return;
@@ -1275,7 +1402,7 @@ class IAPService {
 
       print(
         '[IAPService][Deliver] 비활성 상태(재시도 대상): '
-        'productId=$productId orderId=${orderId ?? 'unknown'} '
+        'productId=$canonicalProductId orderId=${orderId ?? 'unknown'} '
         'status=$status',
       );
       return;
@@ -1283,15 +1410,15 @@ class IAPService {
 
     final currentPlanChangeType = _resolvePlanChangeType(
       currentTier: userManager.currentTier,
-      targetTier: _tierFromProductId(productId),
+      targetTier: _tierFromProductId(canonicalProductId),
     );
 
     // Google Play deferred 다운그레이드의 경우
     // 현재 entitlement를 유지하고 예약 정보만 유지/갱신한다.
     if (currentPlanChangeType == IAPPlanChangeType.downgrade) {
       await _reservePendingDowngrade(
-        targetTier: _tierFromProductId(productId),
-        targetProductId: productId,
+        targetTier: _tierFromProductId(canonicalProductId),
+        targetProductId: canonicalProductId,
       );
       print(
         '[IAPService][PlanChange] deferred downgrade purchase delivered '
@@ -1301,7 +1428,7 @@ class IAPService {
     }
 
     await _applyActiveSubscriptionToUserStatus(
-      productId: productId,
+      productId: canonicalProductId,
       status: status,
       transactionDateMillis: transactionDateMillis,
     );
@@ -1362,14 +1489,14 @@ class IAPService {
     final userManager = UserStatusManager();
     final beforeTier = userManager.currentTier;
 
-    UserTier tier;
-    if (productId == standardMonthly || productId == standardAnnual) {
-      tier = UserTier.standard;
-    } else if (productId == premiumMonthly || productId == premiumAnnual) {
-      tier = UserTier.premium;
-    } else {
-      print('[IAPService] 알 수 없는 상품 ID (기본 처리): $productId');
-      tier = UserTier.premium;
+    final tier = IAPEntitlementPolicy.tierForProductId(productId);
+    if (tier == null) {
+      // ignore: avoid_print
+      print(
+        '[IAPService][Deliver] 알 수 없는 상품 ID로 entitlement 반영 스킵: '
+        'productId=$productId status=$status',
+      );
+      return;
     }
 
     final purchaseDateTime = DateTime.fromMillisecondsSinceEpoch(
@@ -1921,9 +2048,15 @@ class IAPService {
   }
 
   IAPSubscriptionTier _tierFromProductId(String productId) {
-    if (productId == standardMonthly || productId == standardAnnual) {
+    final tier = IAPEntitlementPolicy.tierForProductId(productId);
+    if (tier == UserTier.standard) {
       return IAPSubscriptionTier.standard;
     }
+    if (tier == UserTier.premium) {
+      return IAPSubscriptionTier.premium;
+    }
+    // ignore: avoid_print
+    print('[IAPService][EntitlementPolicy] unsupported productId=$productId');
     return IAPSubscriptionTier.premium;
   }
 
@@ -1950,10 +2083,23 @@ class IAPService {
     required ProductDetails product,
     required String? currentProductId,
     required IAPPlanChangeType changeType,
+    String? offerToken,
+    required String purchaseContext,
   }) async {
+    final hasOfferToken = offerToken != null;
+    // ignore: avoid_print
+    print(
+      '[IAPService][PurchaseIntent] buildAndroidPurchaseParam '
+      'productId=${product.id} context=$purchaseContext '
+      'changeType=$changeType offerTokenExists=$hasOfferToken',
+    );
+
     if (changeType == IAPPlanChangeType.newPurchase ||
         changeType == IAPPlanChangeType.noChange) {
-      return GooglePlayPurchaseParam(productDetails: product);
+      return GooglePlayPurchaseParam(
+        productDetails: product,
+        offerToken: offerToken,
+      );
     }
 
     final previous = await _findGooglePlayPurchaseDetails(currentProductId);
@@ -1961,7 +2107,10 @@ class IAPService {
       print(
         '[IAPService][PlanChange] Android old purchase not found, fallback normal purchase',
       );
-      return GooglePlayPurchaseParam(productDetails: product);
+      return GooglePlayPurchaseParam(
+        productDetails: product,
+        offerToken: offerToken,
+      );
     }
 
     final replacementMode = changeType == IAPPlanChangeType.upgrade
@@ -1970,6 +2119,7 @@ class IAPService {
 
     return GooglePlayPurchaseParam(
       productDetails: product,
+      offerToken: offerToken,
       changeSubscriptionParam: ChangeSubscriptionParam(
         oldPurchaseDetails: previous,
         replacementMode: replacementMode,

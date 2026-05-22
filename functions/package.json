@@ -9,8 +9,13 @@
   "scripts": {
     "serve": "firebase functions:shell",
     "lint": "node --check index.js",
+    "test:cloud-upload-reservation": "node --test test/cloud_upload_reservation_unit.test.js",
+    "test:cloud-usage-reconcile": "node --test test/cloud_usage_reconcile_dry_run_unit.test.js",
+    "test:cloud-cost-report": "node --test test/cloud_cost_report_dry_run_unit.test.js",
     "test:rules:r5": "node test/r5_rules_index.test.js",
     "test:rules:thumbnail-storage": "node test/thumbnail_storage_rules.test.js",
+    "cloud-usage:reconcile-dry-run": "node scripts/cloud_usage_reconcile_dry_run.js",
+    "cloud-cost:daily-report-dry-run": "node scripts/cloud_cost_report_dry_run.js",
     "cloud-clip:delete-dry-run": "node scripts/cloud_clip_delete_dry_run_inventory.js",
     "cloud-clip:r4-inventory-dry-run": "node scripts/cloud_clip_r4_migration_backfill_inventory.js",
     "deploy": "firebase deploy --only functions",

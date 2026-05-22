@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'dart:io';
 import '../services/auth_service.dart';
+import 'legal_document_screen.dart';
 
 /// 소셜 로그인 화면
 ///
@@ -171,9 +172,50 @@ class _LoginScreenState extends State<LoginScreen> {
 
                   // 약관 동의 문구
                   Text(
-                    'By continuing, you agree to our\nTerms of Service and Privacy Policy',
+                    '계속하면 MOA 이용약관과 개인정보 처리방침에 동의하게 됩니다.',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                  ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      TextButton(
+                        onPressed: () =>
+                            openLegalDocument(context, LegalDocumentType.terms),
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.grey[400],
+                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text(
+                          '이용약관',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      ),
+                      Text(
+                        '·',
+                        style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                      ),
+                      TextButton(
+                        onPressed: () => openLegalDocument(
+                          context,
+                          LegalDocumentType.privacy,
+                        ),
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.grey[400],
+                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text(
+                          '개인정보 처리방침',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),

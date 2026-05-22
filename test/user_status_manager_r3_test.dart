@@ -28,6 +28,8 @@ void main() {
     expect(manager.canStartNewCloudWrite(now: now), isTrue);
     expect(manager.canReadExistingCloudClips(now: now), isTrue);
     expect(manager.isInCloudReadGrace(now: now), isFalse);
+    expect(manager.cloudAccessState(now: now), CloudAccessState.activeStandard);
+    expect(manager.cloudAccessStateKey(now: now), 'active_standard');
   });
 
   test(
@@ -43,9 +45,43 @@ void main() {
 
       expect(manager.canStartNewCloudWrite(now: inGrace), isFalse);
       expect(manager.canReadExistingCloudClips(now: inGrace), isTrue);
-      expect(manager.isInCloudReadGrace(now: inGrace), isFalse);
+      expect(manager.isInCloudReadGrace(now: inGrace), isTrue);
+      expect(
+        manager.cloudAccessState(now: inGrace),
+        CloudAccessState.expiredGracePeriod,
+      );
+      expect(manager.cloudAccessStateKey(now: inGrace), 'expired_grace_period');
     },
   );
+
+  test('scheduled cancellation remains active until effective date', () async {
+    await manager.setTier(
+      UserTier.standard,
+      productId: '3s_standard_monthly',
+      purchaseDate: DateTime(2026, 1, 1),
+    );
+    await manager.setPendingTierChange(
+      nextTier: UserTier.free,
+      effectiveAt: DateTime(2026, 1, 20),
+    );
+
+    final beforeExpiry = DateTime(2026, 1, 19, 23, 59);
+    final atExpiry = DateTime(2026, 1, 20);
+
+    expect(manager.cloudEntitlementExpiryAt, DateTime(2026, 1, 20));
+    expect(manager.canStartNewCloudWrite(now: beforeExpiry), isTrue);
+    expect(
+      manager.cloudAccessState(now: beforeExpiry),
+      CloudAccessState.activeStandard,
+    );
+    expect(manager.canStartNewCloudWrite(now: atExpiry), isFalse);
+    expect(manager.canReadExistingCloudClips(now: atExpiry), isTrue);
+    expect(manager.isInCloudReadGrace(now: atExpiry), isTrue);
+    expect(
+      manager.cloudAccessState(now: atExpiry),
+      CloudAccessState.expiredGracePeriod,
+    );
+  });
 
   test(
     'auto downgraded expired subscription preserves local grace history',
@@ -69,7 +105,15 @@ void main() {
       expect(manager.canStartNewCloudWrite(now: inGrace), isFalse);
       expect(manager.canReadExistingCloudClips(now: inGrace), isTrue);
       expect(manager.isInCloudReadGrace(now: inGrace), isTrue);
+      expect(
+        manager.cloudAccessState(now: inGrace),
+        CloudAccessState.readOnlyCloud,
+      );
       expect(manager.canReadExistingCloudClips(now: afterGrace), isFalse);
+      expect(
+        manager.cloudAccessState(now: afterGrace),
+        CloudAccessState.scheduledForCleanup,
+      );
     },
   );
 
@@ -82,6 +126,7 @@ void main() {
     expect(manager.canStartNewCloudWrite(now: now), isFalse);
     expect(manager.canReadExistingCloudClips(now: now), isFalse);
     expect(manager.isInCloudReadGrace(now: now), isFalse);
+    expect(manager.cloudAccessState(now: now), CloudAccessState.deleted);
   });
 
   test(
@@ -104,6 +149,10 @@ void main() {
         isFalse,
       );
       expect(manager.isInCloudReadGrace(now: inFormerGraceWindow), isFalse);
+      expect(
+        manager.cloudAccessState(now: inFormerGraceWindow),
+        CloudAccessState.deleted,
+      );
     },
   );
 }

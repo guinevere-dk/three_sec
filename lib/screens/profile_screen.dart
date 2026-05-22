@@ -14,6 +14,7 @@ import '../services/cloud_service.dart';
 import '../services/app_update_service.dart';
 import '../managers/user_status_manager.dart';
 import '../managers/video_manager.dart';
+import '../utils/cloud_cost_policy.dart';
 import 'announcements_screen.dart';
 import 'cloud_backup_screen.dart';
 import 'notifications_screen.dart';
@@ -35,6 +36,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   int _cloudClipCount = 0;
   double _cloudStorageUsageGB = 0;
   double _cloudStorageLimitGB = 0;
+  int _cloudMonthlyDownloadBytes = 0;
   SyncStatusSummary _syncSummary = const SyncStatusSummary();
   StreamSubscription<CloudStatsSnapshot>? _cloudStatsSubscription;
   StreamSubscription<SyncStatusSummary>? _syncSummarySubscription;
@@ -98,6 +100,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return _cloudClipCount == snapshot.cloudClipCount &&
         _cloudStorageUsageGB == snapshot.storageUsageGB &&
         _cloudStorageLimitGB == snapshot.storageLimitGB &&
+        _cloudMonthlyDownloadBytes == snapshot.monthlyDownloadBytes &&
         _isSameSyncSummary(_syncSummary, snapshot.syncSummary);
   }
 
@@ -111,6 +114,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         _cloudClipCount = snapshot.cloudClipCount;
         _cloudStorageUsageGB = snapshot.storageUsageGB;
         _cloudStorageLimitGB = snapshot.storageLimitGB;
+        _cloudMonthlyDownloadBytes = snapshot.monthlyDownloadBytes;
         _syncSummary = snapshot.syncSummary;
       });
     });
@@ -203,6 +207,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         _cloudClipCount = 0;
         _cloudStorageUsageGB = 0;
         _cloudStorageLimitGB = _cloudService.getStorageLimitGB();
+        _cloudMonthlyDownloadBytes = 0;
       });
       return;
     }
@@ -220,6 +225,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       _cloudClipCount = snapshot.cloudClipCount;
       _cloudStorageUsageGB = snapshot.storageUsageGB;
       _cloudStorageLimitGB = snapshot.storageLimitGB;
+      _cloudMonthlyDownloadBytes = snapshot.monthlyDownloadBytes;
       _syncSummary = snapshot.syncSummary;
     });
   }
@@ -1190,6 +1196,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ? NumberFormat.decimalPattern().format(_cloudClipCount)
             : '-';
         final cloudUsage = isCloudEnabled ? _formatCloudUsageText() : '미지원';
+        final monthlyDownloadText = isCloudEnabled
+            ? _formatMonthlyDownloadText()
+            : '';
         final syncText = isCloudEnabled ? _syncSummaryText() : '';
 
         return Container(
@@ -1211,12 +1220,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   Expanded(
                     child: _buildStatItem(
                       cloudUsage,
-                      'Cloud 사용량',
+                      'Cloud 백업 공간',
                       isStorage: true,
                     ),
                   ),
                 ],
               ),
+              if (monthlyDownloadText.isNotEmpty) ...[
+                const SizedBox(height: 9),
+                _buildCloudMonthlyDownloadSummary(monthlyDownloadText),
+              ],
               if (syncText.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 Text(
@@ -1244,9 +1257,49 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return '${_cloudStorageUsageGB.toStringAsFixed(1)}GB';
     }
     if (_cloudStorageUsageGB < 1) {
-      return '${(_cloudStorageUsageGB * 1024).round()}MB/$limitText';
+      return '${(_cloudStorageUsageGB * 1024).round()}MB / $limitText';
     }
-    return '${_cloudStorageUsageGB.toStringAsFixed(1)}/$limitText';
+    return '${_cloudStorageUsageGB.toStringAsFixed(1)}GB / $limitText';
+  }
+
+  String _formatMonthlyDownloadText() {
+    return formatCloudBytes(_cloudMonthlyDownloadBytes);
+  }
+
+  Widget _buildCloudMonthlyDownloadSummary(String value) {
+    final state = cloudDownloadLimitState(
+      monthlyDownloadBytes: _cloudMonthlyDownloadBytes,
+    );
+    final showWarning = state == CloudDownloadLimitState.softLimitExceeded;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: showWarning ? const Color(0xFFFFFBEB) : const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: showWarning
+              ? const Color(0xFFFDE68A)
+              : const Color(0xFFE2E8F0),
+        ),
+      ),
+      child: Text(
+        showWarning
+            ? '이번 달 Cloud 다운로드: $value · 반복 재생은 로컬 캐시를 우선 사용합니다.'
+            : '이번 달 Cloud 다운로드: $value',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: showWarning
+              ? const Color(0xFF92400E)
+              : const Color(0xFF475569),
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+          height: 1.3,
+        ),
+      ),
+    );
   }
 
   String _syncSummaryText() {

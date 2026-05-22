@@ -745,6 +745,61 @@ void main() {
     },
   );
 
+  test(
+    'saveProject restores cloud placeholder before persisting canonical cache path',
+    () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProviderChannel, (call) async {
+            if (call.method == 'getApplicationDocumentsDirectory') {
+              return tempDir.path;
+            }
+            return null;
+          });
+
+      const placeholder = 'cloud_only://album/video-id/file.mp4';
+      final metadata = VideoMetadata.fromMap('video-id', const {
+        'uid': 'uid-redacted',
+        'fileName': 'file.mp4',
+        'storagePath': 'storage/path/redacted',
+        'albumName': 'album',
+        'fileSize': 8,
+        'uploadStatus': 'completed',
+      });
+      manager.debugSetCloudMetadataForPath(placeholder, metadata);
+
+      final cachePath =
+          '${tempDir.path}${Platform.pathSeparator}cloud_video_cache'
+          '${Platform.pathSeparator}video-id'
+          '${Platform.pathSeparator}standard.mp4';
+      final now = DateTime(2026, 5, 21);
+      final project = VlogProject(
+        id: 'project-canonical-cache',
+        title: 'Canonical Cache Guard',
+        clips: <VlogClip>[VlogClip(path: cachePath)],
+        createdAt: now,
+        updatedAt: now,
+      );
+
+      final result = await manager.saveProject(
+        project,
+        reason: 'test_canonical_cache_guard',
+      );
+
+      expect(result.localStatus, ProjectSaveLocalStatus.success);
+      final file = File(
+        '${tempDir.path}${Platform.pathSeparator}vlog_projects'
+        '${Platform.pathSeparator}${project.id}.json',
+      );
+      final json =
+          jsonDecode(await file.readAsString()) as Map<String, Object?>;
+      final clips = json['clips'] as List<Object?>;
+      final firstClip = clips.first as Map<String, Object?>;
+      expect(firstClip['path'], placeholder);
+      expect('${firstClip['path']}', isNot(contains('cloud_video_cache')));
+      expect(project.clips.first.path, placeholder);
+    },
+  );
+
   test('saveProject blocks unresolved export session cache paths', () async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(pathProviderChannel, (call) async {

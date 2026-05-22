@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import 'cloud_service.dart';
+import 'cloud_video_cache_service.dart';
 
 enum CloudClipSessionPurpose { edit, export }
 
@@ -109,6 +110,7 @@ abstract class CloudClipSessionDownloadClient {
   Future<bool> downloadSessionCopy({
     required VideoMetadata metadata,
     required String localPath,
+    required CloudClipSessionPurpose purpose,
   });
 }
 
@@ -122,10 +124,12 @@ class CloudServiceSessionDownloadClient
   Future<bool> downloadSessionCopy({
     required VideoMetadata metadata,
     required String localPath,
+    required CloudClipSessionPurpose purpose,
   }) {
     return cloudService.downloadVideo(
       videoId: metadata.videoId,
       localPath: localPath,
+      usageSource: _downloadUsageSourceForPurpose(purpose),
     );
   }
 }
@@ -137,11 +141,13 @@ class CloudClipSessionResolver {
 
   final CloudClipMetadataSource metadataSource;
   final CloudClipSessionDownloadClient downloadClient;
+  final CloudVideoCacheService videoCacheService;
 
-  const CloudClipSessionResolver({
+  CloudClipSessionResolver({
     required this.metadataSource,
     required this.downloadClient,
-  });
+    CloudVideoCacheService? videoCacheService,
+  }) : videoCacheService = videoCacheService ?? const CloudVideoCacheService();
 
   static bool isCloudOnlyPlaceholder(String path) => path.startsWith(scheme);
 
@@ -202,6 +208,23 @@ class CloudClipSessionResolver {
     final root = p.normalize(sessionCacheRoot(appDocumentsDirectory).path);
     final candidate = p.normalize(path);
     return p.isWithin(root, candidate) || candidate == root;
+  }
+
+  static bool isNonPersistentCloudMaterializationPath({
+    required Directory appDocumentsDirectory,
+    required String path,
+  }) {
+    final sessionRoot = p.normalize(
+      sessionCacheRoot(appDocumentsDirectory).path,
+    );
+    final videoCacheRoot = p.normalize(
+      const CloudVideoCacheService().cacheRoot(appDocumentsDirectory).path,
+    );
+    final candidate = p.normalize(path);
+    return candidate == sessionRoot ||
+        p.isWithin(sessionRoot, candidate) ||
+        candidate == videoCacheRoot ||
+        p.isWithin(videoCacheRoot, candidate);
   }
 
   static Future<CloudClipSessionCleanupResult> cleanupExpiredSessionCache({
@@ -323,13 +346,28 @@ class CloudClipSessionResolver {
       );
     }
 
-    final ok = await downloadClient.downloadSessionCopy(
+    final cacheResult = await videoCacheService.materialize(
+      appDocumentsDirectory: appDocumentsDirectory,
       metadata: metadata,
-      localPath: sessionPath,
+      downloader: (cacheMissPath) {
+        return downloadClient.downloadSessionCopy(
+          metadata: metadata,
+          localPath: cacheMissPath,
+          purpose: purpose,
+        );
+      },
     );
-    if (!ok) {
+    if (!cacheResult.isSuccess || cacheResult.file == null) {
       return CloudClipSessionResolveResult.failure(
-        CloudClipResolveFailureCode.downloadFailed,
+        _mapVideoCacheFailure(cacheResult.failureCode),
+      );
+    }
+
+    try {
+      await cacheResult.file!.copy(sessionPath);
+    } catch (_) {
+      return CloudClipSessionResolveResult.failure(
+        CloudClipResolveFailureCode.cacheFileMissing,
       );
     }
     if (!await sessionFile.exists()) {
@@ -349,9 +387,24 @@ class CloudClipSessionResolver {
         placeholderPath: placeholderPath,
         metadata: metadata,
         sessionPath: sessionPath,
-        fromCache: false,
+        fromCache: cacheResult.cacheHit,
       ),
     );
+  }
+
+  static CloudClipResolveFailureCode _mapVideoCacheFailure(
+    CloudVideoCacheFailureCode? code,
+  ) {
+    return switch (code) {
+      CloudVideoCacheFailureCode.downloadFailed =>
+        CloudClipResolveFailureCode.downloadFailed,
+      CloudVideoCacheFailureCode.cacheFileMissing =>
+        CloudClipResolveFailureCode.cacheFileMissing,
+      CloudVideoCacheFailureCode.cacheFileSizeMismatch =>
+        CloudClipResolveFailureCode.cacheFileSizeMismatch,
+      CloudVideoCacheFailureCode.fileSystem ||
+      null => CloudClipResolveFailureCode.downloadFailed,
+    };
   }
 
   static CloudClipResolvedSource _source({
@@ -402,5 +455,14 @@ class CloudClipSessionResolver {
         }
       } catch (_) {}
     }
+  }
+}
+
+String _downloadUsageSourceForPurpose(CloudClipSessionPurpose purpose) {
+  switch (purpose) {
+    case CloudClipSessionPurpose.edit:
+      return 'edit_materialize';
+    case CloudClipSessionPurpose.export:
+      return 'export_materialize';
   }
 }

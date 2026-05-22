@@ -713,7 +713,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
                         ),
                         SizedBox(height: 5),
                         Text(
-                          '무료 사용자는 프로젝트를 열지 않고 720p로 바로 내보낼 수 있습니다.',
+                          '무료 사용자는 프로젝트를 열지 않고 720p로 바로 내보낼 수 있습니다. Standard는 1080p 내보내기와 50GB Cloud 백업을 제공합니다.',
                           style: TextStyle(
                             color: Color(0xFF64748B),
                             fontSize: 12,
@@ -730,9 +730,8 @@ class _ProjectScreenState extends State<ProjectScreen> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  _StandardBenefitChip(label: 'Project 편집'),
-                  _StandardBenefitChip(label: 'Cloud 연동'),
-                  _StandardBenefitChip(label: '고화질 내보내기'),
+                  _StandardBenefitChip(label: '50GB Cloud 백업'),
+                  _StandardBenefitChip(label: '1080p 내보내기'),
                 ],
               ),
               const SizedBox(height: 14),

@@ -1,6 +1,9 @@
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 const crypto = require('crypto');
+const {
+  createCloudUploadReservationFunctions,
+} = require('./cloud_upload_reservations');
 
 admin.initializeApp();
 
@@ -1708,4 +1711,14 @@ exports[FUNCTION_NAME] = functions
 
     return handleExchange(req, res, requestId);
   });
+
+Object.assign(
+  exports,
+  createCloudUploadReservationFunctions({
+    functions,
+    admin,
+    region: REGION,
+    serviceAccount: FUNCTION_SERVICE_ACCOUNT,
+  }),
+);
 

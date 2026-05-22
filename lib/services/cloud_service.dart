@@ -12,9 +12,12 @@ import '../managers/user_status_manager.dart';
 import '../managers/video_manager.dart';
 import '../models/vlog_project.dart';
 import 'auth_service.dart';
+import 'cloud_upload_preflight_service.dart';
+import 'cloud_usage_service.dart';
 import 'notification_settings_service.dart';
 import 'sync_queue_store.dart';
 import '../utils/error_copy.dart';
+import '../utils/cloud_cost_policy.dart';
 import 'review_fallback_metrics.dart';
 
 /// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -23,7 +26,7 @@ import 'review_fallback_metrics.dart';
 ///
 /// Standard 등급 이상의 핵심 혜택
 /// - Standard: 50GB 저장 용량
-/// - Premium: 200GB 저장 용량
+/// - Premium: dormant compatibility tier, Standard와 동일한 저장 정책
 ///
 /// 기능:
 /// - 영상 업로드/다운로드 (용량 제한 준수)
@@ -43,14 +46,14 @@ class CloudService {
   final UserStatusManager _userStatusManager = UserStatusManager();
   final SyncQueueStore _syncQueueStore = SyncQueueStore();
   final ReviewFallbackMetrics _reviewFallbackMetrics = ReviewFallbackMetrics();
+  final CloudUploadPreflightService _cloudUploadPreflightService =
+      CloudUploadPreflightService();
+  final CloudUsageService _cloudUsageService = CloudUsageService();
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   // 📦 상수 정의
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  /// 등급별 저장 용량 제한 (바이트)
-  static const int _standardStorageLimit = 50 * 1024 * 1024 * 1024; // 50GB
-  static const int _premiumStorageLimit = 200 * 1024 * 1024 * 1024; // 200GB
   static const int _maxRetryAttempts = 5;
 
   static const String _errorAuthRequired = 'auth_required';
@@ -62,10 +65,10 @@ class CloudService {
   static const String _errorPermissionDenied = 'permission_denied';
   static const String _errorNetwork = 'network_unavailable';
   static const String _errorQuota = 'quota_exceeded';
+  static const String _errorCloudPreflightFailed = 'cloud_preflight_failed';
   static const String _errorUploadFailed = 'upload_failed';
   static const String _errorThumbnailGeneration = 'thumbnail_generation_failed';
   static const String _errorThumbnailUpload = 'thumbnail_upload_failed';
-  static const String _errorThumbnailMetadata = 'thumbnail_metadata_failed';
   static const String _errorFileSystem = 'file_system_error';
   static const String _errorNotFound = 'resource_not_found';
 
@@ -73,7 +76,6 @@ class CloudService {
   static const String _videosCollection = 'videos';
   static const String _vlogProjectsCollection = 'vlog_projects';
   static const String _usersCollection = 'users';
-  static const String _usageEventsCollection = 'usageEvents';
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   // 📤 업로드 큐 관리
@@ -411,17 +413,19 @@ class CloudService {
     return false;
   }
 
-  SettableMetadata _buildVideoMetadata(String filePath) {
+  String _contentTypeForVideoPath(String filePath) {
     final ext = p.extension(filePath).toLowerCase();
-    final contentType = switch (ext) {
+    return switch (ext) {
       '.mp4' => 'video/mp4',
       '.mov' => 'video/quicktime',
       '.avi' => 'video/x-msvideo',
       '.mpeg' || '.mpg' => 'video/mpeg',
       _ => 'video/mp4',
     };
+  }
 
-    return SettableMetadata(contentType: contentType);
+  SettableMetadata _buildVideoMetadata(String filePath) {
+    return SettableMetadata(contentType: _contentTypeForVideoPath(filePath));
   }
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -459,9 +463,10 @@ class CloudService {
     if (_userStatusManager.canStartNewCloudWrite()) return true;
 
     final reason = _cloudWriteBlockedReasonCode();
+    final state = _userStatusManager.cloudAccessStateKey();
     print(
       '[CloudService] ✗ 신규 Cloud 작업 차단: '
-      '$operation (reason=$reason, tier=${_userStatusManager.currentTier}, expiry=${_userStatusManager.lastKnownPaidExpiryAt}, graceEnds=${_userStatusManager.cloudReadGraceEndsAt})',
+      '$operation (reason=$reason, state=$state, tier=${_userStatusManager.currentTier}, expiry=${_userStatusManager.lastKnownPaidExpiryAt}, graceEnds=${_userStatusManager.cloudReadGraceEndsAt})',
     );
     unawaited(
       _reviewFallbackMetrics.recordCloudAccessBlocked(
@@ -493,9 +498,10 @@ class CloudService {
   bool _canReadExistingCloudClips(String operation) {
     if (_userStatusManager.canReadExistingCloudClips()) return true;
 
+    final state = _userStatusManager.cloudAccessStateKey();
     print(
       '[CloudService] ✗ 구독 만료 grace 종료/권한 없음으로 Cloud read 차단: '
-      '$operation (tier=${_userStatusManager.currentTier}, expiry=${_userStatusManager.lastKnownPaidExpiryAt}, graceEnds=${_userStatusManager.cloudReadGraceEndsAt})',
+      '$operation (state=$state, tier=${_userStatusManager.currentTier}, expiry=${_userStatusManager.lastKnownPaidExpiryAt}, graceEnds=${_userStatusManager.cloudReadGraceEndsAt})',
     );
     unawaited(
       _reviewFallbackMetrics.recordCloudAccessBlocked(
@@ -520,23 +526,164 @@ class CloudService {
     // 현재 사용량 조회
     final currentUsage = await _getCurrentStorageUsage(uid);
 
-    // 등급별 제한
-    final limit = switch (_userStatusManager.currentTier) {
-      UserTier.premium => _premiumStorageLimit,
-      UserTier.standard => _standardStorageLimit,
-      UserTier.free => 0,
-    };
+    final limit = cloudStorageLimitBytesForTier(_userStatusManager.currentTier);
 
-    final afterUpload = currentUsage + fileSize;
-
-    if (afterUpload > limit) {
-      final usageGB = (currentUsage / (1024 * 1024 * 1024)).toStringAsFixed(2);
-      final limitGB = (limit / (1024 * 1024 * 1024)).toStringAsFixed(0);
-      print('[CloudService] ✗ 저장 용량 초과: ${usageGB}GB / ${limitGB}GB');
+    if (!canUploadWithinLimit(
+      usedBytes: currentUsage,
+      reservedBytes: 0,
+      incomingBytes: fileSize,
+      limitBytes: limit,
+    )) {
+      print(
+        '[CloudService] ✗ 저장 용량 초과: '
+        '${formatCloudBytes(currentUsage)} / ${formatCloudBytes(limit)}',
+      );
       return false;
     }
 
     return true;
+  }
+
+  SyncErrorDetail _preflightFailureDetail(CloudUploadPreflightResult result) {
+    final code = result.errorCode ?? _errorCloudPreflightFailed;
+    final copy = switch (code) {
+      'source_missing' => '로컬 파일을 찾을 수 없어 클라우드 이동을 시작하지 못했어요.',
+      'source_probe_failed' =>
+        '영상 정보를 확인하지 못해 클라우드 이동을 시작하지 못했어요. 다른 클립으로 다시 시도해주세요.',
+      'normalization_failed' =>
+        'Cloud 업로드용 표준 영상 변환에 실패했어요. 원본은 이 기기에 그대로 보존됩니다.',
+      'normalized_output_not_standard' =>
+        'Cloud 업로드용 표준 영상 검증에 실패했어요. 원본은 이 기기에 그대로 보존됩니다.',
+      _ => 'Cloud 업로드 전 영상 검증에 실패했어요. 원본은 이 기기에 그대로 보존됩니다.',
+    };
+    final retryable = code != 'source_missing';
+    return SyncErrorDetail(code: code, retryable: retryable, copy: copy);
+  }
+
+  Future<CloudUploadPreflightResult> _requireStandardCloudUploadFile(
+    File sourceFile, {
+    required String phase,
+  }) async {
+    final result = await _cloudUploadPreflightService.prepareForStandardUpload(
+      sourceFile,
+    );
+
+    print(
+      '[CloudService][CloudUploadPreflight] '
+      'phase=$phase decision=${result.decision.name} reason=${result.reason} '
+      'sourceBytes=${result.sourceFileSize} uploadBytes=${result.uploadFileSize}',
+    );
+
+    if (!result.canUpload || result.uploadFile == null) {
+      throw _CloudUploadPreflightException(
+        detail: _preflightFailureDetail(result),
+        phase: phase,
+      );
+    }
+    return result;
+  }
+
+  Future<String> _buildUploadRequestId({
+    required File sourceFile,
+    required String uid,
+    required String albumName,
+    String? localPath,
+    String? existingVideoId,
+    int attemptCount = 0,
+  }) async {
+    if (existingVideoId != null && existingVideoId.trim().isNotEmpty) {
+      return 'queue-${existingVideoId.trim()}-a$attemptCount';
+    }
+
+    var modifiedMs = 0;
+    var fileSize = 0;
+    try {
+      final stat = await sourceFile.stat();
+      modifiedMs = stat.modified.millisecondsSinceEpoch;
+      fileSize = stat.size;
+    } catch (_) {
+      // Request id remains deterministic enough for the current upload attempt.
+    }
+
+    final basis = [
+      uid,
+      localPath ?? sourceFile.path,
+      albumName,
+      modifiedMs,
+      fileSize,
+    ].join('|');
+    return 'upload-${_fnv1a64Hex(basis)}';
+  }
+
+  String _fnv1a64Hex(String value) {
+    var hash = BigInt.parse('cbf29ce484222325', radix: 16);
+    final prime = BigInt.parse('100000001b3', radix: 16);
+    final mask = (BigInt.one << 64) - BigInt.one;
+    for (final unit in value.codeUnits) {
+      hash = (hash ^ BigInt.from(unit)) * prime;
+      hash &= mask;
+    }
+    return hash.toRadixString(16).padLeft(16, '0');
+  }
+
+  SyncErrorDetail _cloudUsageFailureDetail(Object error) {
+    if (error is CloudUsageServiceException) {
+      return switch (error.code) {
+        'unauthenticated' => const SyncErrorDetail(
+          code: _errorAuthRequired,
+          retryable: false,
+          copy: '로그인이 필요해요. 다시 로그인한 뒤 클라우드 이동을 재시도해주세요.',
+        ),
+        'permission-denied' => SyncErrorDetail(
+          code: _cloudWriteBlockedReasonCode(),
+          retryable: false,
+          copy: _cloudWriteBlockedMessage(),
+        ),
+        'resource-exhausted' => const SyncErrorDetail(
+          code: _errorStorageLimit,
+          retryable: false,
+          copy: '저장 용량이 부족해 클라우드 이동에 실패했어요. 용량 정리 후 다시 시도해주세요.',
+        ),
+        'invalid-argument' || 'failed-precondition' => SyncErrorDetail(
+          code: _errorCloudPreflightFailed,
+          retryable: false,
+          copy: ErrorCopy.syncFailureWithAction(error.message),
+        ),
+        'deadline-exceeded' => const SyncErrorDetail(
+          code: _errorUploadFailed,
+          retryable: true,
+          copy: 'Cloud 업로드 예약이 만료되어 다시 시도해야 해요. 로컬 원본은 이 기기에 그대로 보존됩니다.',
+        ),
+        _ => SyncErrorDetail(
+          code: _errorUploadFailed,
+          retryable: true,
+          copy: ErrorCopy.syncFailureWithAction(error.message),
+        ),
+      };
+    }
+
+    return _classifySyncError(error.toString());
+  }
+
+  Future<void> _cancelUploadReservationBestEffort({
+    required CloudUploadReservation? reservation,
+    required String requestId,
+    required String reason,
+  }) async {
+    if (reservation == null) return;
+    try {
+      await _cloudUsageService.cancelCloudUpload(
+        videoId: reservation.videoId,
+        requestId: requestId,
+        reason: reason,
+      );
+    } catch (e) {
+      print(
+        '[CloudService] ⚠️ 업로드 예약 취소 실패 '
+        '(videoId=${_maskId(reservation.videoId, label: 'video-id')}, '
+        'errorType=${e.runtimeType})',
+      );
+    }
   }
 
   /// 현재 저장 용량 사용량 조회
@@ -559,60 +706,6 @@ class CloudService {
         'signedIn=${_authService.isSignedIn})',
       );
       return 0;
-    }
-  }
-
-  String _usageEventId(String videoId, String reason) => '${reason}_$videoId';
-
-  /// 저장 용량 사용량 업데이트 (멱등 + 음수 방지)
-  Future<void> _updateStorageUsageIdempotent({
-    required String uid,
-    required String videoId,
-    required int delta,
-    required String reason,
-  }) async {
-    final eventId = _usageEventId(videoId, reason);
-    final userRef = _firestore.collection(_usersCollection).doc(uid);
-    final eventRef = userRef.collection(_usageEventsCollection).doc(eventId);
-
-    try {
-      await _firestore.runTransaction((tx) async {
-        final eventSnap = await tx.get(eventRef);
-        if (eventSnap.exists) {
-          print('[CloudService] usage 이벤트 중복 스킵: eventId=<redacted-id>');
-          return;
-        }
-
-        final userSnap = await tx.get(userRef);
-        final currentUsage = userSnap.data()?['storageUsage'] as int? ?? 0;
-        final nextUsage = max(0, currentUsage + delta);
-        final appliedDelta = nextUsage - currentUsage;
-
-        tx.set(userRef, {
-          'storageUsage': nextUsage,
-          'lastUpdated': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-
-        tx.set(eventRef, {
-          'uid': uid,
-          'videoId': videoId,
-          'reason': reason,
-          'deltaRequested': delta,
-          'deltaApplied': appliedDelta,
-          'createdAt': FieldValue.serverTimestamp(),
-        });
-      });
-
-      print(
-        '[CloudService] ✓ 사용량 업데이트(멱등): '
-        'event=<redacted-id>, '
-        'delta=${delta > 0 ? '+' : ''}${(delta / (1024 * 1024)).toStringAsFixed(2)}MB',
-      );
-    } catch (e) {
-      print(
-        '[CloudService] ✗ 사용량 업데이트 실패'
-        '(event=<redacted-id>, errorType=${e.runtimeType})',
-      );
     }
   }
 
@@ -657,10 +750,8 @@ class CloudService {
       '[CloudService]   - 파일 크기: ${(fileSize / (1024 * 1024)).toStringAsFixed(2)}MB',
     );
 
-    // 3. 용량 제한 확인
-    if (!await _checkStorageLimit(fileSize)) {
-      return null;
-    }
+    // 실제 Cloud 업로드 표준화와 용량 검증은 큐 실행 직전에 수행한다.
+    // 원본이 4K/장시간이어도 Storage에는 표준화된 MOA 비디오만 올라가야 한다.
 
     // 4. Firestore 메타데이터 생성
     final videoId = _firestore.collection(_videosCollection).doc().id;
@@ -765,39 +856,51 @@ class CloudService {
       return null;
     }
 
-    final fileSize = await videoFile.length();
-    if (!await _checkStorageLimit(fileSize)) {
-      _lastImmediateUploadErrorCode = _errorStorageLimit;
-      _lastImmediateUploadErrorCopy =
-          '저장 용량이 부족해 클라우드 이동에 실패했어요. 용량 정리 후 다시 시도해주세요.';
-      return null;
-    }
-
-    final videoId = _firestore.collection(_videosCollection).doc().id;
-    final fileName = p.basename(videoFile.path);
-    final storagePath = 'users/$uid/videos/$videoId/$fileName';
-    final thumbnailStoragePath =
-        'users/$uid/videos/$videoId/thumbnails/poster.jpg';
+    CloudUploadPreflightResult? preflight;
+    String? videoId;
+    String? requestId;
+    CloudUploadReservation? reservation;
+    var reservationCommitted = false;
 
     try {
-      await _firestore.collection(_videosCollection).doc(videoId).set({
-        'uid': uid,
-        'videoId': videoId,
-        'fileName': fileName,
-        'storagePath': storagePath,
-        if (localPath != null) 'localPath': localPath,
-        'albumName': albumName,
-        'isFavorite': isFavorite,
-        'fileSize': fileSize,
-        'uploadStatus': 'uploading',
-        'uploadProgress': 0,
-        'thumbnailStatus': 'pending',
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      preflight = await _requireStandardCloudUploadFile(
+        videoFile,
+        phase: 'immediate_upload_preflight',
+      );
+      final uploadFile = preflight.uploadFile!;
+      final fileSize = preflight.uploadFileSize;
+      if (!await _checkStorageLimit(fileSize)) {
+        _lastImmediateUploadErrorCode = _errorStorageLimit;
+        _lastImmediateUploadErrorCopy =
+            '저장 용량이 부족해 클라우드 이동에 실패했어요. 용량 정리 후 다시 시도해주세요.';
+        return null;
+      }
+
+      final uploadRequestId = await _buildUploadRequestId(
+        sourceFile: videoFile,
+        uid: uid,
+        albumName: albumName,
+        localPath: localPath,
+      );
+      requestId = uploadRequestId;
+      final fileName = p.basename(uploadFile.path);
+      final preflightMetadata = preflight.toFirestoreMetadata();
+      reservation = await _cloudUsageService.prepareCloudUpload(
+        requestId: uploadRequestId,
+        fileName: fileName,
+        fileSize: fileSize,
+        contentType: _contentTypeForVideoPath(uploadFile.path),
+        albumName: albumName,
+        source: 'library_upload',
+        isFavorite: isFavorite,
+        metadata: preflightMetadata,
+      );
+      videoId = reservation.videoId;
+      final storagePath = reservation.storagePath;
+      final thumbnailStoragePath = reservation.thumbnailStoragePath;
 
       thumbnailGenerationAttemptCount++;
-      final poster = await _generatePosterThumbnail(videoFile);
+      final poster = await _generatePosterThumbnail(uploadFile);
       if (poster == null) {
         thumbnailGenerationFailureCount++;
         await _safeUpdateThumbnailFailureMetadata(videoId);
@@ -810,12 +913,12 @@ class CloudService {
       thumbnailGenerated = true;
       thumbnailGenerationSuccessCount++;
 
-      final metadata = _buildVideoMetadata(videoFile.path);
+      final metadata = _buildVideoMetadata(uploadFile.path);
       print(
         '[CloudService][Diag] immediate upload metadata: ${metadata.contentType}',
       );
       final ref = _storage.ref().child(storagePath);
-      final task = await ref.putFile(videoFile, metadata);
+      final task = await ref.putFile(uploadFile, metadata);
       final downloadUrl = await task.ref.getDownloadURL();
       videoUploadSucceeded = true;
 
@@ -838,36 +941,25 @@ class CloudService {
       }
 
       try {
-        await _firestore.collection(_videosCollection).doc(videoId).update({
-          'uploadStatus': 'completed',
-          'uploadProgress': 100,
-          'downloadUrl': downloadUrl,
-          'thumbnailStatus': 'completed',
-          'thumbnailStoragePath': thumbnailStoragePath,
-          'thumbnailWidth': poster.width,
-          'thumbnailHeight': poster.height,
-          'durationMs': poster.durationMs,
-          'completedAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
+        await _cloudUsageService.commitCloudUpload(
+          videoId: videoId,
+          requestId: uploadRequestId,
+          downloadUrl: downloadUrl,
+          thumbnailStoragePath: thumbnailStoragePath,
+          thumbnailWidth: poster.width,
+          thumbnailHeight: poster.height,
+          durationMs: poster.durationMs,
+          metadata: preflightMetadata,
+        );
+        reservationCommitted = true;
         thumbnailMetadataCommitted = true;
         thumbnailMetadataCommitSuccessCount++;
-      } catch (_) {
+      } catch (e) {
         thumbnailMetadataCommitFailureCount++;
         await _safeUpdateThumbnailFailureMetadata(videoId);
-        throw const _CloudThumbnailPipelineException(
-          code: _errorThumbnailMetadata,
-          copy: '클라우드 메타데이터 저장에 실패해 이동을 완료하지 못했어요. 다시 시도해주세요.',
-          phase: 'thumbnail_metadata',
-        );
+        rethrow;
       }
 
-      await _updateStorageUsageIdempotent(
-        uid: uid,
-        videoId: videoId,
-        delta: fileSize,
-        reason: 'upload_completed',
-      );
       if (localPath != null &&
           shouldRunLocalCleanupAfterUploadMove(
             videoUploadSucceeded: videoUploadSucceeded,
@@ -892,20 +984,34 @@ class CloudService {
       logThumbnailDiagnostics('success');
       return videoId;
     } catch (e) {
-      final detail = e is _CloudThumbnailPipelineException
+      final detail = e is _CloudUploadPreflightException
+          ? e.detail
+          : e is _CloudThumbnailPipelineException
           ? SyncErrorDetail(code: e.code, retryable: true, copy: e.copy)
-          : _classifySyncError(e.toString());
+          : _cloudUsageFailureDetail(e);
       _lastImmediateUploadErrorCode = detail.code;
       _lastImmediateUploadErrorCopy = detail.copy;
 
-      await _safeUpdateFailureMetadata(
-        videoId: videoId,
-        detail: detail,
-        rawError: e.toString(),
-        phase: e is _CloudThumbnailPipelineException
-            ? e.phase
-            : 'immediate_upload',
-      );
+      if (!reservationCommitted && requestId != null) {
+        await _cancelUploadReservationBestEffort(
+          reservation: reservation,
+          requestId: requestId,
+          reason: detail.code,
+        );
+      }
+
+      if (videoId != null) {
+        await _safeUpdateFailureMetadata(
+          videoId: videoId,
+          detail: detail,
+          rawError: e.toString(),
+          phase: e is _CloudUploadPreflightException
+              ? e.phase
+              : e is _CloudThumbnailPipelineException
+              ? e.phase
+              : 'immediate_upload',
+        );
+      }
 
       print(
         '[CloudService] ✗ 즉시 업로드 실패 '
@@ -913,6 +1019,8 @@ class CloudService {
       );
       logThumbnailDiagnostics('failure');
       return null;
+    } finally {
+      await _cloudUploadPreflightService.cleanupTemporaryResult(preflight);
     }
   }
 
@@ -1218,6 +1326,11 @@ class CloudService {
       );
     }
 
+    CloudUploadPreflightResult? preflight;
+    String? requestId;
+    CloudUploadReservation? reservation;
+    var reservationCommitted = false;
+
     try {
       if (!_canStartNewCloudWrite('백그라운드 업로드')) {
         final detail = SyncErrorDetail(
@@ -1241,17 +1354,56 @@ class CloudService {
         return;
       }
 
-      final thumbnailStoragePath =
-          'users/${task.uid}/videos/${task.videoId}/thumbnails/poster.jpg';
+      preflight = await _requireStandardCloudUploadFile(
+        task.videoFile,
+        phase: 'queue_upload_preflight',
+      );
+      final uploadFile = preflight.uploadFile!;
+      final uploadFileSize = preflight.uploadFileSize;
+      if (!await _checkStorageLimit(uploadFileSize)) {
+        throw const _CloudThumbnailPipelineException(
+          code: _errorStorageLimit,
+          copy: '저장 용량이 부족해 클라우드 이동에 실패했어요. 용량 정리 후 다시 시도해주세요.',
+          phase: 'queue_storage_limit',
+        );
+      }
+      final effectiveFileName = p.basename(uploadFile.path);
+      final preflightMetadata = preflight.toFirestoreMetadata();
+      final uploadRequestId = await _buildUploadRequestId(
+        sourceFile: task.videoFile,
+        uid: task.uid,
+        albumName: task.albumName,
+        localPath: task.localPath,
+        existingVideoId: task.videoId,
+        attemptCount: task.attemptCount,
+      );
+      requestId = uploadRequestId;
+      reservation = await _cloudUsageService.prepareCloudUpload(
+        requestId: uploadRequestId,
+        videoId: task.videoId,
+        fileName: effectiveFileName,
+        fileSize: uploadFileSize,
+        contentType: _contentTypeForVideoPath(uploadFile.path),
+        albumName: task.albumName,
+        source: 'background_sync',
+        metadata: preflightMetadata,
+      );
+      final effectiveStoragePath = reservation.storagePath;
+
+      final thumbnailStoragePath = reservation.thumbnailStoragePath;
       await _firestore.collection(_videosCollection).doc(task.videoId).set({
+        'fileName': effectiveFileName,
+        'storagePath': effectiveStoragePath,
+        'fileSize': uploadFileSize,
         'uploadStatus': 'uploading',
         'uploadProgress': 0,
         'thumbnailStatus': 'pending',
+        ...preflightMetadata,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
       thumbnailGenerationAttemptCount++;
-      final poster = await _generatePosterThumbnail(task.videoFile);
+      final poster = await _generatePosterThumbnail(uploadFile);
       if (poster == null) {
         thumbnailGenerationFailureCount++;
         await _safeUpdateThumbnailFailureMetadata(task.videoId);
@@ -1265,12 +1417,12 @@ class CloudService {
       thumbnailGenerationSuccessCount++;
 
       // Firebase Storage 업로드
-      final metadata = _buildVideoMetadata(task.videoFile.path);
+      final metadata = _buildVideoMetadata(uploadFile.path);
       print(
         '[CloudService][Diag] queue upload metadata: ${metadata.contentType}',
       );
-      final ref = _storage.ref().child(task.storagePath);
-      final uploadTask = ref.putFile(task.videoFile, metadata);
+      final ref = _storage.ref().child(effectiveStoragePath);
+      final uploadTask = ref.putFile(uploadFile, metadata);
 
       // 진행률 모니터링
       uploadTask.snapshotEvents.listen((snapshot) {
@@ -1322,41 +1474,24 @@ class CloudService {
       }
 
       try {
-        // Firestore 업데이트 (완료)
-        await _firestore
-            .collection(_videosCollection)
-            .doc(task.videoId)
-            .update({
-              'uploadStatus': 'completed',
-              'uploadProgress': 100,
-              'downloadUrl': downloadUrl,
-              'thumbnailStatus': 'completed',
-              'thumbnailStoragePath': thumbnailStoragePath,
-              'thumbnailWidth': poster.width,
-              'thumbnailHeight': poster.height,
-              'durationMs': poster.durationMs,
-              'completedAt': FieldValue.serverTimestamp(),
-              'updatedAt': FieldValue.serverTimestamp(),
-            });
+        await _cloudUsageService.commitCloudUpload(
+          videoId: task.videoId,
+          requestId: uploadRequestId,
+          downloadUrl: downloadUrl,
+          thumbnailStoragePath: thumbnailStoragePath,
+          thumbnailWidth: poster.width,
+          thumbnailHeight: poster.height,
+          durationMs: poster.durationMs,
+          metadata: preflightMetadata,
+        );
+        reservationCommitted = true;
         thumbnailMetadataCommitted = true;
         thumbnailMetadataCommitSuccessCount++;
-      } catch (_) {
+      } catch (e) {
         thumbnailMetadataCommitFailureCount++;
         await _safeUpdateThumbnailFailureMetadata(task.videoId);
-        throw const _CloudThumbnailPipelineException(
-          code: _errorThumbnailMetadata,
-          copy: '클라우드 메타데이터 저장에 실패해 이동을 완료하지 못했어요. 다시 시도해주세요.',
-          phase: 'queue_thumbnail_metadata',
-        );
+        rethrow;
       }
-
-      // 사용량 업데이트
-      await _updateStorageUsageIdempotent(
-        uid: task.uid,
-        videoId: task.videoId,
-        delta: task.fileSize,
-        reason: 'upload_completed',
-      );
 
       if (task.localPath != null &&
           shouldRunLocalCleanupAfterUploadMove(
@@ -1394,9 +1529,11 @@ class CloudService {
       logQueueThumbnailDiagnostics('success');
     } catch (e) {
       final authUidOnError = _authService.currentUser?.uid;
-      final detail = e is _CloudThumbnailPipelineException
+      final detail = e is _CloudUploadPreflightException
+          ? e.detail
+          : e is _CloudThumbnailPipelineException
           ? SyncErrorDetail(code: e.code, retryable: true, copy: e.copy)
-          : _classifySyncError(e.toString());
+          : _cloudUsageFailureDetail(e);
       print(
         '[CloudService] ✗ 업로드 실패 '
         '(code=${detail.code}, retryable=${detail.retryable}, attempt=${task.attemptCount + 1}, '
@@ -1405,11 +1542,23 @@ class CloudService {
         'authUid=${_maskUid(authUidOnError)}, signedIn=${_authService.isSignedIn}]',
       );
 
+      if (!reservationCommitted && requestId != null) {
+        await _cancelUploadReservationBestEffort(
+          reservation: reservation,
+          requestId: requestId,
+          reason: detail.code,
+        );
+      }
+
       await _safeUpdateFailureMetadata(
         videoId: task.videoId,
         detail: detail,
         rawError: e.toString(),
-        phase: e is _CloudThumbnailPipelineException ? e.phase : 'queue_upload',
+        phase: e is _CloudUploadPreflightException
+            ? e.phase
+            : e is _CloudThumbnailPipelineException
+            ? e.phase
+            : 'queue_upload',
       );
 
       final nextRetryAt = await _markSyncJobFailed(
@@ -1447,6 +1596,8 @@ class CloudService {
         print('[CloudService] ⛔ 비재시도 오류로 큐 재시도 중단: ${detail.code}');
       }
       logQueueThumbnailDiagnostics('failure');
+    } finally {
+      await _cloudUploadPreflightService.cleanupTemporaryResult(preflight);
     }
   }
 
@@ -1785,6 +1936,7 @@ class CloudService {
         cloudClipCount: 0,
         storageUsageGB: 0,
         storageLimitGB: getStorageLimitGB(),
+        monthlyDownloadBytes: 0,
         syncSummary: const SyncStatusSummary(),
         refreshedAt: DateTime.now(),
         trigger: trigger,
@@ -1795,11 +1947,13 @@ class CloudService {
 
     final count = await getCompletedVideoCount();
     final usage = await getStorageUsageGB();
+    final monthlyDownloadBytes = await getMonthlyDownloadBytes();
     final summary = await getSyncStatusSummary(emit: false);
     final snapshot = CloudStatsSnapshot(
       cloudClipCount: count,
       storageUsageGB: usage,
       storageLimitGB: getStorageLimitGB(),
+      monthlyDownloadBytes: monthlyDownloadBytes,
       syncSummary: summary,
       refreshedAt: DateTime.now(),
       trigger: trigger,
@@ -1930,6 +2084,9 @@ class CloudService {
   Future<bool> downloadVideo({
     required String videoId,
     required String localPath,
+    String usageSource = 'cloud_backup_restore',
+    bool recordUsage = true,
+    String? cacheMissId,
   }) async {
     if (!_ensureNotGuestForCloud('Cloud 복원')) return false;
 
@@ -2005,8 +2162,8 @@ class CloudService {
         final expectedFileSize = data['fileSize'] is int
             ? data['fileSize'] as int
             : int.tryParse('${data['fileSize']}') ?? 0;
+        final actualFileSize = await tempFile.length();
         if (expectedFileSize > 0) {
-          final actualFileSize = await tempFile.length();
           if (actualFileSize != expectedFileSize) {
             print('[CloudService] ✗ 다운로드 파일 크기 검증 실패');
             if (await tempFile.exists()) {
@@ -2026,6 +2183,14 @@ class CloudService {
         }
 
         await tempFile.rename(localPath);
+        if (recordUsage) {
+          await _recordCloudDownloadUsage(
+            videoId: videoId,
+            source: usageSource,
+            bytes: expectedFileSize > 0 ? expectedFileSize : actualFileSize,
+            cacheMissId: cacheMissId,
+          );
+        }
       } catch (_) {
         if (await tempFile.exists()) {
           await tempFile.delete();
@@ -2038,6 +2203,43 @@ class CloudService {
     } catch (e) {
       print('[CloudService] ✗ 다운로드 실패: errorType=${e.runtimeType}');
       return false;
+    }
+  }
+
+  Future<void> _recordCloudDownloadUsage({
+    required String videoId,
+    required String source,
+    required int bytes,
+    String? cacheMissId,
+  }) async {
+    try {
+      final resolvedCacheMissId =
+          cacheMissId ??
+          'download_${DateTime.now().microsecondsSinceEpoch}_${Random().nextInt(1 << 32)}';
+      final result = await _cloudUsageService.recordCloudDownload(
+        videoId: videoId,
+        source: source,
+        bytes: bytes,
+        cacheHit: false,
+        cacheMissId: resolvedCacheMissId,
+      );
+      print(
+        '[CloudService][DownloadUsage] recorded=${result.recorded} '
+        'duplicate=${result.duplicate} bytes=${result.bytesRecorded} '
+        'monthlyBytes=${result.monthlyDownloadBytes} '
+        'softLimit=${result.softLimitExceeded}',
+      );
+      if (result.softLimitExceeded) {
+        print(
+          '[CloudService][DownloadUsage] soft_limit_warning '
+          'videoId=${_maskId(videoId, label: 'video-id')}',
+        );
+      }
+    } catch (e) {
+      print(
+        '[CloudService][DownloadUsage] record_failed '
+        'errorType=${e.runtimeType}',
+      );
     }
   }
 
@@ -2686,7 +2888,8 @@ class CloudService {
   bool _isSessionCachePath(String path) {
     return path.contains('edit_session_cache') ||
         path.contains('export_session_cache') ||
-        path.contains('cloud_clip_session_cache');
+        path.contains('cloud_clip_session_cache') ||
+        path.contains('cloud_video_cache');
   }
 
   Future<Map<String, ProjectCloudMetadata>>
@@ -2930,12 +3133,42 @@ class CloudService {
 
   /// 저장 용량 제한 조회 (GB)
   double getStorageLimitGB() {
-    final limit = switch (_userStatusManager.currentTier) {
-      UserTier.premium => _premiumStorageLimit,
-      UserTier.standard => _standardStorageLimit,
-      UserTier.free => 0,
-    };
-    return limit / (1024 * 1024 * 1024);
+    return cloudStorageLimitGBForTier(_userStatusManager.currentTier);
+  }
+
+  Future<int> getMonthlyDownloadBytes() async {
+    if (!_ensureNotGuestForCloud('Cloud 다운로드 사용량 조회')) return 0;
+
+    final uid = _getCurrentUserId();
+    if (uid == null) return 0;
+
+    try {
+      final snapshot = await _firestore
+          .collection(_usersCollection)
+          .doc(uid)
+          .get();
+      final data = snapshot.data();
+      if (data == null) return 0;
+
+      final periodKey = _readString(data['monthlyDownloadPeriodKey']).trim();
+      if (periodKey.isNotEmpty && periodKey != _currentUtcMonthKey()) {
+        return 0;
+      }
+
+      return max(0, _readInt(data['monthlyDownloadBytes']) ?? 0);
+    } catch (e) {
+      print(
+        '[CloudService] monthly download usage read failed: '
+        'errorType=${e.runtimeType}',
+      );
+      return 0;
+    }
+  }
+
+  String _currentUtcMonthKey() {
+    final now = DateTime.now().toUtc();
+    final month = now.month.toString().padLeft(2, '0');
+    return '${now.year}-$month';
   }
 
   /// 사용률 조회 (0.0 ~ 1.0)
@@ -2947,12 +3180,12 @@ class CloudService {
   }
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // 🔔 용량 알림 (Premium 전환 유도)
+  // 🔔 용량 알림
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   /// 용량 사용률 체크 및 알림
   ///
-  /// 90% 이상 도달 시 Premium 전환 알림 트리거
+  /// 90% 이상 도달 시 저장 공간 정리/업그레이드 안내 트리거
   Future<void> checkUsageAndAlert(VideoManager _) async {
     if (!_ensureNotGuestForCloud('클라우드 용량 알림')) return;
 
@@ -2974,11 +3207,9 @@ class CloudService {
       final uid = _getCurrentUserId();
       if (uid == null) return;
 
-      final limitBytes = switch (_userStatusManager.currentTier) {
-        UserTier.premium => _premiumStorageLimit,
-        UserTier.standard => _standardStorageLimit,
-        UserTier.free => 0,
-      };
+      final limitBytes = cloudStorageLimitBytesForTier(
+        _userStatusManager.currentTier,
+      );
       if (limitBytes <= 0) {
         print('[CloudService] Free 등급은 Cloud 미지원으로 용량 알림을 스킵합니다.');
         return;
@@ -2994,9 +3225,9 @@ class CloudService {
         print(
           '[CloudService]   - 현재 사용량: ${(ratio * 100).toStringAsFixed(1)}%',
         );
-        print('[CloudService]   - 사용량: ${usedBytes / (1024 * 1024 * 1024)} GB');
-        print('[CloudService]   - 제한: ${limitBytes / (1024 * 1024 * 1024)} GB');
-        print('[CloudService] 📢 Premium 전환 알림 발송 준비');
+        print('[CloudService]   - 사용량: ${formatCloudBytes(usedBytes)}');
+        print('[CloudService]   - 제한: ${formatCloudBytes(limitBytes)}');
+        print('[CloudService] 📢 Cloud 용량 알림 발송 준비');
         print('[CloudService] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
         // TODO: FCM 푸시 알림 전송
@@ -3004,8 +3235,8 @@ class CloudService {
 
         // TODO: 인앱 다이얼로그 표시
         // - "클라우드 저장 공간이 거의 찼습니다!"
-        // - "Premium으로 업그레이드하여 200GB를 확보하세요"
-        // - [업그레이드] 버튼 → PaywallScreen
+        // - "Cloud 저장 공간을 정리하거나 Standard 상태를 확인하세요"
+        // - [관리하기] 버튼 → Profile/Cloud 관리 화면
       }
     } catch (e) {
       print('[CloudService] ✗ 용량 체크 실패: errorType=${e.runtimeType}');
@@ -3110,6 +3341,19 @@ class _CloudThumbnailPipelineException implements Exception {
   String toString() => code;
 }
 
+class _CloudUploadPreflightException implements Exception {
+  final SyncErrorDetail detail;
+  final String phase;
+
+  const _CloudUploadPreflightException({
+    required this.detail,
+    required this.phase,
+  });
+
+  @override
+  String toString() => detail.code;
+}
+
 class CloudPurgeResult {
   final bool success;
   final String message;
@@ -3149,6 +3393,7 @@ class CloudStatsSnapshot {
   final int cloudClipCount;
   final double storageUsageGB;
   final double storageLimitGB;
+  final int monthlyDownloadBytes;
   final SyncStatusSummary syncSummary;
   final DateTime refreshedAt;
   final String trigger;
@@ -3157,6 +3402,7 @@ class CloudStatsSnapshot {
     required this.cloudClipCount,
     required this.storageUsageGB,
     required this.storageLimitGB,
+    required this.monthlyDownloadBytes,
     required this.syncSummary,
     required this.refreshedAt,
     required this.trigger,
