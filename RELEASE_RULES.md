@@ -22,7 +22,17 @@
 flutter pub get
 flutter analyze
 flutter test
-flutter build apk --release
+```
+
+AI에게 Android 릴리스 빌드 요청이 오면 `auth 포함 빌드`로 해석합니다. `.env`에서 `KAKAO_NATIVE_APP_KEY`를 로드하고, `SOCIAL_AUTH_EXCHANGE_URL`은 `.env` 값이 없으면 기본 Functions URL을 사용합니다. 비밀값은 로그/문서/완료 보고에 출력하지 않습니다.
+
+```powershell
+Get-Content .env | ForEach-Object { if ($_ -match '^\s*([^#=]+)=(.*)$') { Set-Item "Env:$($matches[1].Trim())" $matches[2].Trim() } }
+if (-not $env:SOCIAL_AUTH_EXCHANGE_URL) { $env:SOCIAL_AUTH_EXCHANGE_URL='https://asia-northeast3-fir-3s-8edb9.cloudfunctions.net/social/exchange' }
+flutter build appbundle --release `
+  --dart-define=KAKAO_NATIVE_APP_KEY=$env:KAKAO_NATIVE_APP_KEY `
+  --dart-define=SOCIAL_AUTH_EXCHANGE_URL=$env:SOCIAL_AUTH_EXCHANGE_URL `
+  --dart-define=APP_UPDATE_CONFIG_URL=https://fir-3s-8edb9.web.app/app-update.json
 ```
 
 필요 시 실제 기기에서 다음을 확인합니다.

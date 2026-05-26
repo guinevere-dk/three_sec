@@ -19,8 +19,17 @@ flutter pub get
 flutter analyze
 flutter test
 flutter run
-flutter build apk --release
-flutter build appbundle --release --dart-define=APP_UPDATE_CONFIG_URL=https://fir-3s-8edb9.web.app/app-update.json
+```
+
+Android 릴리스 빌드는 소셜 로그인 설정을 반드시 포함합니다. `.env`는 Git에 올리지 않고, 빌드 시 값만 환경변수로 로드합니다.
+
+```powershell
+Get-Content .env | ForEach-Object { if ($_ -match '^\s*([^#=]+)=(.*)$') { Set-Item "Env:$($matches[1].Trim())" $matches[2].Trim() } }
+if (-not $env:SOCIAL_AUTH_EXCHANGE_URL) { $env:SOCIAL_AUTH_EXCHANGE_URL='https://asia-northeast3-fir-3s-8edb9.cloudfunctions.net/social/exchange' }
+flutter build appbundle --release `
+  --dart-define=KAKAO_NATIVE_APP_KEY=$env:KAKAO_NATIVE_APP_KEY `
+  --dart-define=SOCIAL_AUTH_EXCHANGE_URL=$env:SOCIAL_AUTH_EXCHANGE_URL `
+  --dart-define=APP_UPDATE_CONFIG_URL=https://fir-3s-8edb9.web.app/app-update.json
 ```
 
 Firebase Functions 작업 시에는 [`functions`](functions) 디렉터리에서 아래 명령을 사용합니다.
