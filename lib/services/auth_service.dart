@@ -5,6 +5,7 @@ import 'dart:math';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:kakao_flutter_sdk_user/kakao_flutter_sdk_user.dart' as kakao;
@@ -150,6 +151,26 @@ class AuthService {
     return '<redacted-url>';
   }
 
+  static String _redactedDiagnosticMessage(String? value) {
+    var message = value?.trim();
+    if (message == null || message.isEmpty) return '<no-message>';
+    message = message
+        .replaceAll(
+          RegExp(r'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'),
+          '<redacted-jwt>',
+        )
+        .replaceAll(
+          RegExp(
+            r'(access_token|id_token|refresh_token|custom_token|firebaseToken|token|code)=([^&\s]+)',
+            caseSensitive: false,
+          ),
+          r'$1=<redacted>',
+        )
+        .replaceAll(RegExp(r'kakao[0-9a-fA-F]{8,}'), 'kakao<redacted>')
+        .replaceAll(RegExp(r'[A-Za-z0-9_-]{80,}'), '<redacted-long-value>');
+    return message.length > 300 ? '${message.substring(0, 300)}...' : message;
+  }
+
   static String _entitlementTierName(UserTier tier) {
     switch (tier) {
       case UserTier.free:
@@ -207,7 +228,8 @@ class AuthService {
 
   static String _redactedAuthError(Object error) {
     if (error is FirebaseAuthException) {
-      return 'FirebaseAuthException(code=${error.code})';
+      return 'FirebaseAuthException(plugin=${error.plugin}, code=${error.code}, '
+          'message=${_redactedDiagnosticMessage(error.message)})';
     }
     if (error is AuthServiceException) {
       return 'AuthServiceException(code=${error.code}, '
@@ -398,6 +420,45 @@ class AuthService {
       compacted[key] = value;
     });
     return compacted;
+  }
+
+  String _exchangeResponseLogSummary(String body) {
+    if (body.trim().isEmpty) return '<empty>';
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) {
+        final profileStatus = _toStringMap(decoded['profileStatus']);
+        return jsonEncode(
+          _compactJsonMap({
+            'keys': decoded.keys.toList(),
+            'hasFirebaseToken':
+                _extractStringValue(
+                  decoded['firebaseToken'],
+                  trim: false,
+                )?.isNotEmpty ??
+                false,
+            'hasCustomToken':
+                _extractStringValue(
+                  decoded['customToken'],
+                  trim: false,
+                )?.isNotEmpty ??
+                false,
+            'hasDisplayName':
+                _extractStringValue(decoded['displayName'])?.isNotEmpty ??
+                false,
+            'hasEmail':
+                _extractStringValue(decoded['email'])?.isNotEmpty ?? false,
+            'hasPhotoUrl':
+                _extractStringValue(decoded['photoUrl'])?.isNotEmpty ?? false,
+            'hasProviderInfo': decoded['providerInfo'] != null,
+            'profileStatus': profileStatus,
+          }),
+        );
+      }
+      return '<json-${decoded.runtimeType} len=${body.length}>';
+    } catch (_) {
+      return '<non-json len=${body.length}>';
+    }
   }
 
   bool _isLikelyUserCancelled(Object error) {
@@ -683,7 +744,7 @@ class AuthService {
   // ============================================================
 
   /// Kakao 로그인
-  Future<UserCredential?> signInWithKakao() async {
+  Future<UserCredential?> signInWithKakao(BuildContext context) async {
     try {
       print('[AuthService] Kakao 로그인 시작');
       _sessionBootstrapInProgress.value = true;
@@ -721,9 +782,16 @@ class AuthService {
       final isTalkInstalled = await kakao.isKakaoTalkInstalled();
       print('[AuthService][Diag][Kakao] isKakaoTalkInstalled=$isTalkInstalled');
 
+      if (!context.mounted) {
+        print('[AuthService][Diag][Kakao] login context unmounted');
+        _sessionBootstrapInProgress.value = false;
+        return null;
+      }
+
+      final nonce = _generateNonce();
       final kakao.OAuthToken token = await (isTalkInstalled
-          ? kakao.UserApi.instance.loginWithKakaoTalk()
-          : kakao.UserApi.instance.loginWithKakaoAccount());
+          ? kakao.UserApi.instance.loginWithKakao(context, nonce: nonce)
+          : kakao.UserApi.instance.loginWithKakaoAccount(nonce: nonce));
 
       print(
         '[AuthService][Diag][Kakao] loginWithKakao* 완료: '
@@ -735,7 +803,7 @@ class AuthService {
         provider: 'kakao',
         socialAccessToken: token.accessToken,
         socialIdToken: token.idToken,
-        socialNonce: _generateNonce(),
+        socialNonce: nonce,
         providerAudience: _resolveProviderAudience('kakao'),
         clientId: _resolveProviderClientId('kakao'),
         appVersion: await _resolveAppVersion(),
@@ -917,10 +985,19 @@ class AuthService {
       'appVersion': appVersion,
     });
     final requestBody = jsonEncode(requestBodyMap);
-    print(
-      '[AuthService][Diag][Exchange] requestBody='
-      '${requestBody.length > 1500 ? '${requestBody.substring(0, 1500)}...' : requestBody}',
+    final requestBodyLog = jsonEncode(
+      _compactJsonMap({
+        'provider': provider,
+        'hasAccessToken': socialAccessToken.isNotEmpty,
+        'hasIdToken': socialIdToken?.isNotEmpty ?? false,
+        'hasNonce': socialNonce?.isNotEmpty ?? false,
+        'hasProviderAudience': providerAudience?.isNotEmpty ?? false,
+        'hasClientId': clientId?.isNotEmpty ?? false,
+        'hasRawProviderUserId': rawProviderUserId?.isNotEmpty ?? false,
+        'appVersion': appVersion,
+      }),
     );
+    print('[AuthService][Diag][Exchange] requestBody=$requestBodyLog');
 
     final http.Response response;
     try {
@@ -965,7 +1042,7 @@ class AuthService {
       'contentType=${response.headers['content-type'] ?? '<unknown>'}',
     );
     print(
-      '[AuthService][Diag][Exchange] responseBody=${response.body.length > 1500 ? '${response.body.substring(0, 1500)}...' : response.body}',
+      '[AuthService][Diag][Exchange] responseBody=${_exchangeResponseLogSummary(response.body)}',
     );
 
     if (response.statusCode != 200) {
@@ -1129,7 +1206,25 @@ class AuthService {
       'providerInfo=<redacted-provider-info>',
     );
 
-    final userCredential = await _auth.signInWithCustomToken(firebaseToken);
+    final UserCredential userCredential;
+    try {
+      print(
+        '[AuthService][Diag][Exchange] signInWithCustomToken start '
+        'hasFirebaseToken=${firebaseToken.isNotEmpty}',
+      );
+      userCredential = await _auth.signInWithCustomToken(firebaseToken);
+      print(
+        '[AuthService][Diag][Exchange] signInWithCustomToken done '
+        'uid=${_maskUid(userCredential.user?.uid)}',
+      );
+    } catch (e, stackTrace) {
+      print(
+        '[AuthService][Diag][Exchange] signInWithCustomToken failed: '
+        '${_redactedAuthError(e)}',
+      );
+      print(stackTrace);
+      rethrow;
+    }
 
     await _applySocialProfileFromExchange(
       userCredential.user,

@@ -13,6 +13,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:tutorial_coach_mark/tutorial_coach_mark.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
@@ -50,6 +51,21 @@ const String kKakaoNativeAppKey = String.fromEnvironment(
 const String kSocialAuthExchangeUrl = String.fromEnvironment(
   'SOCIAL_AUTH_EXCHANGE_URL',
   defaultValue: '',
+);
+
+const bool kUseFirebaseAuthEmulator = bool.fromEnvironment(
+  'USE_FIREBASE_AUTH_EMULATOR',
+  defaultValue: false,
+);
+
+const String kFirebaseAuthEmulatorHost = String.fromEnvironment(
+  'FIREBASE_AUTH_EMULATOR_HOST',
+  defaultValue: '10.0.2.2',
+);
+
+const int kFirebaseAuthEmulatorPort = int.fromEnvironment(
+  'FIREBASE_AUTH_EMULATOR_PORT',
+  defaultValue: 9099,
 );
 
 enum ExternalMediaType { image, video }
@@ -267,6 +283,16 @@ Future<void> main() async {
   try {
     await Firebase.initializeApp();
     print('[Main] Firebase 초기화 완료');
+    if (kUseFirebaseAuthEmulator) {
+      await FirebaseAuth.instance.useAuthEmulator(
+        kFirebaseAuthEmulatorHost,
+        kFirebaseAuthEmulatorPort,
+      );
+      print(
+        '[Main][AuthEmulator] FirebaseAuth emulator enabled '
+        'host=$kFirebaseAuthEmulatorHost port=$kFirebaseAuthEmulatorPort',
+      );
+    }
   } catch (e, st) {
     print('[Main] Firebase 초기화 실패: $e');
     print('[Main] Firebase init stack:\n$st');

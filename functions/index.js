@@ -827,7 +827,7 @@ async function verifyKakao(accessToken, idToken, requestContext = {}) {
       ? (usedFallbackUserMe ? 'kakao_user_me_fallback' : 'kakao_user_me_property_keys')
       : 'kakao_user_me_basic';
 
-  const hasDisplayName = Boolean(resolvedDisplayName);
+  const hasDisplayName = Boolean(displayName);
   const hasPhotoUrl = Boolean(resolvedPhotoUrl);
   const hasEmail = Boolean(resolvedEmail);
 
@@ -1253,6 +1253,7 @@ async function handleExchange(req, res, requestId) {
   let photoUrl = null;
   let email = null;
   let profileStatus = null;
+  let providerInfo = null;
   try {
       displayName =
         pickFirstString([
@@ -1336,16 +1337,16 @@ async function handleExchange(req, res, requestId) {
         customClaims.profileStatus = profileStatus;
       }
 
-      const providerInfo =
-          profile?.providerInfo && typeof profile.providerInfo === 'object'
-            ? profile.providerInfo
-            : {
-                provider,
-                providerUserId: profile?.providerUserId,
-                source: profile?.tokenSource || 'exchange',
-                usedFallbackUserMe: Boolean(profile?.usedFallbackUserMe),
-                requestAttemptCount: profile?.requestAttempts?.length || 0,
-              };
+      providerInfo =
+        profile?.providerInfo && typeof profile.providerInfo === 'object'
+          ? profile.providerInfo
+          : {
+              provider,
+              providerUserId: profile?.providerUserId,
+              source: profile?.tokenSource || 'exchange',
+              usedFallbackUserMe: Boolean(profile?.usedFallbackUserMe),
+              requestAttemptCount: profile?.requestAttempts?.length || 0,
+            };
 
       console.log('[social/exchange] custom token 생성 시도', {
         provider,

@@ -341,11 +341,11 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  /// Kakao 로그인 처리 (추후 구현)
+  /// Kakao 로그인 처리
   Future<void> _handleKakaoSignIn() async {
     setState(() => _isLoading = true);
     try {
-      final userCredential = await _authService.signInWithKakao();
+      final userCredential = await _authService.signInWithKakao(context);
       if (userCredential != null && mounted) {
         ScaffoldMessenger.of(
           context,

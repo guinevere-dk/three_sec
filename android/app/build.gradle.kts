@@ -1,5 +1,6 @@
 import java.util.Properties
 import java.io.FileInputStream
+import java.util.Base64
 
 // 1. 보안 키 설정 로드
 val keystoreProperties = Properties()
@@ -18,6 +19,34 @@ plugins {
 val googleServicesFile = file("google-services.json")
 if (!googleServicesFile.exists()) {
     println("[FirebaseConfig] android/app/google-services.json is missing. Firebase 앱 초기화가 기본 옵션으로 실패할 수 있습니다.")
+}
+
+fun flutterDartDefines(): Map<String, String> {
+    val rawDefines = project.findProperty("dart-defines") as String? ?: return emptyMap()
+    return rawDefines.split(',')
+        .mapNotNull { encoded ->
+            runCatching {
+                String(Base64.getDecoder().decode(encoded))
+            }.getOrNull()
+        }
+        .mapNotNull { decoded ->
+            val separator = decoded.indexOf('=')
+            if (separator <= 0) {
+                null
+            } else {
+                decoded.substring(0, separator) to decoded.substring(separator + 1)
+            }
+        }
+        .toMap()
+}
+
+val dartDefines = flutterDartDefines()
+val kakaoNativeAppKeyForManifest =
+    dartDefines["KAKAO_NATIVE_APP_KEY"] ?: System.getenv("KAKAO_NATIVE_APP_KEY") ?: ""
+if (kakaoNativeAppKeyForManifest.isBlank()) {
+    println("[KakaoConfig] KAKAO_NATIVE_APP_KEY is missing for Android manifest callback scheme.")
+} else {
+    println("[KakaoConfig] Android callback scheme configured (keyLength=${kakaoNativeAppKeyForManifest.length}).")
 }
 
 android {
@@ -50,6 +79,7 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        manifestPlaceholders["kakaoNativeAppKey"] = kakaoNativeAppKeyForManifest
         
         ndk {
             abiFilters.addAll(listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64"))
