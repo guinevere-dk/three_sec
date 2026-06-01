@@ -36,6 +36,8 @@ import 'models/import_state.dart';
 import 'models/vlog_project.dart';
 import 'screens/video_edit_screen.dart';
 import 'screens/clip_extractor_screen.dart'; // ✅ 추가
+import 'theme/moa_design_tokens.dart';
+import 'theme/moa_theme.dart';
 import 'widgets/video_widgets.dart';
 import 'utils/quality_policy.dart';
 
@@ -332,26 +334,7 @@ class MyApp extends StatelessWidget {
       child: MaterialApp(
         title: 'MOA',
         debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          brightness: Brightness.light,
-          scaffoldBackgroundColor: Colors.white,
-          colorScheme: const ColorScheme.light(
-            primary: Colors.black,
-            secondary: Colors.blueAccent,
-          ),
-          useMaterial3: true,
-          appBarTheme: const AppBarTheme(
-            backgroundColor: Colors.white,
-            elevation: 0,
-            scrolledUnderElevation: 0,
-            iconTheme: IconThemeData(color: Colors.black),
-            titleTextStyle: TextStyle(
-              color: Colors.black,
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
+        theme: buildMoaTheme(),
         home: const AuthGate(),
       ),
     );
@@ -1332,6 +1315,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         // 뒤로가기 처리는 각 Screen 내부에서 관리됨
       },
       child: Scaffold(
+        backgroundColor: MoaDesignTokens.background,
         body: Stack(
           children: [
             IndexedStack(
@@ -1364,8 +1348,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                         margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
                         padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
                         decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.72),
-                          borderRadius: BorderRadius.circular(10),
+                          color: MoaDesignTokens.surface,
+                          borderRadius: BorderRadius.circular(
+                            MoaDesignTokens.radiusMd,
+                          ),
+                          border: Border.all(color: MoaDesignTokens.stroke),
+                          boxShadow: MoaDesignTokens.cardShadow,
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1374,8 +1362,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                             Text(
                               importState.progressText(),
                               style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w600,
+                                color: MoaDesignTokens.textPrimary,
+                                fontWeight: FontWeight.w800,
                                 fontSize: 12,
                               ),
                             ),
@@ -1383,8 +1371,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                             LinearProgressIndicator(
                               value: ratio,
                               minHeight: 4,
-                              backgroundColor: Colors.white24,
-                              color: Colors.lightBlueAccent,
+                              backgroundColor: MoaDesignTokens.stroke,
+                              color: MoaDesignTokens.accentStrong,
                             ),
                           ],
                         ),
@@ -1397,7 +1385,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                 _isPreparingProject ||
                 _exportUiState != ExportUiState.none)
               Container(
-                color: Colors.black.withOpacity(0.5),
+                color: MoaDesignTokens.modalBarrier,
                 child: Center(
                   child: Container(
                     padding: const EdgeInsets.symmetric(
@@ -1405,8 +1393,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                       vertical: 30,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(16),
+                      color: MoaDesignTokens.surfaceSolid,
+                      borderRadius: BorderRadius.circular(
+                        MoaDesignTokens.radiusLg,
+                      ),
+                      border: Border.all(color: MoaDesignTokens.stroke),
+                      boxShadow: MoaDesignTokens.panelShadow,
                     ),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
@@ -1439,6 +1431,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                                       child: Text(
                                         statusText,
                                         style: const TextStyle(
+                                          color: MoaDesignTokens.textPrimary,
                                           fontWeight: FontWeight.bold,
                                           fontSize: 16,
                                         ),
@@ -1448,6 +1441,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                                       Text(
                                         percentText,
                                         style: const TextStyle(
+                                          color: MoaDesignTokens.accentStrong,
                                           fontWeight: FontWeight.w700,
                                           fontSize: 14,
                                         ),
@@ -1463,7 +1457,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                                     child: Text(
                                       auxText,
                                       style: const TextStyle(
-                                        color: Colors.black54,
+                                        color: MoaDesignTokens.textMuted,
                                         fontSize: 12,
                                       ),
                                     ),
@@ -1472,8 +1466,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                                 LinearProgressIndicator(
                                   value: progressValue,
                                   minHeight: 4,
-                                  backgroundColor: Colors.white24,
-                                  color: Colors.lightBlueAccent,
+                                  backgroundColor: MoaDesignTokens.stroke,
+                                  color: MoaDesignTokens.accentStrong,
                                 ),
                               ],
                             );
@@ -1811,23 +1805,28 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
     return Container(
       key: keyLibraryTab,
-      decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC).withAlpha(246),
-        border: const Border(top: BorderSide(color: Color(0xFFE5EAF1))),
-      ),
+      color: MoaDesignTokens.background,
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
       child: SafeArea(
         top: false,
-        child: SizedBox(
-          height: 60,
+        child: Container(
+          height: 70,
+          decoration: BoxDecoration(
+            color: MoaDesignTokens.surface,
+            borderRadius: BorderRadius.circular(MoaDesignTokens.radiusLg),
+            border: Border.all(color: MoaDesignTokens.stroke),
+            boxShadow: MoaDesignTokens.cardShadow,
+          ),
           child: Row(
             children: List.generate(items.length, (index) {
               final item = items[index];
               final selected = _selectedIndex == index;
               final color = selected
-                  ? const Color(0xFF3B82F6)
-                  : const Color(0xFF98A2B3);
+                  ? MoaDesignTokens.accentStrong
+                  : MoaDesignTokens.textMuted;
               return Expanded(
                 child: InkWell(
+                  borderRadius: BorderRadius.circular(MoaDesignTokens.radiusMd),
                   onTap: () {
                     if (index == _profileTabIndex) {
                       final profileTapManager = UserStatusManager();
@@ -1863,24 +1862,49 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                       );
                     }
                   },
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Stack(
-                        clipBehavior: Clip.none,
-                        children: [Icon(item.icon, size: 31, color: color)],
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 160),
+                    margin: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 7,
+                    ),
+                    decoration: BoxDecoration(
+                      color: selected
+                          ? MoaDesignTokens.accentSoft.withValues(alpha: 0.52)
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(
+                        MoaDesignTokens.radiusMd,
                       ),
-                      const SizedBox(height: 1),
-                      Text(
-                        item.label,
-                        style: TextStyle(
-                          fontSize: 12,
-                          height: 1,
-                          color: color,
-                          fontWeight: FontWeight.w600,
+                      border: selected
+                          ? Border.all(
+                              color: MoaDesignTokens.accent.withValues(
+                                alpha: 0.58,
+                              ),
+                            )
+                          : null,
+                      boxShadow: selected ? MoaDesignTokens.activeGlow : null,
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Stack(
+                          clipBehavior: Clip.none,
+                          children: [Icon(item.icon, size: 29, color: color)],
                         ),
-                      ),
-                    ],
+                        const SizedBox(height: 3),
+                        Text(
+                          item.label,
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            height: 1,
+                            color: color,
+                            fontWeight: selected
+                                ? FontWeight.w800
+                                : FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               );
