@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../constants/clip_policy.dart';
 import '../main.dart';
 import '../managers/video_manager.dart';
+import '../theme/moa_design_tokens.dart';
 import '../utils/haptics.dart';
 import '../utils/quality_policy.dart';
 
@@ -1393,9 +1394,10 @@ class _CaptureScreenState extends State<CaptureScreen>
               margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
               decoration: BoxDecoration(
-                color: const Color(0xFF111317),
+                color: MoaDesignTokens.surface,
                 borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: Colors.white12),
+                border: Border.all(color: MoaDesignTokens.stroke),
+                boxShadow: MoaDesignTokens.panelShadow,
               ),
               child: SafeArea(
                 top: false,
@@ -1408,7 +1410,7 @@ class _CaptureScreenState extends State<CaptureScreen>
                         const Text(
                           'Settings',
                           style: TextStyle(
-                            color: Colors.white,
+                            color: MoaDesignTokens.textPrimary,
                             fontSize: 16,
                             fontWeight: FontWeight.w700,
                           ),
@@ -1420,14 +1422,14 @@ class _CaptureScreenState extends State<CaptureScreen>
                             height: 16,
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
-                              color: Colors.amber,
+                              color: MoaDesignTokens.accentStrong,
                             ),
                           ),
                         IconButton(
                           visualDensity: VisualDensity.compact,
                           icon: const Icon(
                             Icons.close,
-                            color: Colors.white70,
+                            color: MoaDesignTokens.textMuted,
                             size: 17,
                           ),
                           onPressed: () => Navigator.pop(context),
@@ -1438,7 +1440,7 @@ class _CaptureScreenState extends State<CaptureScreen>
                     const Text(
                       'Aspect',
                       style: TextStyle(
-                        color: Colors.white70,
+                        color: MoaDesignTokens.textMuted,
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
                       ),
@@ -1461,12 +1463,19 @@ class _CaptureScreenState extends State<CaptureScreen>
                                 selected: selected,
                                 labelStyle: TextStyle(
                                   color: selected
-                                      ? Colors.black
-                                      : Colors.black87,
+                                      ? MoaDesignTokens.textPrimary
+                                      : MoaDesignTokens.textMuted,
                                   fontWeight: FontWeight.w700,
                                 ),
-                                selectedColor: Colors.amber,
-                                backgroundColor: const Color(0xFFF1F1F1),
+                                selectedColor: MoaDesignTokens.accentSoft,
+                                backgroundColor: MoaDesignTokens.surfaceAlt,
+                                side: BorderSide(
+                                  color: selected
+                                      ? MoaDesignTokens.accent.withValues(
+                                          alpha: 0.58,
+                                        )
+                                      : MoaDesignTokens.stroke,
+                                ),
                                 onSelected: (_) {
                                   if (selectedAspect == aspect) return;
                                   setModalState(() => selectedAspect = aspect);
@@ -1488,7 +1497,7 @@ class _CaptureScreenState extends State<CaptureScreen>
                     const Text(
                       'Quality',
                       style: TextStyle(
-                        color: Colors.white70,
+                        color: MoaDesignTokens.textMuted,
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
                       ),
@@ -1497,7 +1506,7 @@ class _CaptureScreenState extends State<CaptureScreen>
                     Text(
                       '촬영 원본은 ${kQualityProfile1080p.summaryLabel} 기준으로 저장·정규화됩니다.',
                       style: TextStyle(
-                        color: Colors.white.withAlpha(150),
+                        color: MoaDesignTokens.textMuted,
                         fontSize: 11,
                         height: 1.35,
                       ),
@@ -1522,14 +1531,21 @@ class _CaptureScreenState extends State<CaptureScreen>
                                 selected: selected,
                                 labelStyle: TextStyle(
                                   color: !enabled
-                                      ? Colors.black45
+                                      ? MoaDesignTokens.textFaint
                                       : selected
-                                      ? Colors.black
-                                      : Colors.black87,
+                                      ? MoaDesignTokens.textPrimary
+                                      : MoaDesignTokens.textMuted,
                                   fontWeight: FontWeight.w700,
                                 ),
-                                selectedColor: Colors.amber,
-                                backgroundColor: const Color(0xFFF1F1F1),
+                                selectedColor: MoaDesignTokens.accentSoft,
+                                backgroundColor: MoaDesignTokens.surfaceAlt,
+                                side: BorderSide(
+                                  color: selected
+                                      ? MoaDesignTokens.accent.withValues(
+                                          alpha: 0.58,
+                                        )
+                                      : MoaDesignTokens.stroke,
+                                ),
                                 onSelected: enabled
                                     ? (_) async {
                                         if (applyingPreset ||
@@ -1630,7 +1646,7 @@ class _CaptureScreenState extends State<CaptureScreen>
 
     if (!_hasInitializedController) {
       return Scaffold(
-        backgroundColor: Colors.black,
+        backgroundColor: MoaDesignTokens.background,
         body: Center(
           child: _cameraError != null
               ? Column(
@@ -1640,7 +1656,9 @@ class _CaptureScreenState extends State<CaptureScreen>
                       padding: const EdgeInsets.symmetric(horizontal: 20),
                       child: Text(
                         _cameraError!,
-                        style: const TextStyle(color: Colors.white),
+                        style: const TextStyle(
+                          color: MoaDesignTokens.textPrimary,
+                        ),
                         textAlign: TextAlign.center,
                       ),
                     ),
@@ -1673,11 +1691,15 @@ class _CaptureScreenState extends State<CaptureScreen>
                     ),
                     if (_isInitializingCamera) ...[
                       const SizedBox(height: 12),
-                      const CircularProgressIndicator(color: Colors.white),
+                      const CircularProgressIndicator(
+                        color: MoaDesignTokens.accentStrong,
+                      ),
                     ],
                   ],
                 )
-              : const CircularProgressIndicator(color: Colors.white),
+              : const CircularProgressIndicator(
+                  color: MoaDesignTokens.accentStrong,
+                ),
         ),
       );
     }

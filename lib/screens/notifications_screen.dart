@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../services/notification_settings_service.dart';
+import '../theme/moa_design_tokens.dart';
 
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
@@ -79,7 +80,8 @@ class _NotificationsScreenState extends State<NotificationsScreen>
 
     await _notificationService.setNotificationsEnabled(value);
 
-    AuthorizationStatus status = await _notificationService.getAuthorizationStatus();
+    AuthorizationStatus status = await _notificationService
+        .getAuthorizationStatus();
 
     if (value && status == AuthorizationStatus.notDetermined) {
       status = await _notificationService.requestPermissionAndSync();
@@ -110,10 +112,7 @@ class _NotificationsScreenState extends State<NotificationsScreen>
   ) async {
     setState(() {
       _loading = true;
-      _categorySettings = {
-        ..._categorySettings,
-        category: value,
-      };
+      _categorySettings = {..._categorySettings, category: value};
     });
 
     await _notificationService.setCategoryEnabled(category, value);
@@ -162,9 +161,9 @@ class _NotificationsScreenState extends State<NotificationsScreen>
     final opened = await openAppSettings();
     if (!mounted) return;
     if (!opened) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('시스템 설정을 열 수 없습니다.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('시스템 설정을 열 수 없습니다.')));
     }
   }
 
@@ -184,7 +183,11 @@ class _NotificationsScreenState extends State<NotificationsScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Notifications')),
+      backgroundColor: MoaDesignTokens.background,
+      appBar: AppBar(
+        title: const Text('Notifications'),
+        backgroundColor: MoaDesignTokens.background,
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
@@ -239,4 +242,3 @@ class _NotificationsScreenState extends State<NotificationsScreen>
     );
   }
 }
-

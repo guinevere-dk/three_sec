@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 
+import '../theme/moa_design_tokens.dart';
+
 class BGMTrack {
   final String title;
   final String author;
@@ -22,23 +24,59 @@ class BGMPickerScreen extends StatefulWidget {
   State<BGMPickerScreen> createState() => _BGMPickerScreenState();
 }
 
-class _BGMPickerScreenState extends State<BGMPickerScreen> with SingleTickerProviderStateMixin {
+class _BGMPickerScreenState extends State<BGMPickerScreen>
+    with SingleTickerProviderStateMixin {
   late TabController _tabController;
   VideoPlayerController? _previewController;
   BGMTrack? _selectedTrack;
   double _volume = 0.5;
 
   final List<String> _categories = ['감성적인', '신나는', '잔잔한', '세련된'];
-  
+
   // 더미 데이터: 실제 앱에서는 서버에서 불러오거나 로컬 자산을 사용합니다.
   final List<BGMTrack> _allTracks = [
-    BGMTrack(title: 'Sunset Walk', author: 'Lo-fi Artist', path: 'https://www.sample-videos.com/audio/mp3/wave.mp3', category: '감성적인'),
-    BGMTrack(title: 'Morning Coffee', author: 'Acoustic Soul', path: 'https://www.sample-videos.com/audio/mp3/crowd-cheering.mp3', category: '감성적인'),
-    BGMTrack(title: 'Urban Beat', author: 'DJ City', path: 'https://www.sample-videos.com/audio/mp3/wave.mp3', category: '신나는'),
-    BGMTrack(title: 'Summer Dance', author: 'Pop Maker', path: 'https://www.sample-videos.com/audio/mp3/crowd-cheering.mp3', category: '신나는'),
-    BGMTrack(title: 'Deep Sleep', author: 'Ambient King', path: 'https://www.sample-videos.com/audio/mp3/wave.mp3', category: '잔잔한'),
-    BGMTrack(title: 'Rainy Night', author: 'Piano Man', path: 'https://www.sample-videos.com/audio/mp3/crowd-cheering.mp3', category: '잔잔한'),
-    BGMTrack(title: 'Fashion Show', author: 'Electro Chic', path: 'https://www.sample-videos.com/audio/mp3/wave.mp3', category: '세련된'),
+    BGMTrack(
+      title: 'Sunset Walk',
+      author: 'Lo-fi Artist',
+      path: 'https://www.sample-videos.com/audio/mp3/wave.mp3',
+      category: '감성적인',
+    ),
+    BGMTrack(
+      title: 'Morning Coffee',
+      author: 'Acoustic Soul',
+      path: 'https://www.sample-videos.com/audio/mp3/crowd-cheering.mp3',
+      category: '감성적인',
+    ),
+    BGMTrack(
+      title: 'Urban Beat',
+      author: 'DJ City',
+      path: 'https://www.sample-videos.com/audio/mp3/wave.mp3',
+      category: '신나는',
+    ),
+    BGMTrack(
+      title: 'Summer Dance',
+      author: 'Pop Maker',
+      path: 'https://www.sample-videos.com/audio/mp3/crowd-cheering.mp3',
+      category: '신나는',
+    ),
+    BGMTrack(
+      title: 'Deep Sleep',
+      author: 'Ambient King',
+      path: 'https://www.sample-videos.com/audio/mp3/wave.mp3',
+      category: '잔잔한',
+    ),
+    BGMTrack(
+      title: 'Rainy Night',
+      author: 'Piano Man',
+      path: 'https://www.sample-videos.com/audio/mp3/crowd-cheering.mp3',
+      category: '잔잔한',
+    ),
+    BGMTrack(
+      title: 'Fashion Show',
+      author: 'Electro Chic',
+      path: 'https://www.sample-videos.com/audio/mp3/wave.mp3',
+      category: '세련된',
+    ),
   ];
 
   @override
@@ -86,13 +124,16 @@ class _BGMPickerScreenState extends State<BGMPickerScreen> with SingleTickerProv
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: MoaDesignTokens.background,
       appBar: AppBar(
-        backgroundColor: Colors.black,
-        iconTheme: const IconThemeData(color: Colors.white),
+        backgroundColor: MoaDesignTokens.background,
+        iconTheme: const IconThemeData(color: MoaDesignTokens.textPrimary),
         title: const Text(
           '배경음악 선택',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          style: TextStyle(
+            color: MoaDesignTokens.textPrimary,
+            fontWeight: FontWeight.bold,
+          ),
         ),
         actions: [
           TextButton(
@@ -100,7 +141,9 @@ class _BGMPickerScreenState extends State<BGMPickerScreen> with SingleTickerProv
             child: Text(
               '선택 완료',
               style: TextStyle(
-                color: _selectedTrack != null ? Colors.white : Colors.white24,
+                color: _selectedTrack != null
+                    ? MoaDesignTokens.accentStrong
+                    : MoaDesignTokens.textFaint,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -108,9 +151,9 @@ class _BGMPickerScreenState extends State<BGMPickerScreen> with SingleTickerProv
         ],
         bottom: TabBar(
           controller: _tabController,
-          indicatorColor: Colors.white,
-          labelColor: Colors.white,
-          unselectedLabelColor: Colors.white38,
+          indicatorColor: MoaDesignTokens.accentStrong,
+          labelColor: MoaDesignTokens.textPrimary,
+          unselectedLabelColor: MoaDesignTokens.textMuted,
           tabs: _categories.map((cat) => Tab(text: cat)).toList(),
         ),
       ),
@@ -141,28 +184,45 @@ class _BGMPickerScreenState extends State<BGMPickerScreen> with SingleTickerProv
             width: 48,
             height: 48,
             decoration: BoxDecoration(
-              color: isSelected ? Colors.white : Colors.white10,
+              color: isSelected
+                  ? MoaDesignTokens.accentSoft.withValues(alpha: 0.55)
+                  : MoaDesignTokens.surfaceAlt,
               borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: isSelected
+                    ? MoaDesignTokens.accent.withValues(alpha: 0.58)
+                    : MoaDesignTokens.stroke,
+              ),
             ),
             child: Icon(
               isSelected ? Icons.music_note : Icons.music_note_outlined,
-              color: isSelected ? Colors.black : Colors.white54,
+              color: isSelected
+                  ? MoaDesignTokens.accentStrong
+                  : MoaDesignTokens.textMuted,
             ),
           ),
           title: Text(
             track.title,
             style: TextStyle(
-              color: isSelected ? Colors.white : Colors.white70,
+              color: isSelected
+                  ? MoaDesignTokens.textPrimary
+                  : MoaDesignTokens.textMuted,
               fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
             ),
           ),
           subtitle: Text(
             track.author,
-            style: const TextStyle(color: Colors.white38, fontSize: 12),
+            style: const TextStyle(
+              color: MoaDesignTokens.textFaint,
+              fontSize: 12,
+            ),
           ),
-          trailing: isSelected && _previewController != null && _previewController!.value.isPlaying
-              ? const Icon(Icons.volume_up, color: Colors.white)
-              : const Icon(Icons.play_arrow, color: Colors.white24),
+          trailing:
+              isSelected &&
+                  _previewController != null &&
+                  _previewController!.value.isPlaying
+              ? const Icon(Icons.volume_up, color: MoaDesignTokens.accentStrong)
+              : const Icon(Icons.play_arrow, color: MoaDesignTokens.textFaint),
         );
       },
     );
@@ -172,22 +232,30 @@ class _BGMPickerScreenState extends State<BGMPickerScreen> with SingleTickerProv
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.grey[900],
+        color: MoaDesignTokens.surface,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        border: Border.all(color: MoaDesignTokens.stroke),
+        boxShadow: MoaDesignTokens.panelShadow,
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Row(
             children: [
-              const Icon(Icons.volume_down, color: Colors.white54, size: 20),
+              const Icon(
+                Icons.volume_down,
+                color: MoaDesignTokens.textMuted,
+                size: 20,
+              ),
               Expanded(
                 child: SliderTheme(
                   data: SliderTheme.of(context).copyWith(
-                    activeTrackColor: Colors.white,
-                    inactiveTrackColor: Colors.white10,
-                    thumbColor: Colors.white,
-                    overlayColor: Colors.white.withOpacity(0.1),
+                    activeTrackColor: MoaDesignTokens.accentStrong,
+                    inactiveTrackColor: MoaDesignTokens.stroke,
+                    thumbColor: MoaDesignTokens.accentStrong,
+                    overlayColor: MoaDesignTokens.accent.withValues(
+                      alpha: 0.16,
+                    ),
                     trackHeight: 2,
                   ),
                   child: Slider(
@@ -203,13 +271,20 @@ class _BGMPickerScreenState extends State<BGMPickerScreen> with SingleTickerProv
                   ),
                 ),
               ),
-              const Icon(Icons.volume_up, color: Colors.white, size: 20),
+              const Icon(
+                Icons.volume_up,
+                color: MoaDesignTokens.textMuted,
+                size: 20,
+              ),
             ],
           ),
           const SizedBox(height: 10),
           Text(
             '선택됨: ${_selectedTrack?.title} - 볼륨: ${(_volume * 100).toInt()}%',
-            style: const TextStyle(color: Colors.white54, fontSize: 12),
+            style: const TextStyle(
+              color: MoaDesignTokens.textMuted,
+              fontSize: 12,
+            ),
           ),
         ],
       ),

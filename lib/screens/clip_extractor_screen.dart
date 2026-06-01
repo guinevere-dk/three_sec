@@ -12,6 +12,7 @@ import '../constants/clip_policy.dart';
 import '../managers/video_manager.dart';
 import '../managers/user_status_manager.dart';
 import '../models/clip_save_job_state.dart';
+import '../theme/moa_design_tokens.dart';
 
 class ClipExtractorScreen extends StatefulWidget {
   final File videoFile;
@@ -28,7 +29,9 @@ class ClipExtractorScreen extends StatefulWidget {
 }
 
 class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
-  static const MethodChannel _platform = MethodChannel('com.dk.three_sec/video_engine');
+  static const MethodChannel _platform = MethodChannel(
+    'com.dk.three_sec/video_engine',
+  );
   static const int _fixedWindowMs = kTargetClipMs;
   static const int _minValidClipBytes = 8 * 1024;
   static const int _minValidClipDurationMs = kTargetClipMs;
@@ -77,7 +80,7 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
   // 선택된 구간 리스트 (시작 시간 ms)
   // 종료 시간은 자동으로 start + target clip ms
   final List<int> _selectedSegments = [];
-  
+
   // 썸네일 캐시는 복잡하므로 일단 심플한 타임스탬프 UI로 간다.
 
   @override
@@ -95,7 +98,8 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
   }
 
   void _bindClipQueueListener(VideoManager manager) {
-    if (_clipQueueListenerAttached && identical(_clipQueueListenerManager, manager)) {
+    if (_clipQueueListenerAttached &&
+        identical(_clipQueueListenerManager, manager)) {
       return;
     }
     _unbindClipQueueListener();
@@ -209,7 +213,9 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
   }
 
   void _onClipQueueStateChanged() {
-    if (!_mountedAndReady || _clipQueueCompletionHandled || _activeExtractionJobIds.isEmpty) {
+    if (!_mountedAndReady ||
+        _clipQueueCompletionHandled ||
+        _activeExtractionJobIds.isEmpty) {
       return;
     }
     final manager = _videoManager;
@@ -261,11 +267,15 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
     try {
       byteLength = await file.length();
     } catch (e) {
-      debugPrint('[ClipExtractor] invalid clip: file length read failed (${file.path}) / $e');
+      debugPrint(
+        '[ClipExtractor] invalid clip: file length read failed (${file.path}) / $e',
+      );
       return false;
     }
     if (byteLength < _minValidClipBytes) {
-      debugPrint('[ClipExtractor] invalid clip: too small (${file.path}) / $byteLength bytes');
+      debugPrint(
+        '[ClipExtractor] invalid clip: too small (${file.path}) / $byteLength bytes',
+      );
       return false;
     }
 
@@ -296,7 +306,9 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
       }
       return true;
     } catch (e) {
-      debugPrint('[ClipExtractor] invalid clip: probe failed (${file.path}) / $e');
+      debugPrint(
+        '[ClipExtractor] invalid clip: probe failed (${file.path}) / $e',
+      );
       return false;
     } finally {
       if (probe != null) {
@@ -319,10 +331,9 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
 
     if (files.isEmpty) {
       files.addAll(
-        dir
-            .listSync()
-            .whereType<File>()
-            .where((file) => file.path.toLowerCase().endsWith('.mp4')),
+        dir.listSync().whereType<File>().where(
+          (file) => file.path.toLowerCase().endsWith('.mp4'),
+        ),
       );
     }
 
@@ -393,7 +404,7 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
     final totalMs = _controller.value.duration.inMilliseconds;
 
     if (totalMs <= 0) return;
-     
+
     // 비디오 끝부분 예외 처리 (타겟 길이 미만 남았을 때)
     // 네이티브 엔진에서 처리하겠지만, UI에서도 시작점은 total - targetClipMs 안쪽이어야 안전
     int startMs = _clampWindowStartMs(currentMs, totalMs);
@@ -413,10 +424,11 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
       // 추가되었다는 피드백(햅틱)
       HapticFeedback.mediumImpact();
     });
-    
+
     // 토스트 등으로 알림
     Fluttertoast.showToast(
-      msg: "$kTargetClipSecForDisplay초 구간 추가됨 (${_formatDuration(Duration(milliseconds: startMs))})",
+      msg:
+          "$kTargetClipSecForDisplay초 구간 추가됨 (${_formatDuration(Duration(milliseconds: startMs))})",
       gravity: ToastGravity.CENTER,
     );
   }
@@ -472,11 +484,16 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
         ms == null) {
       return;
     }
-    unawaited(_issueWindowSeek(ms, reason: _isWindowDragging ? 'drag' : 'slider'));
+    unawaited(
+      _issueWindowSeek(ms, reason: _isWindowDragging ? 'drag' : 'slider'),
+    );
   }
 
   Future<void> _issueWindowSeek(int targetMs, {required String reason}) async {
-    if (!_mountedAndReady || !_isFixedWindowMode || !_controller.value.isInitialized) return;
+    if (!_mountedAndReady ||
+        !_isFixedWindowMode ||
+        !_controller.value.isInitialized)
+      return;
     if (_isWindowSeekInFlight) return;
     final totalMs = _controller.value.duration.inMilliseconds;
     final clampedTargetMs = _clampWindowStartMs(targetMs, totalMs);
@@ -491,7 +508,8 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
       return;
     }
     if (_lastWindowSeekAt != null &&
-        now.difference(_lastWindowSeekAt!).inMilliseconds < _windowSeekCooldownMs) {
+        now.difference(_lastWindowSeekAt!).inMilliseconds <
+            _windowSeekCooldownMs) {
       return;
     }
 
@@ -529,7 +547,10 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
   }
 
   Future<void> _issueFreeSeek(int targetMs, {required String reason}) async {
-    if (!_mountedAndReady || _isFixedWindowMode || !_controller.value.isInitialized) return;
+    if (!_mountedAndReady ||
+        _isFixedWindowMode ||
+        !_controller.value.isInitialized)
+      return;
     if (_isDisposing || _isVideoInitializing || _isFreeSeekInFlight) return;
 
     final totalMs = _controller.value.duration.inMilliseconds;
@@ -557,9 +578,15 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
   }
 
   Future<void> _issueLoopSeek(int targetMs, {required String reason}) async {
-    if (!_mountedAndReady || !_controller.value.isInitialized || _isWindowDragging) return;
+    if (!_mountedAndReady ||
+        !_controller.value.isInitialized ||
+        _isWindowDragging)
+      return;
     final now = DateTime.now();
-    final clampedTargetMs = _clampWindowStartMs(targetMs, _controller.value.duration.inMilliseconds);
+    final clampedTargetMs = _clampWindowStartMs(
+      targetMs,
+      _controller.value.duration.inMilliseconds,
+    );
     if (_isLoopSeekInFlight) {
       _debugLoopLog(
         'loop seek skip($reason): inFlight target=$clampedTargetMs',
@@ -567,13 +594,15 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
       return;
     }
     final lastAt = _lastLoopSeekAt;
-    if (lastAt != null && now.difference(lastAt).inMilliseconds < _loopSeekCooldownMs) {
+    if (lastAt != null &&
+        now.difference(lastAt).inMilliseconds < _loopSeekCooldownMs) {
       _debugLoopLog(
         'loop seek skip($reason): cooldown target=$clampedTargetMs, gap=${now.difference(lastAt).inMilliseconds}ms',
       );
       return;
     }
-    if ((_lastLoopSeekMs - clampedTargetMs).abs() <= _loopSeekDuplicateToleranceMs &&
+    if ((_lastLoopSeekMs - clampedTargetMs).abs() <=
+            _loopSeekDuplicateToleranceMs &&
         lastAt != null &&
         now.difference(lastAt).inMilliseconds < _loopSeekDuplicateWindowMs) {
       _debugLoopLog(
@@ -598,7 +627,8 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
       _isLoopSeekInFlight = false;
       final latencyMs = DateTime.now().difference(requestAt).inMilliseconds;
       _loopSeekLogCounter += 1;
-      if (latencyMs >= 28 || _loopSeekLogCounter % _loopSeekLogSampleEvery == 0) {
+      if (latencyMs >= 28 ||
+          _loopSeekLogCounter % _loopSeekLogSampleEvery == 0) {
         _debugLoopLog(
           'loop seek($reason): target=$clampedTargetMs, reentryGap=${reentryGapMs ?? -1}ms, latency=${latencyMs}ms',
         );
@@ -607,7 +637,9 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
   }
 
   void _enforceFixedWindowLoop() {
-    if (!_isFixedWindowMode || !_controller.value.isInitialized || _isWindowDragging) {
+    if (!_isFixedWindowMode ||
+        !_controller.value.isInitialized ||
+        _isWindowDragging) {
       return;
     }
     final totalMs = _controller.value.duration.inMilliseconds;
@@ -622,7 +654,10 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
   }
 
   void _updateWindowStartFromSlider(double newValue) {
-    if (!_mountedAndReady || !_isFixedWindowMode || !_controller.value.isInitialized) return;
+    if (!_mountedAndReady ||
+        !_isFixedWindowMode ||
+        !_controller.value.isInitialized)
+      return;
     final totalMs = _controller.value.duration.inMilliseconds;
     final next = _clampWindowStartMs(newValue.toInt(), totalMs);
     if (next == _windowStartMs) return;
@@ -678,7 +713,10 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
                   0.0,
                   safeWidth * (1 - windowRatio),
                 );
-                final windowWidth = (safeWidth * windowRatio).clamp(14.0, safeWidth);
+                final windowWidth = (safeWidth * windowRatio).clamp(
+                  14.0,
+                  safeWidth,
+                );
 
                 return SizedBox(
                   width: safeWidth,
@@ -698,26 +736,28 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
                         width: windowWidth,
                         top: 0,
                         bottom: 0,
-                         child: GestureDetector(
-                           onHorizontalDragStart: (_) {
-                             _isWindowDragging = true;
-                           },
-                           onHorizontalDragUpdate: (details) {
-                             final nextLeft = (left + details.delta.dx).clamp(
-                               0.0,
-                               safeWidth - windowWidth,
-                             );
-                             final nextRatio = nextLeft / safeWidth;
-                             final nextStart = (nextRatio * totalMs).round();
-                             _updateWindowStartFromSlider(nextStart.toDouble());
-                           },
-                           onHorizontalDragEnd: (_) {
-                             _isWindowDragging = false;
-                             _flushWindowSeek();
-                           },
-                           child: Container(
+                        child: GestureDetector(
+                          onHorizontalDragStart: (_) {
+                            _isWindowDragging = true;
+                          },
+                          onHorizontalDragUpdate: (details) {
+                            final nextLeft = (left + details.delta.dx).clamp(
+                              0.0,
+                              safeWidth - windowWidth,
+                            );
+                            final nextRatio = nextLeft / safeWidth;
+                            final nextStart = (nextRatio * totalMs).round();
+                            _updateWindowStartFromSlider(nextStart.toDouble());
+                          },
+                          onHorizontalDragEnd: (_) {
+                            _isWindowDragging = false;
+                            _flushWindowSeek();
+                          },
+                          child: Container(
                             decoration: BoxDecoration(
-                              color: Colors.blueAccent.withValues(alpha: 0.75),
+                              color: MoaDesignTokens.accentStrong.withValues(
+                                alpha: 0.75,
+                              ),
                               borderRadius: BorderRadius.circular(999),
                               border: Border.all(color: Colors.white70),
                             ),
@@ -737,9 +777,11 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
 
   Future<void> _extractClips() async {
     if (_selectedSegments.isEmpty) return;
-    if (!_mountedAndReady || _isExporting || !_controller.value.isInitialized) return;
+    if (!_mountedAndReady || _isExporting || !_controller.value.isInitialized)
+      return;
     final opToken = ++_extractOpToken;
-    final videoManager = _videoManager ?? Provider.of<VideoManager>(context, listen: false);
+    final videoManager =
+        _videoManager ?? Provider.of<VideoManager>(context, listen: false);
 
     final videoFileLength = await () async {
       try {
@@ -749,8 +791,9 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
       }
     }();
 
-    final totalMs =
-        videoFileLength > 0 ? (_sourceTotalDurationMs ?? _controller.value.duration.inMilliseconds) : 0;
+    final totalMs = videoFileLength > 0
+        ? (_sourceTotalDurationMs ?? _controller.value.duration.inMilliseconds)
+        : 0;
     if (totalMs <= 0) {
       Fluttertoast.showToast(msg: '원본 영상 정보를 읽을 수 없습니다');
       return;
@@ -760,12 +803,13 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
       return;
     }
 
-    final normalizedSegments = _selectedSegments
-        .where((startMs) => startMs >= 0)
-        .map((startMs) => _clampWindowStartMs(startMs, totalMs))
-        .toSet()
-        .toList()
-      ..sort();
+    final normalizedSegments =
+        _selectedSegments
+            .where((startMs) => startMs >= 0)
+            .map((startMs) => _clampWindowStartMs(startMs, totalMs))
+            .toSet()
+            .toList()
+          ..sort();
 
     if (normalizedSegments.isEmpty) {
       Fluttertoast.showToast(msg: '유효한 클립 구간이 없습니다');
@@ -780,10 +824,11 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
     setState(() => _isExporting = true);
 
     final userStatusManager = UserStatusManager();
-    final docDir = await videoManager.getAppDocDir(); // public method 필요하지만, 없으면 standard way 사용
+    final docDir = await videoManager
+        .getAppDocDir(); // public method 필요하지만, 없으면 standard way 사용
     if (!_mountedAndReady || !_isExtractOpActive(opToken)) return;
     final outputDir = "${docDir.path}/clips"; // 임시 폴더
-    
+
     // 디렉토리 생성 및 정리
     final dir = Directory(outputDir);
     if (await dir.exists()) {
@@ -792,14 +837,11 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
     await dir.create(recursive: true);
 
     // 세그먼트 데이터 준비
-        final segmentsPayload = normalizedSegments
+    final segmentsPayload = normalizedSegments
         .map((startMs) {
           final clampedEnd = (startMs + kTargetClipMs).clamp(0, totalMs);
           if (clampedEnd <= startMs) return null;
-          return <String, int>{
-            'start': startMs,
-            'end': clampedEnd,
-          };
+          return <String, int>{'start': startMs, 'end': clampedEnd};
         })
         .whereType<Map<String, int>>()
         .toList(growable: false);
@@ -814,7 +856,7 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
 
     try {
       debugPrint('[ClipExtractor] 🎥 클립 추출 시작: ${segmentsPayload.length}개 구간');
-      
+
       final result = await _platform.invokeMethod('extractClips', {
         'inputPath': widget.videoFile.path,
         'outputDir': outputDir,
@@ -831,11 +873,11 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
         // MainActivity.kt의 extractClips를 보면 결과를 알 수 있음.
         // 현재 MainActivity 구현은 result.success("SUCCESS") 또는 경로 리스트일 것임.
         // 일반적인 3S 패턴상 파일들을 특정 폴더에 떨구고 "SUCCESS"만 줄 수도 있음.
-        
+
         // 하지만 videoManager 로직에 태워야 하므로, 생성된 파일들을 찾아서 등록해야 함.
         // 가정: outputDir에 파일들이 생성됨. 이름을 알 수 없으니 폴더 스캔 또는 네이티브가 리턴해주길 기대.
         // 네이티브 코드가 반환값을 명시적으로 안주면 폴더를 스캔해서 최근 생성된 파일을 가져와야 함.
-        
+
         // 여기서는 안전하게 outputDir의 파일들을 가져와서 이동시킴.
         final expectedCount = segmentsPayload.length;
         final clipFiles = _collectNativeResultFiles(result, dir);
@@ -855,7 +897,9 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
         });
 
         if (validClipFiles.length < expectedCount) {
-          throw StateError('생성된 클립 파일이 부족합니다: ${validClipFiles.length}/$expectedCount');
+          throw StateError(
+            '생성된 클립 파일이 부족합니다: ${validClipFiles.length}/$expectedCount',
+          );
         }
 
         final now = DateTime.now();
@@ -865,8 +909,7 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
             .where((entry) => entry.key < normalizedSegments.length)
             .map(
               (entry) => ClipSaveJob.queued(
-                id:
-                    'clip_save_${entry.key}_${entry.value.path.hashCode}_${now.microsecondsSinceEpoch}',
+                id: 'clip_save_${entry.key}_${entry.value.path.hashCode}_${now.microsecondsSinceEpoch}',
                 sourcePath: entry.value.path,
                 destinationPath: p.join(
                   widget.targetAlbum,
@@ -897,9 +940,9 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
           concurrency: _resolveClipSaveConcurrency(),
         );
 
-        // 방금 생성된 파일들만 골라내기 위해 타임스탬프 체크 등을 할 수 있으나, 
+        // 방금 생성된 파일들만 골라내기 위해 타임스탬프 체크 등을 할 수 있으나,
         // 일단 outputDir를 전용으로 썼으므로 있는거 다 가져옴.
-        
+
         Fluttertoast.showToast(msg: '${jobs.length}개 클립 저장 큐에 등록됨');
         if (_mountedAndReady && _isExtractOpActive(opToken)) {
           setState(() {});
@@ -922,7 +965,9 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
     if (!_isInitialized) {
       return const Scaffold(
         backgroundColor: Colors.black,
-        body: Center(child: CircularProgressIndicator(color: Colors.white)),
+        body: Center(
+          child: CircularProgressIndicator(color: MoaDesignTokens.accentStrong),
+        ),
       );
     }
 
@@ -935,21 +980,25 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
           onPressed: _isExporting
               ? null
               : () {
-            final manager = _videoManager;
-            if (manager != null && _activeExtractionJobIds.isNotEmpty) {
-              manager.requestCancelClipSaveQueue();
-            }
-            Navigator.pop(context);
-          },
+                  final manager = _videoManager;
+                  if (manager != null && _activeExtractionJobIds.isNotEmpty) {
+                    manager.requestCancelClipSaveQueue();
+                  }
+                  Navigator.pop(context);
+                },
         ),
         title: const Text('원하는 장면 담기', style: TextStyle(color: Colors.white)),
         actions: [
           TextButton(
-            onPressed: _selectedSegments.isEmpty || _isExporting ? null : _extractClips,
+            onPressed: _selectedSegments.isEmpty || _isExporting
+                ? null
+                : _extractClips,
             child: Text(
               _isExporting ? "저장 중..." : "완료 (${_selectedSegments.length})",
               style: TextStyle(
-                color: _selectedSegments.isEmpty ? Colors.grey : Colors.blueAccent,
+                color: _selectedSegments.isEmpty
+                    ? Colors.grey
+                    : MoaDesignTokens.accentStrong,
                 fontWeight: FontWeight.bold,
                 fontSize: 16,
               ),
@@ -974,7 +1023,11 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
                       if (!_isPlaying)
                         Container(
                           color: Colors.black26,
-                          child: const Icon(Icons.play_circle_fill, color: Colors.white70, size: 60),
+                          child: const Icon(
+                            Icons.play_circle_fill,
+                            color: Colors.white70,
+                            size: 60,
+                          ),
                         ),
                       GestureDetector(
                         onTap: _togglePlayPause,
@@ -986,7 +1039,7 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
                 ),
               ),
             ),
-            
+
             // 2. 컨트롤 컨트롤 (슬라이더 + 시간)
             // 2. 컨트롤 컨트롤 (슬라이더 + 시간)
             ValueListenableBuilder(
@@ -996,7 +1049,9 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
                 final position = value.position.inMilliseconds.toDouble();
                 final totalMs = value.duration.inMilliseconds;
                 final startMs = _clampWindowStartMs(_windowStartMs, totalMs);
-                final sliderValue = _isFixedWindowMode ? startMs.toDouble() : position;
+                final sliderValue = _isFixedWindowMode
+                    ? startMs.toDouble()
+                    : position;
                 final sliderMax = _isFixedWindowMode
                     ? (duration - _fixedWindowMs).clamp(1.0, duration)
                     : duration;
@@ -1007,15 +1062,22 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
                     children: [
                       Text(
                         _formatDuration(value.position),
-                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
                       ),
                       Expanded(
                         child: SliderTheme(
                           data: SliderTheme.of(context).copyWith(
                             trackHeight: 2.0,
-                            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6.0),
-                            overlayShape: const RoundSliderOverlayShape(overlayRadius: 14.0),
-                            activeTrackColor: Colors.blueAccent,
+                            thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 6.0,
+                            ),
+                            overlayShape: const RoundSliderOverlayShape(
+                              overlayRadius: 14.0,
+                            ),
+                            activeTrackColor: MoaDesignTokens.accentStrong,
                             inactiveTrackColor: Colors.grey,
                             thumbColor: Colors.white,
                           ),
@@ -1032,7 +1094,12 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
                               if (_isFixedWindowMode) {
                                 _updateWindowStartFromSlider(newValue);
                               } else {
-                                unawaited(_issueFreeSeek(newValue.toInt(), reason: 'slider')); 
+                                unawaited(
+                                  _issueFreeSeek(
+                                    newValue.toInt(),
+                                    reason: 'slider',
+                                  ),
+                                );
                               }
                             },
                             onChangeEnd: (_) {
@@ -1046,7 +1113,10 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
                       ),
                       Text(
                         _formatDuration(value.duration),
-                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
                       ),
                     ],
                   ),
@@ -1066,26 +1136,30 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
                   ),
                 ),
               ),
-            
+
             const SizedBox(height: 10),
-            
+
             // 3. 메인 버튼 (Add Clip) - 예쁜 아이콘 버튼
             Center(
               child: SizedBox(
-                width: 70, 
+                width: 70,
                 height: 70,
                 child: FloatingActionButton(
                   onPressed: _addCurrentSegment,
                   backgroundColor: Colors.white,
                   elevation: 4,
                   shape: const CircleBorder(),
-                  child: const Icon(Icons.add_a_photo_outlined, color: Colors.black, size: 32),
+                  child: const Icon(
+                    Icons.add_a_photo_outlined,
+                    color: Colors.black,
+                    size: 32,
+                  ),
                 ),
               ),
             ),
-            
+
             const SizedBox(height: 20),
-            
+
             // 4. 선택된 세그먼트 리스트 (가로 스크롤)
             SizedBox(
               height: 80,
@@ -1102,7 +1176,9 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
                       itemCount: _selectedSegments.length,
                       separatorBuilder: (_, index) => const SizedBox(width: 12),
                       itemBuilder: (context, index) {
-                        final startTime = Duration(milliseconds: _selectedSegments[index]);
+                        final startTime = Duration(
+                          milliseconds: _selectedSegments[index],
+                        );
                         return Stack(
                           children: [
                             Container(
@@ -1116,11 +1192,17 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
                               child: Column(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  const Icon(Icons.movie, color: Colors.white54),
+                                  const Icon(
+                                    Icons.movie,
+                                    color: Colors.white54,
+                                  ),
                                   const SizedBox(height: 4),
                                   Text(
                                     _formatDuration(startTime),
-                                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
                                 ],
                               ),
@@ -1130,7 +1212,11 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
                               right: 2,
                               child: GestureDetector(
                                 onTap: () => _removeSegment(index),
-                                child: const Icon(Icons.cancel, color: Colors.redAccent, size: 20),
+                                child: const Icon(
+                                  Icons.cancel,
+                                  color: Colors.redAccent,
+                                  size: 20,
+                                ),
                               ),
                             ),
                           ],
@@ -1142,7 +1228,8 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
 
             ValueListenableBuilder<ClipSaveJobState>(
               valueListenable:
-                  (_videoManager ?? Provider.of<VideoManager>(context, listen: false))
+                  (_videoManager ??
+                          Provider.of<VideoManager>(context, listen: false))
                       .clipSaveQueueStateNotifier,
               builder: (context, queueState, _) {
                 final jobs = _trackedJobs(queueState);
@@ -1180,7 +1267,8 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
                         final statusText = switch (job.status) {
                           ClipSaveJobStatus.queued => '대기',
                           ClipSaveJobStatus.running => '저장중',
-                          ClipSaveJobStatus.retrying => '재시도중 (${job.attempts}/${job.maxRetry})',
+                          ClipSaveJobStatus.retrying =>
+                            '재시도중 (${job.attempts}/${job.maxRetry})',
                           ClipSaveJobStatus.success => '완료',
                           ClipSaveJobStatus.failed => '실패',
                           ClipSaveJobStatus.skipped => '건너뜀',

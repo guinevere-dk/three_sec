@@ -8,6 +8,7 @@ import '../managers/user_status_manager.dart';
 import '../managers/video_manager.dart';
 import '../services/auth_service.dart';
 import '../services/cloud_service.dart';
+import '../theme/moa_design_tokens.dart';
 import '../utils/cloud_cost_policy.dart';
 import 'subscription_management_screen.dart';
 
@@ -266,8 +267,9 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
         : '${_selectedVideoIds.length}개 선택됨';
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF6F7F8),
+      backgroundColor: MoaDesignTokens.background,
       appBar: AppBar(
+        backgroundColor: MoaDesignTokens.background,
         title: Text(title),
         actions: [
           if (_isAllowed && _videos.isNotEmpty)
@@ -304,7 +306,7 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
               const Icon(
                 Icons.cloud_off_rounded,
                 size: 58,
-                color: Color(0xFF94A3B8),
+                color: MoaDesignTokens.textFaint,
               ),
               const SizedBox(height: 14),
               Text(
@@ -312,7 +314,10 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
                     ? '게스트 모드에서는 Cloud 보관함을 사용할 수 없습니다.'
                     : _cloudService.subscriptionExpiredCloudReadMessage(),
                 textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 15, color: Color(0xFF334155)),
+                style: const TextStyle(
+                  fontSize: 15,
+                  color: MoaDesignTokens.textMuted,
+                ),
               ),
               const SizedBox(height: 16),
               FilledButton(
@@ -353,7 +358,11 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
           physics: const AlwaysScrollableScrollPhysics(),
           children: const [
             SizedBox(height: 180),
-            Icon(Icons.cloud_done_rounded, size: 58, color: Color(0xFF94A3B8)),
+            Icon(
+              Icons.cloud_done_rounded,
+              size: 58,
+              color: MoaDesignTokens.textFaint,
+            ),
             SizedBox(height: 14),
             Center(child: Text('Cloud 보관함에 완료된 클립이 없습니다.')),
           ],
@@ -384,8 +393,14 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
         ? ''
         : ' ${DateFormat('yyyy.MM.dd').format(graceEndsAt)}까지';
     return Card(
-      color: const Color(0xFFFFFBEB),
+      color: MoaDesignTokens.warningSoft,
       elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(MoaDesignTokens.radiusMd),
+        side: BorderSide(
+          color: MoaDesignTokens.warning.withValues(alpha: 0.34),
+        ),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(14),
         child: Text(
@@ -412,8 +427,9 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
     final album = video.albumName.trim().isEmpty ? '기본 앨범' : video.albumName;
 
     return Material(
-      color: Colors.white,
+      color: MoaDesignTokens.surface,
       borderRadius: BorderRadius.circular(18),
+      shadowColor: MoaDesignTokens.textPrimary.withValues(alpha: 0.08),
       child: InkWell(
         borderRadius: BorderRadius.circular(18),
         onTap: downloading ? null : () => _toggleSelection(video.videoId),
@@ -425,7 +441,7 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
                 width: 52,
                 height: 52,
                 decoration: BoxDecoration(
-                  color: const Color(0xFFEFF6FF),
+                  color: MoaDesignTokens.accentSoft.withValues(alpha: 0.44),
                   borderRadius: BorderRadius.circular(14),
                 ),
                 child: downloading
@@ -435,7 +451,7 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
                       )
                     : const Icon(
                         Icons.cloud_done_rounded,
-                        color: Color(0xFF2BADEE),
+                        color: MoaDesignTokens.accentStrong,
                       ),
               ),
               const SizedBox(width: 12),
@@ -458,7 +474,7 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        color: Color(0xFF64748B),
+                        color: MoaDesignTokens.textMuted,
                         fontSize: 12,
                       ),
                     ),
@@ -471,8 +487,8 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
                     ? Icons.check_circle_rounded
                     : Icons.radio_button_unchecked,
                 color: selected
-                    ? const Color(0xFF2BADEE)
-                    : const Color(0xFFCBD5E1),
+                    ? MoaDesignTokens.accentStrong
+                    : MoaDesignTokens.textFaint,
               ),
             ],
           ),
