@@ -261,12 +261,21 @@ class VideoEditScreen extends StatefulWidget {
 }
 
 class _VideoEditScreenState extends State<VideoEditScreen> {
-  static const Color _editorBackground = Color(0xFF070A12);
+  static const Color _editorBackground = Color(0xFF0E141D);
   static const Color _editorGlassSurface = Color(0xB3192536);
-  static const Color _editorSoftSurface = Color(0xE6111824);
-  static const Color _editorStroke = Color(0x33FFFFFF);
+  static const Color _editorHeaderSurface = Color(0xCC121A24);
+  static const Color _editorSoftSurface = Color(0xE616202D);
+  static const Color _editorStroke = Color(0x26FFFFFF);
+  static const Color _editorHeaderStroke = Color(0x22FFFFFF);
   static const Color _editorPrimaryAccent = Color(0xFF59D5FF);
   static const Color _editorSecondaryAccent = Color(0xFFFFB86C);
+  static const Color _editorCtaStart = Color(0xFF67E8F9);
+  static const Color _editorCtaEnd = Color(0xFF38BDF8);
+  static const Color _editorModalBarrier = Color(0x73000000);
+  static const Color _editorChipSurface = Color(0xFF1E2633);
+  static const Color _editorChipSelected = Color(0xFFB9F3FF);
+  static const Color _editorChipText = Color(0xFFB7C0CC);
+  static const Color _editorChipSelectedText = Color(0xFF071018);
   static const Color _editorTextPrimary = Color(0xFFF8FAFC);
   static const Color _editorTextMuted = Color(0xFFAAB7C8);
   static const double _editorRadiusLarge = 24.0;
@@ -274,6 +283,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   static const double _editorRadiusSmall = 12.0;
   static const List<BoxShadow> _editorPanelShadow = <BoxShadow>[
     BoxShadow(color: Color(0x66000000), blurRadius: 24, offset: Offset(0, 12)),
+  ];
+  static const List<BoxShadow> _editorHeaderShadow = <BoxShadow>[
+    BoxShadow(color: Color(0x33000000), blurRadius: 20, offset: Offset(0, 8)),
   ];
   static const Color _bgColor = _editorBackground;
   static const Color _primaryColor = _editorPrimaryAccent;
@@ -1376,6 +1388,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
     final ok = await showDialog<bool>(
       context: context,
+      barrierColor: _editorModalBarrier,
       builder: (dialogContext) {
         return AlertDialog(
           title: const Text('클립 삭제'),
@@ -2777,6 +2790,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
     showDialog(
       context: context,
+      barrierColor: _editorModalBarrier,
       barrierDismissible: false,
       builder: (dialogContext) {
         _exportProgressDialogContext = dialogContext;
@@ -3973,13 +3987,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   Widget _buildHeader() {
     return Container(
-      margin: const EdgeInsets.fromLTRB(10, 8, 10, 4),
-      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      margin: const EdgeInsets.fromLTRB(10, 6, 10, 3),
+      padding: const EdgeInsets.fromLTRB(10, 7, 10, 7),
       decoration: BoxDecoration(
-        color: _editorGlassSurface,
+        color: _editorHeaderSurface,
         borderRadius: BorderRadius.circular(_editorRadiusLarge),
-        border: Border.all(color: _editorStroke),
-        boxShadow: _editorPanelShadow,
+        border: Border.all(color: _editorHeaderStroke),
+        boxShadow: _editorHeaderShadow,
       ),
       child: Column(
         children: [
@@ -4162,10 +4176,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
                 colors: enabled
-                    ? const <Color>[
-                        _editorPrimaryAccent,
-                        _editorSecondaryAccent,
-                      ]
+                    ? const <Color>[_editorCtaStart, _editorCtaEnd]
                     : const <Color>[Color(0xFF263244), Color(0xFF1A2230)],
               ),
               borderRadius: BorderRadius.circular(999),
@@ -4177,7 +4188,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               boxShadow: enabled
                   ? const <BoxShadow>[
                       BoxShadow(
-                        color: Color(0x4459D5FF),
+                        color: Color(0x3359D5FF),
                         blurRadius: 16,
                         offset: Offset(0, 6),
                       ),
@@ -6420,6 +6431,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       if (!_isCloudOnlyClipPath(clip.path) && !File(clip.path).existsSync()) {
         showDialog(
           context: context,
+          barrierColor: _editorModalBarrier,
           builder: (context) => AlertDialog(
             backgroundColor: _editorSoftSurface,
             shape: RoundedRectangleBorder(
@@ -6456,6 +6468,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
     showDialog(
       context: context,
+      barrierColor: _editorModalBarrier,
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setStateDialog) {
@@ -6797,17 +6810,17 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       selected: selected,
       showCheckmark: false,
       onSelected: onSelected,
-      selectedColor: _editorPrimaryAccent.withValues(alpha: 0.18),
-      backgroundColor: Colors.white.withValues(alpha: 0.06),
-      disabledColor: Colors.white.withValues(alpha: 0.04),
+      selectedColor: _editorChipSelected,
+      backgroundColor: _editorChipSurface,
+      disabledColor: _editorChipSurface.withValues(alpha: 0.55),
       side: BorderSide(
         color: selected
-            ? _editorPrimaryAccent.withValues(alpha: 0.52)
-            : _editorStroke,
+            ? _editorPrimaryAccent.withValues(alpha: 0.72)
+            : _editorHeaderStroke,
       ),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
       labelStyle: TextStyle(
-        color: selected ? _editorPrimaryAccent : _editorTextMuted,
+        color: selected ? _editorChipSelectedText : _editorChipText,
         fontSize: 13,
         fontWeight: FontWeight.w800,
       ),
@@ -6821,6 +6834,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
+      barrierColor: _editorModalBarrier,
       isScrollControlled: true,
       builder: (context) {
         return StatefulBuilder(
@@ -7142,6 +7156,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
+      barrierColor: _editorModalBarrier,
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setModalState) {
@@ -7240,6 +7255,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.black,
+      barrierColor: _editorModalBarrier,
       builder: (context) {
         return Container(
           height: 150,
@@ -7298,6 +7314,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
     final result = await showDialog<String>(
       context: context,
+      barrierColor: _editorModalBarrier,
       builder: (_) => AlertDialog(
         backgroundColor: Colors.grey[900],
         title: Text(
@@ -7366,6 +7383,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.black,
+      barrierColor: _editorModalBarrier,
       builder: (context) {
         return Container(
           padding: const EdgeInsets.all(20),
