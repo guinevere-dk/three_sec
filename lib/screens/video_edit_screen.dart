@@ -203,6 +203,22 @@ enum _ProjectSaveUiState {
   retrying,
 }
 
+class _ColorFilterMoodMeta {
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final List<Color> gradientColors;
+  final Color accentColor;
+
+  const _ColorFilterMoodMeta({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.gradientColors,
+    required this.accentColor,
+  });
+}
+
 class _ExportClipResolveException implements Exception {
   final int index;
   final String message;
@@ -245,12 +261,27 @@ class VideoEditScreen extends StatefulWidget {
 }
 
 class _VideoEditScreenState extends State<VideoEditScreen> {
-  static const Color _bgColor = Color(0xFFF4F6F8);
-  static const Color _primaryColor = Color(0xFF2B8CEE);
-  static const Color _textPrimary = Color(0xFF0D141B);
-  static const Color _textSecondary = Color(0xFF4C739A);
+  static const Color _editorBackground = Color(0xFF070A12);
+  static const Color _editorGlassSurface = Color(0xB3192536);
+  static const Color _editorSoftSurface = Color(0xE6111824);
+  static const Color _editorStroke = Color(0x33FFFFFF);
+  static const Color _editorPrimaryAccent = Color(0xFF59D5FF);
+  static const Color _editorSecondaryAccent = Color(0xFFFFB86C);
+  static const Color _editorTextPrimary = Color(0xFFF8FAFC);
+  static const Color _editorTextMuted = Color(0xFFAAB7C8);
+  static const double _editorRadiusLarge = 24.0;
+  static const double _editorRadius = 18.0;
+  static const double _editorRadiusSmall = 12.0;
+  static const List<BoxShadow> _editorPanelShadow = <BoxShadow>[
+    BoxShadow(color: Color(0x66000000), blurRadius: 24, offset: Offset(0, 12)),
+  ];
+  static const Color _bgColor = _editorBackground;
+  static const Color _primaryColor = _editorPrimaryAccent;
+  static const Color _textPrimary = _editorTextPrimary;
+  static const Color _textSecondary = _editorTextMuted;
   static const double _bottomToolbarHeight = 88.0;
   static const double _inlineModePanelHeight = 110.0;
+  static const double _colorFilterPanelHeight = 138.0;
   static const double _inlineModePanelGap = 2.0;
   static const double _transformOverlayBottomInset = 14.0;
   static const double _inlineModePanelSpacing = 1.0;
@@ -260,10 +291,56 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   static const double _inlineModeChipRowHeight = 28.0;
   static const bool _enableDormantEditFeatures = false;
   static final BoxDecoration _inlineModePanelDecoration = BoxDecoration(
-    color: Color(0x6B000000),
-    border: Border.all(color: Color(0x66FFFFFF)),
-    borderRadius: BorderRadius.circular(18),
+    color: _editorGlassSurface,
+    border: Border.all(color: _editorStroke),
+    borderRadius: BorderRadius.circular(_editorRadiusLarge),
+    boxShadow: _editorPanelShadow,
   );
+  static const Map<String, _ColorFilterMoodMeta> _colorFilterMoodMetaById =
+      <String, _ColorFilterMoodMeta>{
+        kColorFilterPresetNone: _ColorFilterMoodMeta(
+          title: '원본',
+          subtitle: '보정 없음',
+          icon: Icons.trip_origin_rounded,
+          gradientColors: <Color>[Color(0xFF343A40), Color(0xFF8B96A3)],
+          accentColor: Color(0xFFCBD5E1),
+        ),
+        kColorFilterPresetClearSky: _ColorFilterMoodMeta(
+          title: '청량',
+          subtitle: '맑은 여행톤',
+          icon: Icons.water_drop_rounded,
+          gradientColors: <Color>[Color(0xFF39D2FF), Color(0xFF49F2B4)],
+          accentColor: Color(0xFF7DD3FC),
+        ),
+        kColorFilterPresetWarmSunset: _ColorFilterMoodMeta(
+          title: '노을',
+          subtitle: '따뜻한 카페톤',
+          icon: Icons.wb_twilight_rounded,
+          gradientColors: <Color>[Color(0xFFFF8A3D), Color(0xFFFFD166)],
+          accentColor: Color(0xFFFBBF24),
+        ),
+        kColorFilterPresetFilmGreen: _ColorFilterMoodMeta(
+          title: '필름',
+          subtitle: '부드러운 그린',
+          icon: Icons.local_movies_rounded,
+          gradientColors: <Color>[Color(0xFF234F3B), Color(0xFFA7C957)],
+          accentColor: Color(0xFFBEF264),
+        ),
+        kColorFilterPresetKoreanTravelPop: _ColorFilterMoodMeta(
+          title: '여행',
+          subtitle: '선명한 브이로그',
+          icon: Icons.flight_takeoff_rounded,
+          gradientColors: <Color>[Color(0xFFFF4D8D), Color(0xFF3B82F6)],
+          accentColor: Color(0xFF93C5FD),
+        ),
+        kColorFilterPresetCityNightWarm: _ColorFilterMoodMeta(
+          title: '도시밤',
+          subtitle: '따뜻한 야경',
+          icon: Icons.nightlife_rounded,
+          gradientColors: <Color>[Color(0xFF101827), Color(0xFFFFB347)],
+          accentColor: Color(0xFFF59E0B),
+        ),
+      };
 
   VideoPlayerController? _controller;
   bool _isInitialized = false;
@@ -2709,10 +2786,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             builder: (innerContext, setDialogState) {
               _exportProgressDialogStateSetter = setDialogState;
               return AlertDialog(
-                backgroundColor: Colors.black87,
+                backgroundColor: _editorSoftSurface,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(_editorRadiusLarge),
+                  side: const BorderSide(color: _editorStroke),
+                ),
                 title: const Text(
                   '내보내기 진행 중',
-                  style: TextStyle(color: Colors.white),
+                  style: TextStyle(color: _editorTextPrimary),
                 ),
                 content: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -2724,7 +2805,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           value: _exportDialogProgress,
                           minHeight: 8,
                           backgroundColor: Colors.white24,
-                          color: Colors.lightBlueAccent,
+                          color: _editorPrimaryAccent,
                         );
                       },
                     ),
@@ -2732,7 +2813,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     Text(
                       _exportDialogLabel,
                       textAlign: TextAlign.center,
-                      style: const TextStyle(color: Colors.white),
+                      style: const TextStyle(color: _editorTextPrimary),
                     ),
                     const SizedBox(height: 20),
                     TextButton(
@@ -2996,7 +3077,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: _primaryColor,
-                      foregroundColor: Colors.white,
+                      foregroundColor: const Color(0xFF07111F),
                     ),
                     child: const Text('구독하러 가기'),
                   ),
@@ -3004,8 +3085,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   ElevatedButton(
                     onPressed: () => Navigator.maybePop(context, false),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.white,
+                      backgroundColor: _editorSoftSurface,
                       foregroundColor: _textPrimary,
+                      side: const BorderSide(color: _editorStroke),
                     ),
                     child: const Text('돌아가기'),
                   ),
@@ -3060,8 +3142,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     final bool showColorFilterPanel =
         _bottomInlinePanel == _BottomInlinePanel.colorFilter;
     final bool showBrightnessPanel = _isBrightnessMode;
+    final double activeInlinePanelHeight = showColorFilterPanel
+        ? _colorFilterPanelHeight
+        : _inlineModePanelHeight;
     final double bottomPanelHeight =
-        _inlineModePanelHeight + _inlineModePanelGap + _bottomToolbarHeight;
+        activeInlinePanelHeight + _inlineModePanelGap + _bottomToolbarHeight;
 
     return Container(
       height: bottomPanelHeight,
@@ -3122,26 +3207,24 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           margin: const EdgeInsets.symmetric(horizontal: 20),
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: _editorSoftSurface,
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: const Color(0xFFE4E8EF)),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x14000000),
-                blurRadius: 12,
-                offset: Offset(0, 4),
-              ),
-            ],
+            border: Border.all(color: _editorStroke),
+            boxShadow: _editorPanelShadow,
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.cloud_off, color: Color(0xFFD97706), size: 54),
+              const Icon(
+                Icons.cloud_off,
+                color: _editorSecondaryAccent,
+                size: 54,
+              ),
               const SizedBox(height: 12),
               const Text(
                 'Cloud Clip 로드 실패',
                 style: TextStyle(
-                  color: Color(0xFF121212),
+                  color: _editorTextPrimary,
                   fontSize: 20,
                   fontWeight: FontWeight.w800,
                 ),
@@ -3150,7 +3233,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               Text(
                 '클립: $clipNumber 번',
                 style: const TextStyle(
-                  color: Color(0xFF2A2F37),
+                  color: _editorTextPrimary,
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
                 ),
@@ -3161,7 +3244,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Color(0xFF5A6472), fontSize: 12),
+                style: const TextStyle(color: _editorTextMuted, fontSize: 12),
               ),
               const SizedBox(height: 14),
               if (failureIndex != null)
@@ -3169,7 +3252,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   onPressed: () => _loadClip(failureIndex),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: _primaryColor,
-                    foregroundColor: Colors.white,
+                    foregroundColor: const Color(0xFF07111F),
                   ),
                   icon: const Icon(Icons.refresh),
                   label: const Text('다시 시도'),
@@ -3191,16 +3274,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           margin: const EdgeInsets.symmetric(horizontal: 20),
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: _editorSoftSurface,
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: const Color(0xFFE4E8EF)),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x14000000),
-                blurRadius: 12,
-                offset: Offset(0, 4),
-              ),
-            ],
+            border: Border.all(color: _editorStroke),
+            boxShadow: _editorPanelShadow,
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -3210,7 +3287,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               const Text(
                 'File Missing',
                 style: TextStyle(
-                  color: Color(0xFF121212),
+                  color: _editorTextPrimary,
                   fontSize: 20,
                   fontWeight: FontWeight.w800,
                 ),
@@ -3219,7 +3296,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               Text(
                 '누락 클립: $clipNumber 번',
                 style: const TextStyle(
-                  color: Color(0xFF2A2F37),
+                  color: _editorTextPrimary,
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
                 ),
@@ -3230,7 +3307,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Color(0xFF5A6472), fontSize: 12),
+                style: const TextStyle(color: _editorTextMuted, fontSize: 12),
               ),
               const SizedBox(height: 14),
               if (missingIndex != null)
@@ -3271,7 +3348,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               Text(
                 label,
                 style: const TextStyle(
-                  color: Color(0xFF4C739A),
+                  color: _editorTextMuted,
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
                 ),
@@ -3650,9 +3727,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.42),
-        borderRadius: BorderRadius.circular(9),
-        border: Border.all(color: const Color(0x66FFFFFF)),
+        color: _editorGlassSurface,
+        borderRadius: BorderRadius.circular(_editorRadius),
+        border: Border.all(color: _editorStroke),
+        boxShadow: _editorPanelShadow,
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -3723,18 +3801,50 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         children: [
           SizedBox(
             height: _inlineModeChipRowHeight,
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                _showTransformAngleNumericLabel
-                    ? '${currentValue.toStringAsFixed(1)}°'
-                    : _transformAngleModeLabel(_TransformAngleMode.tilt),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
+            child: Row(
+              children: [
+                Icon(
+                  Icons.straighten_rounded,
+                  color: _showTransformAngleNumericLabel
+                      ? _editorSecondaryAccent
+                      : _editorPrimaryAccent,
+                  size: 16,
                 ),
-              ),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    _transformAngleModeLabel(_TransformAngleMode.tilt),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: _editorTextPrimary,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 9,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _editorPrimaryAccent.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: _editorPrimaryAccent.withValues(alpha: 0.36),
+                    ),
+                  ),
+                  child: Text(
+                    '${currentValue.toStringAsFixed(1)}°',
+                    style: const TextStyle(
+                      color: _editorPrimaryAccent,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 6),
@@ -3793,13 +3903,20 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               height: 46,
               alignment: Alignment.center,
               decoration: BoxDecoration(
-                color: active ? const Color(0x332B8CEE) : Colors.transparent,
-                borderRadius: BorderRadius.circular(8),
+                color: active
+                    ? _editorPrimaryAccent.withValues(alpha: 0.18)
+                    : Colors.white.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(_editorRadiusSmall),
+                border: Border.all(
+                  color: active
+                      ? _editorPrimaryAccent.withValues(alpha: 0.5)
+                      : _editorStroke,
+                ),
               ),
               child: Icon(
                 icon,
                 size: 24,
-                color: active ? const Color(0xFF9FD0FF) : Colors.white,
+                color: active ? _editorPrimaryAccent : _editorTextPrimary,
               ),
             ),
           ),
@@ -3856,17 +3973,25 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   Widget _buildHeader() {
     return Container(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+      margin: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      decoration: BoxDecoration(
+        color: _editorGlassSurface,
+        borderRadius: BorderRadius.circular(_editorRadiusLarge),
+        border: Border.all(color: _editorStroke),
+        boxShadow: _editorPanelShadow,
+      ),
       child: Column(
         children: [
           Row(
             children: [
-              IconButton(
-                icon: const Icon(Icons.close, color: _textPrimary, size: 28),
+              _buildHeaderIconButton(
+                icon: Icons.close,
                 onPressed: _isClosingWithSave || _isExportInProgress
                     ? null
                     : _handleClosePressed,
                 tooltip: '닫기',
+                iconSize: 26,
               ),
               Expanded(
                 child: Text(
@@ -3881,23 +4006,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   ),
                 ),
               ),
-              const SizedBox(width: 4),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  elevation: 0,
-                  backgroundColor: _primaryColor,
-                  foregroundColor: Colors.white,
-                  minimumSize: const Size(92, 44),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-                onPressed: _isExportInProgress ? null : _handleExport,
-                child: const Text(
-                  "만들기",
-                  style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
-                ),
-              ),
+              const SizedBox(width: 8),
+              _buildExportCtaButton(),
             ],
           ),
           const SizedBox(height: _headerRowSpacing),
@@ -3905,28 +4015,20 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                IconButton(
-                  icon: Icon(
-                    Icons.undo,
-                    color: _commandManager.canUndo
-                        ? _textPrimary
-                        : Colors.black26,
-                  ),
+                _buildHeaderIconButton(
+                  icon: Icons.undo,
                   onPressed: _commandManager.canUndo ? _undo : null,
                   tooltip: 'Undo',
                 ),
-                IconButton(
-                  icon: Icon(
-                    Icons.redo,
-                    color: _commandManager.canRedo
-                        ? _textPrimary
-                        : Colors.black26,
-                  ),
+                const SizedBox(width: 4),
+                _buildHeaderIconButton(
+                  icon: Icons.redo,
                   onPressed: _commandManager.canRedo ? _redo : null,
                   tooltip: 'Redo',
                 ),
-                IconButton(
-                  icon: const Icon(Icons.aspect_ratio, color: _textPrimary),
+                const SizedBox(width: 4),
+                _buildHeaderIconButton(
+                  icon: Icons.aspect_ratio,
                   onPressed: _showCanvasPanel,
                   tooltip:
                       'Canvas ${_canvasAspectLabel(widget.project.canvasAspectRatioPreset)}',
@@ -3938,9 +4040,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     vertical: 6,
                   ),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFEAF3FF),
+                    color: _editorPrimaryAccent.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: const Color(0xFFB9D9FF)),
+                    border: Border.all(
+                      color: _editorPrimaryAccent.withValues(alpha: 0.38),
+                    ),
                   ),
                   child: Text(
                     _currentClipBadgeText,
@@ -3952,8 +4056,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   ),
                 ),
                 const SizedBox(width: 6),
-                IconButton(
-                  icon: const Icon(Icons.chevron_left, color: _textPrimary),
+                _buildHeaderIconButton(
+                  icon: Icons.chevron_left,
                   tooltip: '이전 클립',
                   onPressed:
                       _clips.isEmpty ||
@@ -3962,8 +4066,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                       ? null
                       : () => unawaited(_moveToAdjacentClip(-1)),
                 ),
-                IconButton(
-                  icon: const Icon(Icons.chevron_right, color: _textPrimary),
+                const SizedBox(width: 4),
+                _buildHeaderIconButton(
+                  icon: Icons.chevron_right,
                   tooltip: '다음 클립',
                   onPressed:
                       _clips.isEmpty ||
@@ -3989,26 +4094,134 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     );
   }
 
+  Widget _buildHeaderIconButton({
+    required IconData icon,
+    required VoidCallback? onPressed,
+    required String tooltip,
+    double iconSize = 22,
+  }) {
+    final enabled = onPressed != null;
+    final iconColor = enabled
+        ? _editorTextPrimary
+        : _editorTextMuted.withValues(alpha: 0.42);
+    return Tooltip(
+      message: tooltip,
+      child: Semantics(
+        button: true,
+        enabled: enabled,
+        label: tooltip,
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(_editorRadiusSmall),
+          child: InkWell(
+            onTap: onPressed,
+            borderRadius: BorderRadius.circular(_editorRadiusSmall),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 140),
+              width: 44,
+              height: 44,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: enabled
+                    ? Colors.white.withValues(alpha: 0.08)
+                    : Colors.white.withValues(alpha: 0.035),
+                borderRadius: BorderRadius.circular(_editorRadiusSmall),
+                border: Border.all(
+                  color: enabled
+                      ? _editorStroke
+                      : _editorStroke.withValues(alpha: 0.45),
+                ),
+              ),
+              child: Icon(icon, color: iconColor, size: iconSize),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildExportCtaButton() {
+    final enabled = !_isExportInProgress;
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: '만들기',
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(999),
+        child: InkWell(
+          onTap: enabled ? _handleExport : null,
+          borderRadius: BorderRadius.circular(999),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 140),
+            constraints: const BoxConstraints(minWidth: 92, minHeight: 44),
+            alignment: Alignment.center,
+            padding: const EdgeInsets.symmetric(horizontal: 18),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: enabled
+                    ? const <Color>[
+                        _editorPrimaryAccent,
+                        _editorSecondaryAccent,
+                      ]
+                    : const <Color>[Color(0xFF263244), Color(0xFF1A2230)],
+              ),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(
+                color: enabled
+                    ? Colors.white.withValues(alpha: 0.38)
+                    : _editorStroke.withValues(alpha: 0.55),
+              ),
+              boxShadow: enabled
+                  ? const <BoxShadow>[
+                      BoxShadow(
+                        color: Color(0x4459D5FF),
+                        blurRadius: 16,
+                        offset: Offset(0, 6),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Text(
+              '만들기',
+              style: TextStyle(
+                color: enabled
+                    ? const Color(0xFF07111F)
+                    : _editorTextMuted.withValues(alpha: 0.72),
+                fontWeight: FontWeight.w900,
+                fontSize: 16,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildSubscriptionChangeNotice() {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       decoration: BoxDecoration(
-        color: const Color(0xFFFFF7E6),
+        color: _editorSecondaryAccent.withValues(alpha: 0.13),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: const Color(0xFFF5D08A)),
+        border: Border.all(
+          color: _editorSecondaryAccent.withValues(alpha: 0.42),
+        ),
       ),
-      child: const Row(
+      child: Row(
         children: [
-          Icon(Icons.lock_clock, size: 16, color: Color(0xFFB45309)),
-          SizedBox(width: 7),
-          Expanded(
+          const Icon(Icons.lock_clock, size: 16, color: _editorSecondaryAccent),
+          const SizedBox(width: 7),
+          const Expanded(
             child: Text(
               'Subscription changed. Local draft is kept, Cloud save is paused, export is limited to 720p.',
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                color: Color(0xFF92400E),
+                color: _editorTextPrimary,
                 fontSize: 11,
                 fontWeight: FontWeight.w700,
               ),
@@ -4035,46 +4248,46 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       case _ProjectSaveUiState.saving:
         icon = Icons.sync;
         label = 'Saving';
-        fg = const Color(0xFF2563EB);
-        bg = const Color(0xFFEAF3FF);
-        border = const Color(0xFFB9D9FF);
+        fg = _editorPrimaryAccent;
+        bg = _editorPrimaryAccent.withValues(alpha: 0.12);
+        border = _editorPrimaryAccent.withValues(alpha: 0.38);
         break;
       case _ProjectSaveUiState.retrying:
         icon = Icons.refresh;
         label = 'Retrying save';
-        fg = const Color(0xFF2563EB);
-        bg = const Color(0xFFEAF3FF);
-        border = const Color(0xFFB9D9FF);
+        fg = _editorPrimaryAccent;
+        bg = _editorPrimaryAccent.withValues(alpha: 0.12);
+        border = _editorPrimaryAccent.withValues(alpha: 0.38);
         break;
       case _ProjectSaveUiState.localSaved:
         icon = Icons.save_outlined;
         label = 'Saved locally';
-        fg = const Color(0xFF166534);
-        bg = const Color(0xFFEAF7EE);
-        border = const Color(0xFFBFE8CB);
+        fg = const Color(0xFF7EF0C4);
+        bg = const Color(0xFF7EF0C4).withValues(alpha: 0.12);
+        border = const Color(0xFF7EF0C4).withValues(alpha: 0.32);
         break;
       case _ProjectSaveUiState.cloudSaved:
         icon = Icons.cloud_done_outlined;
         label = 'Cloud saved';
-        fg = const Color(0xFF166534);
-        bg = const Color(0xFFEAF7EE);
-        border = const Color(0xFFBFE8CB);
+        fg = const Color(0xFF7EF0C4);
+        bg = const Color(0xFF7EF0C4).withValues(alpha: 0.12);
+        border = const Color(0xFF7EF0C4).withValues(alpha: 0.32);
         break;
       case _ProjectSaveUiState.cloudFailed:
         icon = Icons.cloud_off_outlined;
         label = result?.localSaved == true
             ? 'Local saved, Cloud failed'
             : 'Save failed';
-        fg = const Color(0xFFB45309);
-        bg = const Color(0xFFFFF7E6);
-        border = const Color(0xFFF5D08A);
+        fg = _editorSecondaryAccent;
+        bg = _editorSecondaryAccent.withValues(alpha: 0.13);
+        border = _editorSecondaryAccent.withValues(alpha: 0.38);
         break;
       case _ProjectSaveUiState.idle:
         icon = Icons.cloud_queue;
         label = 'Autosave ready';
         fg = _textSecondary;
-        bg = const Color(0xFFEFF3F7);
-        border = const Color(0xFFDCE4EC);
+        bg = Colors.white.withValues(alpha: 0.07);
+        border = _editorStroke;
         break;
     }
 
@@ -4296,48 +4509,90 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     bool active = false,
   }) {
     final Color iconColor = active
-        ? _primaryColor
+        ? _editorPrimaryAccent
         : emphasized
-        ? const Color(0xFF7A38E5)
-        : _textPrimary;
+        ? _editorSecondaryAccent
+        : _editorTextPrimary;
+    final Color borderColor = active
+        ? _editorPrimaryAccent.withValues(alpha: 0.58)
+        : emphasized
+        ? _editorSecondaryAccent.withValues(alpha: 0.5)
+        : _editorStroke;
+    final Gradient? backgroundGradient = active || emphasized
+        ? LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: active
+                ? <Color>[
+                    _editorPrimaryAccent.withValues(alpha: 0.24),
+                    _editorPrimaryAccent.withValues(alpha: 0.08),
+                  ]
+                : <Color>[
+                    _editorSecondaryAccent.withValues(alpha: 0.22),
+                    _editorPrimaryAccent.withValues(alpha: 0.08),
+                  ],
+          )
+        : null;
 
     return Semantics(
       button: true,
       label: label,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(_editorRadius),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 6),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Container(
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 160),
                 width: 55.8,
                 height: 55.8,
                 decoration: BoxDecoration(
-                  color: emphasized
-                      ? const Color(0xFFE8E3F4)
-                      : active
-                      ? const Color(0xFFE8F2FD)
-                      : const Color(0xFFF0F2F4),
-                  borderRadius: BorderRadius.circular(9),
+                  color: backgroundGradient == null
+                      ? Colors.white.withValues(alpha: 0.07)
+                      : null,
+                  gradient: backgroundGradient,
+                  borderRadius: BorderRadius.circular(_editorRadius),
                   border: Border.all(
-                    color: emphasized
-                        ? const Color(0xFFD8C7F8)
-                        : active
-                        ? const Color(0xFFB7D7FA)
-                        : const Color(0xFFE6EBF0),
+                    color: borderColor,
+                    width: active ? 1.4 : 1,
                   ),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x12000000),
-                      blurRadius: 8,
-                      offset: Offset(0, 3),
-                    ),
+                  boxShadow: active
+                      ? const <BoxShadow>[
+                          BoxShadow(
+                            color: Color(0x3359D5FF),
+                            blurRadius: 14,
+                            offset: Offset(0, 6),
+                          ),
+                        ]
+                      : const <BoxShadow>[
+                          BoxShadow(
+                            color: Color(0x33000000),
+                            blurRadius: 10,
+                            offset: Offset(0, 4),
+                          ),
+                        ],
+                ),
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Icon(icon, color: iconColor, size: 30),
+                    if (active)
+                      Positioned(
+                        bottom: 7,
+                        child: Container(
+                          width: 16,
+                          height: 3,
+                          decoration: BoxDecoration(
+                            color: _editorPrimaryAccent,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
-                child: Icon(icon, color: iconColor, size: 35.1),
               ),
               const SizedBox(height: 4),
             ],
@@ -4398,21 +4653,21 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
                           color: selected
-                              ? Colors.white
-                              : Colors.black.withValues(alpha: 0.36),
+                              ? _editorPrimaryAccent.withValues(alpha: 0.18)
+                              : Colors.white.withValues(alpha: 0.07),
                           borderRadius: BorderRadius.circular(999),
                           border: Border.all(
                             color: selected
-                                ? Colors.white
-                                : const Color(0x77FFFFFF),
+                                ? _editorPrimaryAccent.withValues(alpha: 0.54)
+                                : _editorStroke,
                           ),
                         ),
                         child: Text(
                           speedLabel(speed),
                           style: TextStyle(
                             color: selected
-                                ? const Color(0xFF111111)
-                                : Colors.white,
+                                ? _editorPrimaryAccent
+                                : _editorTextPrimary,
                             fontSize: 10.8,
                             fontWeight: FontWeight.w800,
                           ),
@@ -4488,76 +4743,52 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     final displayedPercent = selectedNone
         ? 0
         : (normalizeColorFilterIntensity(_colorFilterIntensity) * 100).round();
+    final selectedMeta = _colorFilterMoodMetaFor(selectedSpec);
 
     return Container(
-      height: _inlineModePanelHeight,
+      height: _colorFilterPanelHeight,
       margin: EdgeInsets.fromLTRB(
         _inlineModePanelSidePadding,
         _inlineModePanelSpacing,
         _inlineModePanelSidePadding,
         _inlineModePanelSpacing,
       ),
-      padding: EdgeInsets.fromLTRB(
-        _inlineModePanelSidePadding,
-        _inlineModePanelVerticalPadding,
-        _inlineModePanelSidePadding,
-        _inlineModePanelVerticalPadding,
-      ),
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
       decoration: _inlineModePanelDecoration,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            height: _inlineModeChipRowHeight,
+            height: 78,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               itemCount: kColorFilterPresetSpecs.length,
-              separatorBuilder: (_, index) => const SizedBox(width: 6),
+              separatorBuilder: (_, index) => const SizedBox(width: 8),
               itemBuilder: (context, index) {
                 final preset = kColorFilterPresetSpecs[index];
                 final selected = preset.id == selectedSpec.id;
-                return InkWell(
-                  borderRadius: BorderRadius.circular(999),
-                  onTap: () => _selectColorFilterPreset(preset.id),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 11,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: selected
-                          ? const Color(0xFF2B8CEE)
-                          : Colors.white12,
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(
-                        color: selected
-                            ? const Color(0xFF9FD0FF)
-                            : Colors.white24,
-                      ),
-                    ),
-                    child: Text(
-                      preset.label,
-                      style: TextStyle(
-                        color: selected ? Colors.white : Colors.white70,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-                );
+                return _buildColorFilterMoodCard(preset, selected);
               },
             ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 8),
           Expanded(
             child: Row(
               children: [
-                const Icon(Icons.tune, color: Colors.white, size: 17),
+                Icon(
+                  selectedMeta.icon,
+                  color: selectedNone
+                      ? Colors.white54
+                      : selectedMeta.accentColor,
+                  size: 18,
+                ),
                 const SizedBox(width: 8),
                 SizedBox(
-                  width: 62,
+                  width: 88,
                   child: Text(
-                    '$displayedPercent%',
+                    selectedNone
+                        ? '${selectedMeta.title} 0%'
+                        : '${selectedMeta.title} $displayedPercent%',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
@@ -4571,10 +4802,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   child: SliderTheme(
                     data: SliderTheme.of(context).copyWith(
                       trackHeight: 4,
-                      activeTrackColor: const Color(0xFF9FD0FF),
+                      activeTrackColor: selectedMeta.accentColor,
                       inactiveTrackColor: Colors.white24,
                       thumbColor: Colors.white,
-                      overlayColor: const Color(0x332B8CEE),
+                      overlayColor: selectedMeta.accentColor.withAlpha(54),
                     ),
                     child: Slider(
                       value: selectedNone
@@ -4604,6 +4835,139 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   ),
                 ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  _ColorFilterMoodMeta _colorFilterMoodMetaFor(ColorFilterPresetSpec preset) {
+    return _colorFilterMoodMetaById[preset.id] ??
+        _ColorFilterMoodMeta(
+          title: preset.label,
+          subtitle: '무드 보정',
+          icon: Icons.auto_awesome_rounded,
+          gradientColors: const <Color>[Color(0xFF2B8CEE), Color(0xFF7A38E5)],
+          accentColor: _primaryColor,
+        );
+  }
+
+  Widget _buildColorFilterMoodCard(
+    ColorFilterPresetSpec preset,
+    bool selected,
+  ) {
+    final meta = _colorFilterMoodMetaFor(preset);
+    final Color borderColor = selected
+        ? meta.accentColor
+        : Colors.white.withAlpha(31);
+    final Color backgroundColor = selected
+        ? Colors.white.withAlpha(31)
+        : Colors.white.withAlpha(15);
+
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: '${meta.title}, ${meta.subtitle}',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () => _selectColorFilterPreset(preset.id),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            width: 156,
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: backgroundColor,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: borderColor, width: selected ? 1.4 : 1),
+            ),
+            child: Row(
+              children: [
+                _buildColorFilterMoodSwatch(meta, selected),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        meta.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: selected ? Colors.white : Colors.white70,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        meta.subtitle,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: selected ? Colors.white70 : Colors.white54,
+                          fontSize: 9.5,
+                          height: 1.15,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildColorFilterMoodSwatch(_ColorFilterMoodMeta meta, bool selected) {
+    return Container(
+      width: 42,
+      height: 58,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: meta.gradientColors,
+        ),
+        border: Border.all(
+          color: selected ? Colors.white.withAlpha(205) : Colors.white24,
+        ),
+      ),
+      child: Stack(
+        children: [
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: 22,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: Colors.black.withAlpha(42),
+                borderRadius: const BorderRadius.vertical(
+                  bottom: Radius.circular(11),
+                ),
+              ),
+            ),
+          ),
+          Center(child: Icon(meta.icon, color: Colors.white, size: 20)),
+          Positioned(
+            right: 5,
+            top: 5,
+            child: Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: meta.accentColor,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white.withAlpha(190)),
+              ),
             ),
           ),
         ],
@@ -4693,16 +5057,28 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       height: 48,
       child: Row(
         children: [
-          Icon(icon, color: Colors.white, size: 17),
-          const SizedBox(width: 6),
+          Container(
+            width: 30,
+            height: 30,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: _editorPrimaryAccent.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: _editorPrimaryAccent.withValues(alpha: 0.28),
+              ),
+            ),
+            child: Icon(icon, color: _editorPrimaryAccent, size: 17),
+          ),
+          const SizedBox(width: 8),
           SizedBox(
-            width: 64,
+            width: 70,
             child: Text(
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                color: Colors.white,
+                color: _editorTextPrimary,
                 fontSize: 11,
                 fontWeight: FontWeight.w700,
               ),
@@ -4711,13 +5087,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           Expanded(
             child: SliderTheme(
               data: SliderTheme.of(context).copyWith(
-                trackHeight: 2.5,
-                activeTrackColor: Colors.white,
+                trackHeight: 3,
+                activeTrackColor: _editorPrimaryAccent,
                 inactiveTrackColor: Colors.white24,
                 thumbColor: Colors.white,
-                overlayColor: Colors.white24,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
-                overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                overlayColor: _editorPrimaryAccent.withValues(alpha: 0.18),
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
               ),
               child: Slider(
                 value: value,
@@ -4734,7 +5110,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               '${(value * 100).round()}%',
               textAlign: TextAlign.right,
               style: const TextStyle(
-                color: Colors.white,
+                color: _editorPrimaryAccent,
                 fontSize: 11,
                 fontWeight: FontWeight.w800,
               ),
@@ -5090,13 +5466,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     ),
                     decoration: BoxDecoration(
                       color: selected
-                          ? const Color(0xFF2B8CEE)
-                          : Colors.white12,
+                          ? _editorPrimaryAccent.withValues(alpha: 0.18)
+                          : Colors.white.withValues(alpha: 0.07),
                       borderRadius: BorderRadius.circular(999),
                       border: Border.all(
                         color: selected
-                            ? const Color(0xFF9FD0FF)
-                            : Colors.white24,
+                            ? _editorPrimaryAccent.withValues(alpha: 0.5)
+                            : _editorStroke,
                       ),
                     ),
                     child: Text(
@@ -5104,9 +5480,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           ? displayedValue.toStringAsFixed(0)
                           : property.label,
                       style: TextStyle(
-                        color: selected ? Colors.white : Colors.white70,
+                        color: selected
+                            ? _editorPrimaryAccent
+                            : _editorTextMuted,
                         fontSize: 11,
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w800,
                       ),
                     ),
                   ),
@@ -5238,7 +5616,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 margin: const EdgeInsets.symmetric(vertical: 10),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(12),
-                  color: Colors.grey[300],
+                  color: _editorSoftSurface,
+                  border: Border.all(color: _editorStroke),
                 ),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
@@ -5249,7 +5628,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         return Image.memory(snapshot.data!, fit: BoxFit.cover);
                       }
                       return const Center(
-                        child: Icon(Icons.movie, color: Colors.black26),
+                        child: Icon(Icons.movie, color: _editorTextMuted),
                       );
                     },
                   ),
@@ -5354,14 +5733,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               margin: const EdgeInsets.only(right: 8, top: 10, bottom: 10),
               decoration: BoxDecoration(
                 border: isSelected
-                    ? Border.all(color: Colors.blue, width: 3)
-                    : null,
+                    ? Border.all(color: _editorPrimaryAccent, width: 3)
+                    : Border.all(color: _editorStroke),
                 borderRadius: BorderRadius.circular(12),
-                color: Colors.grey[300],
+                color: _editorSoftSurface,
                 boxShadow: [
                   if (isSelected)
                     BoxShadow(
-                      color: Colors.blue.withValues(alpha: 0.3),
+                      color: _editorPrimaryAccent.withValues(alpha: 0.28),
                       blurRadius: 8,
                       spreadRadius: 2,
                     ),
@@ -5382,7 +5761,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           );
                         }
                         return const Center(
-                          child: Icon(Icons.movie, color: Colors.black26),
+                          child: Icon(Icons.movie, color: _editorTextMuted),
                         );
                       },
                     ),
@@ -5516,6 +5895,18 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       height: outerHeight,
       margin: const EdgeInsets.symmetric(horizontal: 10),
       alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: _editorGlassSurface,
+        borderRadius: BorderRadius.circular(_editorRadius),
+        border: Border.all(color: _editorStroke),
+        boxShadow: const <BoxShadow>[
+          BoxShadow(
+            color: Color(0x55000000),
+            blurRadius: 14,
+            offset: Offset(0, 5),
+          ),
+        ],
+      ),
       child: SizedBox(
         height: trackHeight,
         child: FutureBuilder<List<Uint8List>>(
@@ -5531,9 +5922,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                       borderRadius: BorderRadius.circular(12),
                       child: thumbs.isEmpty
                           ? Container(
-                              color: Colors.grey[800],
+                              color: _editorSoftSurface,
                               child: const Center(
-                                child: Icon(Icons.movie, color: Colors.white24),
+                                child: Icon(
+                                  Icons.movie,
+                                  color: _editorTextMuted,
+                                ),
                               ),
                             )
                           : Row(
@@ -6027,14 +6421,18 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         showDialog(
           context: context,
           builder: (context) => AlertDialog(
-            backgroundColor: const Color(0xFF1E1E1E),
+            backgroundColor: _editorSoftSurface,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(_editorRadiusLarge),
+              side: const BorderSide(color: _editorStroke),
+            ),
             title: const Text(
               "Error",
               style: TextStyle(color: Colors.redAccent),
             ),
             content: const Text(
               "원본 파일이 손상되어 내보낼 수 없습니다.\n(Source file missing)",
-              style: TextStyle(color: Colors.white),
+              style: TextStyle(color: _editorTextPrimary),
             ),
             actions: [
               TextButton(
@@ -6062,10 +6460,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         return StatefulBuilder(
           builder: (context, setStateDialog) {
             return AlertDialog(
-              backgroundColor: const Color(0xFF1E1E1E),
+              backgroundColor: _editorSoftSurface,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(_editorRadiusLarge),
+                side: const BorderSide(color: _editorStroke),
+              ),
               title: const Text(
                 "Export Quality",
-                style: TextStyle(color: Colors.white),
+                style: TextStyle(color: _editorTextPrimary),
               ),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -6095,8 +6497,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 ),
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blueAccent,
-                    foregroundColor: Colors.white,
+                    backgroundColor: _editorPrimaryAccent,
+                    foregroundColor: const Color(0xFF07111F),
                   ),
                   onPressed: () {
                     Navigator.pop(context);
@@ -6151,12 +6553,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     return ListTile(
       title: Text(
         label,
-        style: TextStyle(color: enabled ? Colors.white : Colors.white24),
+        style: TextStyle(color: enabled ? _editorTextPrimary : Colors.white24),
       ),
       leading: Icon(
         selected ? Icons.radio_button_checked : Icons.radio_button_off,
         color: enabled
-            ? (selected ? Colors.blueAccent : Colors.white)
+            ? (selected ? _editorPrimaryAccent : _editorTextPrimary)
             : Colors.white24,
       ),
       trailing: enabled
@@ -6372,6 +6774,48 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     }
   }
 
+  Widget _buildEditorSheetHandle() {
+    return Center(
+      child: Container(
+        width: 44,
+        height: 5,
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.22),
+          borderRadius: BorderRadius.circular(999),
+        ),
+      ),
+    );
+  }
+
+  ChoiceChip _buildEditorChoiceChip({
+    required String label,
+    required bool selected,
+    required ValueChanged<bool> onSelected,
+  }) {
+    return ChoiceChip(
+      label: Text(label),
+      selected: selected,
+      showCheckmark: false,
+      onSelected: onSelected,
+      selectedColor: _editorPrimaryAccent.withValues(alpha: 0.18),
+      backgroundColor: Colors.white.withValues(alpha: 0.06),
+      disabledColor: Colors.white.withValues(alpha: 0.04),
+      side: BorderSide(
+        color: selected
+            ? _editorPrimaryAccent.withValues(alpha: 0.52)
+            : _editorStroke,
+      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+      labelStyle: TextStyle(
+        color: selected ? _editorPrimaryAccent : _editorTextMuted,
+        fontSize: 13,
+        fontWeight: FontWeight.w800,
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
+  }
+
   // ignore: unused_element
   void _showSoundMenu() {
     showModalBottomSheet(
@@ -6384,23 +6828,18 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             return Container(
               height: 420,
               padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
-              decoration: const BoxDecoration(
-                color: Color(0xFFF5F7F9),
-                borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+              decoration: BoxDecoration(
+                color: _editorSoftSurface,
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(30),
+                ),
+                border: Border.all(color: _editorStroke),
+                boxShadow: _editorPanelShadow,
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Center(
-                    child: Container(
-                      width: 44,
-                      height: 5,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFD9E0E7),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                    ),
-                  ),
+                  _buildEditorSheetHandle(),
                   const SizedBox(height: 14),
                   Row(
                     children: [
@@ -6473,8 +6912,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           _bgmPath == null ? "Add Music" : "Change Music",
                         ),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white,
+                          backgroundColor: Colors.white.withValues(alpha: 0.08),
                           foregroundColor: _textPrimary,
+                          side: const BorderSide(color: _editorStroke),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
                           ),
@@ -6520,7 +6960,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                       ),
                       if (_bgmPath != null)
                         IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.red),
+                          icon: const Icon(
+                            Icons.delete,
+                            color: Color(0xFFFF6B6B),
+                          ),
                           onPressed: () {
                             final newState = EditorState(
                               subtitles: _currentState.subtitles,
@@ -6594,7 +7037,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     icon: Icons.music_note,
                     label: 'BGM',
                     value: _bgmVolume,
-                    color: const Color(0xFF6F3CEB),
+                    color: _editorSecondaryAccent,
                     onChanged: (val) {
                       setModalState(() => _bgmVolume = val);
                       _updateVolumes();
@@ -6643,10 +7086,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           width: 40,
           height: 40,
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: color.withValues(alpha: 0.12),
             borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: color.withValues(alpha: 0.3)),
           ),
-          child: Icon(icon, color: _textPrimary, size: 20),
+          child: Icon(icon, color: color, size: 20),
         ),
         const SizedBox(width: 12),
         SizedBox(
@@ -6664,10 +7108,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           child: SliderTheme(
             data: SliderTheme.of(context).copyWith(
               trackHeight: 4,
-              activeTrackColor: const Color(0xFFDCE4EC),
-              inactiveTrackColor: const Color(0xFFE8EEF4),
+              activeTrackColor: color,
+              inactiveTrackColor: Colors.white24,
               thumbColor: Colors.white,
-              overlayColor: color.withValues(alpha: 0.12),
+              overlayColor: color.withValues(alpha: 0.18),
             ),
             child: Slider(
               value: value,
@@ -6704,25 +7148,20 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             String selectedAspect = widget.project.canvasAspectRatioPreset;
             String selectedBgMode = widget.project.canvasBackgroundMode;
             return Container(
-              height: 260,
+              height: 286,
               padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
-              decoration: const BoxDecoration(
-                color: Color(0xFFF5F7F9),
-                borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+              decoration: BoxDecoration(
+                color: _editorSoftSurface,
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(30),
+                ),
+                border: Border.all(color: _editorStroke),
+                boxShadow: _editorPanelShadow,
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Center(
-                    child: Container(
-                      width: 44,
-                      height: 5,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFD9E0E7),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                    ),
-                  ),
+                  _buildEditorSheetHandle(),
                   const SizedBox(height: 14),
                   const Text(
                     'CANVAS',
@@ -6740,8 +7179,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                       preset,
                     ) {
                       final selected = selectedAspect == preset;
-                      return ChoiceChip(
-                        label: Text(_canvasAspectLabel(preset)),
+                      return _buildEditorChoiceChip(
+                        label: _canvasAspectLabel(preset),
                         selected: selected,
                         onSelected: (_) {
                           setModalState(() => selectedAspect = preset);
@@ -6759,7 +7198,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   const Text(
                     'Background',
                     style: TextStyle(
-                      color: _textPrimary,
+                      color: _editorTextPrimary,
                       fontSize: 14,
                       fontWeight: FontWeight.w700,
                     ),
@@ -6771,8 +7210,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                       mode,
                     ) {
                       final selected = selectedBgMode == mode;
-                      return ChoiceChip(
-                        label: Text(mode),
+                      return _buildEditorChoiceChip(
+                        label: mode,
                         selected: selected,
                         onSelected: (_) {
                           setModalState(() => selectedBgMode = mode);
