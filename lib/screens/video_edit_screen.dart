@@ -19,6 +19,7 @@ import '../services/cloud_service.dart';
 import '../constants/clip_policy.dart';
 import '../utils/brightness_adjustment_policy.dart';
 import '../utils/clip_duration_label.dart';
+import '../utils/color_filter_preset_policy.dart';
 import '../utils/quality_policy.dart';
 import 'subscription_management_screen.dart';
 
@@ -108,6 +109,8 @@ class EditorState {
   final String canvasAspectRatioPreset;
   final String canvasBackgroundMode;
   final Map<String, double> brightnessAdjustments;
+  final String colorFilterPresetId;
+  final double colorFilterIntensity;
 
   EditorState({
     required this.subtitles,
@@ -122,6 +125,8 @@ class EditorState {
     this.canvasAspectRatioPreset = 'r9_16',
     this.canvasBackgroundMode = 'crop_fill',
     this.brightnessAdjustments = const <String, double>{},
+    this.colorFilterPresetId = kColorFilterPresetNone,
+    this.colorFilterIntensity = kColorFilterIntensityDefault,
   });
 
   EditorState copy() {
@@ -138,6 +143,8 @@ class EditorState {
       canvasAspectRatioPreset: canvasAspectRatioPreset,
       canvasBackgroundMode: canvasBackgroundMode,
       brightnessAdjustments: Map<String, double>.from(brightnessAdjustments),
+      colorFilterPresetId: colorFilterPresetId,
+      colorFilterIntensity: colorFilterIntensity,
     );
   }
 }
@@ -176,7 +183,7 @@ enum _TransformAngleMode { tilt }
 
 enum _TransformQuickAction { flip, rotate, angle }
 
-enum _BottomInlinePanel { none, sound, trimSpeedPreset }
+enum _BottomInlinePanel { none, sound, trimSpeedPreset, colorFilter }
 
 enum _TrimTimelineInteraction { none, playhead, startHandle, endHandle }
 
@@ -327,6 +334,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   String _e3SessionId = '';
   int _e3Seq = 0;
   Map<String, double> _brightnessAdjustments = defaultBrightnessAdjustments();
+  String _selectedColorFilterPresetId = kColorFilterPresetNone;
+  double _colorFilterIntensity = kColorFilterIntensityDefault;
+  EditorState? _colorFilterGestureBaseState;
+  bool _colorFilterGestureDirty = false;
 
   bool get _isPlaybackLockedForEditing =>
       _playbackLockedByTransform ||
@@ -365,6 +376,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       brightnessAdjustments: Map<String, double>.from(
         state.brightnessAdjustments,
       ),
+      colorFilterPresetId: normalizeColorFilterPresetId(
+        state.colorFilterPresetId,
+      ),
+      colorFilterIntensity: normalizeColorFilterIntensity(
+        state.colorFilterIntensity,
+      ),
     );
   }
 
@@ -384,6 +401,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       canvasBackgroundMode: widget.project.canvasBackgroundMode,
       brightnessAdjustments: normalizeBrightnessAdjustments(
         _brightnessAdjustments,
+      ),
+      colorFilterPresetId: normalizeColorFilterPresetId(
+        _selectedColorFilterPresetId,
+      ),
+      colorFilterIntensity: normalizeColorFilterIntensity(
+        _colorFilterIntensity,
       ),
     ),
   );
@@ -465,6 +488,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     super.initState();
     _brightnessAdjustments = normalizeBrightnessAdjustments(
       widget.project.brightnessAdjustments,
+    );
+    _selectedColorFilterPresetId = normalizeColorFilterPresetId(
+      widget.project.colorFilterPresetId,
+    );
+    _colorFilterIntensity = normalizeColorFilterIntensity(
+      widget.project.colorFilterIntensity,
     );
     _sessionStartTier = UserStatusManager().currentTier;
     _sessionRuntimeTier = normalizeRuntimeUserTier(_sessionStartTier);
@@ -1719,6 +1748,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     widget.project.brightnessAdjustments = normalizeBrightnessAdjustments(
       _brightnessAdjustments,
     );
+    widget.project.colorFilterPresetId = normalizeColorFilterPresetId(
+      _selectedColorFilterPresetId,
+    );
+    widget.project.colorFilterIntensity = normalizeColorFilterIntensity(
+      _colorFilterIntensity,
+    );
   }
 
   double _canvasAspectRatioForPreset(String preset) {
@@ -2004,6 +2039,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       _brightnessAdjustments = normalizeBrightnessAdjustments(
         state.brightnessAdjustments,
       );
+      _selectedColorFilterPresetId = normalizeColorFilterPresetId(
+        state.colorFilterPresetId,
+      );
+      _colorFilterIntensity = normalizeColorFilterIntensity(
+        state.colorFilterIntensity,
+      );
       _bgmPath = state.bgmPath;
       _videoVolume = state.videoVolume;
       _bgmVolume = state.bgmVolume;
@@ -2015,6 +2056,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           kBrightnessAdjustmentScopeProjectWide;
       widget.project.brightnessAdjustments = normalizeBrightnessAdjustments(
         _brightnessAdjustments,
+      );
+      widget.project.colorFilterPresetId = normalizeColorFilterPresetId(
+        _selectedColorFilterPresetId,
+      );
+      widget.project.colorFilterIntensity = normalizeColorFilterIntensity(
+        _colorFilterIntensity,
       );
       _recalculateTimelineMetrics();
     });
@@ -2313,6 +2360,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       return 'trim_speed_preset';
     }
     if (_bottomInlinePanel == _BottomInlinePanel.sound) return 'sound_panel';
+    if (_bottomInlinePanel == _BottomInlinePanel.colorFilter) {
+      return 'color_filter_panel';
+    }
     return 'none';
   }
 
@@ -3007,6 +3057,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   Widget _buildBottomControls() {
     final bool showSoundPanel = _bottomInlinePanel == _BottomInlinePanel.sound;
+    final bool showColorFilterPanel =
+        _bottomInlinePanel == _BottomInlinePanel.colorFilter;
     final bool showBrightnessPanel = _isBrightnessMode;
     final double bottomPanelHeight =
         _inlineModePanelHeight + _inlineModePanelGap + _bottomToolbarHeight;
@@ -3040,6 +3092,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 ? KeyedSubtree(
                     key: const ValueKey('panel_sound'),
                     child: _buildInlineSoundPanel(),
+                  )
+                : showColorFilterPanel
+                ? KeyedSubtree(
+                    key: const ValueKey('panel_color_filter'),
+                    child: _buildColorFilterInlinePanel(),
                   )
                 : KeyedSubtree(
                     key: const ValueKey('panel_timeline'),
@@ -3753,7 +3810,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   ColorFilter _getFilterMatrix() {
     final brightnessFilter = ColorFilter.matrix(
-      brightnessPreviewColorMatrix(_brightnessAdjustments),
+      brightnessPreviewColorMatrix(_previewAdjustmentsWithColorFilter()),
     );
     if (!_enableDormantEditFeatures) {
       return brightnessFilter;
@@ -4156,6 +4213,37 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             );
           }, active: _isBrightnessMode),
           _buildToolbarItem(
+            Icons.auto_awesome,
+            "색감",
+            () {
+              final transitionFrom = _getBrightnessTransitionFromMode();
+              if (_isTrimMode) {
+                _closeTrimMode();
+              }
+              if (_isTransformModeActive) {
+                _enterTransformMode();
+              }
+              if (_isBrightnessMode) {
+                _exitBrightnessModeForReason(
+                  'color_filter_toolbar',
+                  note: 'toolbar color filter pressed',
+                  fromMode: transitionFrom,
+                );
+              }
+              if (_bottomInlinePanel == _BottomInlinePanel.trimSpeedPreset) {
+                setState(() => _bottomInlinePanel = _BottomInlinePanel.none);
+                return;
+              }
+              setState(() {
+                _bottomInlinePanel =
+                    _bottomInlinePanel == _BottomInlinePanel.colorFilter
+                    ? _BottomInlinePanel.none
+                    : _BottomInlinePanel.colorFilter;
+              });
+            },
+            active: _bottomInlinePanel == _BottomInlinePanel.colorFilter,
+          ),
+          _buildToolbarItem(
             Icons.volume_up,
             "사운드",
             () {
@@ -4341,6 +4429,188 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     );
   }
 
+  ColorFilterPresetSpec get _selectedColorFilterSpec =>
+      colorFilterPresetById(_selectedColorFilterPresetId);
+
+  Map<String, double> _previewAdjustmentsWithColorFilter() {
+    final combined = normalizeBrightnessAdjustments(_brightnessAdjustments);
+    final colorAdjustments = colorFilterPreviewAdjustments(
+      presetId: _selectedColorFilterPresetId,
+      intensity: _colorFilterIntensity,
+    );
+    for (final entry in colorAdjustments.entries) {
+      final nextValue = ((combined[entry.key] ?? 0.0) + entry.value)
+          .clamp(-100.0, 100.0)
+          .toDouble();
+      combined[entry.key] = nextValue;
+    }
+    return combined;
+  }
+
+  void _selectColorFilterPreset(String presetId) {
+    final normalized = normalizeColorFilterPresetId(presetId);
+    if (normalized == _selectedColorFilterPresetId) return;
+
+    final oldState = _currentState.copy();
+    setState(() {
+      _selectedColorFilterPresetId = normalized;
+      if (normalized != kColorFilterPresetNone &&
+          _colorFilterIntensity == 0.0) {
+        _colorFilterIntensity = kColorFilterIntensityDefault;
+      }
+    });
+    final newState = _currentState.copy();
+    _executeStateTransition(oldState, newState);
+  }
+
+  void _startColorFilterGesture() {
+    _colorFilterGestureBaseState = _currentState.copy();
+    _colorFilterGestureDirty = false;
+  }
+
+  void _commitColorFilterGesture() {
+    if (!_colorFilterGestureDirty || _colorFilterGestureBaseState == null) {
+      _colorFilterGestureBaseState = null;
+      _colorFilterGestureDirty = false;
+      return;
+    }
+
+    final oldState = _colorFilterGestureBaseState!;
+    final newState = _currentState.copy();
+    _colorFilterGestureBaseState = null;
+    _colorFilterGestureDirty = false;
+    _executeStateTransition(oldState, newState);
+  }
+
+  Widget _buildColorFilterInlinePanel() {
+    final selectedSpec = _selectedColorFilterSpec;
+    final selectedNone = selectedSpec.id == kColorFilterPresetNone;
+    final displayedPercent = selectedNone
+        ? 0
+        : (normalizeColorFilterIntensity(_colorFilterIntensity) * 100).round();
+
+    return Container(
+      height: _inlineModePanelHeight,
+      margin: EdgeInsets.fromLTRB(
+        _inlineModePanelSidePadding,
+        _inlineModePanelSpacing,
+        _inlineModePanelSidePadding,
+        _inlineModePanelSpacing,
+      ),
+      padding: EdgeInsets.fromLTRB(
+        _inlineModePanelSidePadding,
+        _inlineModePanelVerticalPadding,
+        _inlineModePanelSidePadding,
+        _inlineModePanelVerticalPadding,
+      ),
+      decoration: _inlineModePanelDecoration,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            height: _inlineModeChipRowHeight,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: kColorFilterPresetSpecs.length,
+              separatorBuilder: (_, index) => const SizedBox(width: 6),
+              itemBuilder: (context, index) {
+                final preset = kColorFilterPresetSpecs[index];
+                final selected = preset.id == selectedSpec.id;
+                return InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: () => _selectColorFilterPreset(preset.id),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 11,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: selected
+                          ? const Color(0xFF2B8CEE)
+                          : Colors.white12,
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                        color: selected
+                            ? const Color(0xFF9FD0FF)
+                            : Colors.white24,
+                      ),
+                    ),
+                    child: Text(
+                      preset.label,
+                      style: TextStyle(
+                        color: selected ? Colors.white : Colors.white70,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 6),
+          Expanded(
+            child: Row(
+              children: [
+                const Icon(Icons.tune, color: Colors.white, size: 17),
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 62,
+                  child: Text(
+                    '$displayedPercent%',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      trackHeight: 4,
+                      activeTrackColor: const Color(0xFF9FD0FF),
+                      inactiveTrackColor: Colors.white24,
+                      thumbColor: Colors.white,
+                      overlayColor: const Color(0x332B8CEE),
+                    ),
+                    child: Slider(
+                      value: selectedNone
+                          ? 0.0
+                          : normalizeColorFilterIntensity(
+                              _colorFilterIntensity,
+                            ),
+                      min: 0.0,
+                      max: 1.0,
+                      divisions: 100,
+                      onChangeStart: selectedNone
+                          ? null
+                          : (_) => _startColorFilterGesture(),
+                      onChanged: selectedNone
+                          ? null
+                          : (value) {
+                              setState(() {
+                                _colorFilterIntensity =
+                                    normalizeColorFilterIntensity(value);
+                                _colorFilterGestureDirty = true;
+                              });
+                            },
+                      onChangeEnd: selectedNone
+                          ? null
+                          : (_) => _commitColorFilterGesture(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildInlineSoundPanel() {
     return Container(
       height: _inlineModePanelHeight,
@@ -4374,6 +4644,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 bgmVolume: _currentState.bgmVolume,
                 clips: _currentState.clips,
                 currentClipIndex: _currentState.currentClipIndex,
+                colorFilterPresetId: _currentState.colorFilterPresetId,
+                colorFilterIntensity: _currentState.colorFilterIntensity,
               );
               _executeStateChange(newState);
             },
@@ -4399,6 +4671,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 bgmVolume: val,
                 clips: _currentState.clips,
                 currentClipIndex: _currentState.currentClipIndex,
+                colorFilterPresetId: _currentState.colorFilterPresetId,
+                colorFilterIntensity: _currentState.colorFilterIntensity,
               );
               _executeStateChange(newState);
             },
@@ -5053,6 +5327,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             currentClipIndex: reorderedClips.isEmpty
                 ? 0
                 : nextClipIndex.clamp(0, reorderedClips.length - 1),
+            colorFilterPresetId: baseState.colorFilterPresetId,
+            colorFilterIntensity: baseState.colorFilterIntensity,
           );
           _executeStateChange(nextState);
         },
@@ -5949,6 +6225,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       widget.project.brightnessAdjustments = normalizeBrightnessAdjustments(
         _brightnessAdjustments,
       );
+      widget.project.colorFilterPresetId = normalizeColorFilterPresetId(
+        _selectedColorFilterPresetId,
+      );
+      widget.project.colorFilterIntensity = normalizeColorFilterIntensity(
+        _colorFilterIntensity,
+      );
 
       await _runExportPreflight(
         videoManager: videoManager,
@@ -5998,6 +6280,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         userTier: userTierKey,
         canvasAspectRatioPreset: widget.project.canvasAspectRatioPreset,
         brightnessAdjustments: _currentState.brightnessAdjustments,
+        colorFilterPresetId: _currentState.colorFilterPresetId,
+        colorFilterIntensity: _currentState.colorFilterIntensity,
         mergeSessionId: _editExportSessionId,
         debugTag: 'VideoEditScreen_export',
         isCancelRequested: () => _isExportCancelRequested,
@@ -6150,6 +6434,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                             bgmVolume: 0.5,
                             clips: _currentState.clips,
                             currentClipIndex: _currentState.currentClipIndex,
+                            colorFilterPresetId:
+                                _currentState.colorFilterPresetId,
+                            colorFilterIntensity:
+                                _currentState.colorFilterIntensity,
                           );
                           _executeStateChange(newState);
                         },
@@ -6219,6 +6507,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                               bgmVolume: _currentState.bgmVolume,
                               clips: _currentState.clips,
                               currentClipIndex: _currentState.currentClipIndex,
+                              colorFilterPresetId:
+                                  _currentState.colorFilterPresetId,
+                              colorFilterIntensity:
+                                  _currentState.colorFilterIntensity,
                             );
 
                             _executeStateChange(newState);
@@ -6242,6 +6534,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                               bgmVolume: _currentState.bgmVolume,
                               clips: _currentState.clips,
                               currentClipIndex: _currentState.currentClipIndex,
+                              colorFilterPresetId:
+                                  _currentState.colorFilterPresetId,
+                              colorFilterIntensity:
+                                  _currentState.colorFilterIntensity,
                             );
                             _executeStateChange(newState);
                             setModalState(() {});
@@ -6286,6 +6582,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         bgmVolume: _currentState.bgmVolume,
                         clips: _currentState.clips,
                         currentClipIndex: _currentState.currentClipIndex,
+                        colorFilterPresetId: _currentState.colorFilterPresetId,
+                        colorFilterIntensity:
+                            _currentState.colorFilterIntensity,
                       );
                       _executeStateChange(newState);
                     },
@@ -6313,6 +6612,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         bgmVolume: val,
                         clips: _currentState.clips,
                         currentClipIndex: _currentState.currentClipIndex,
+                        colorFilterPresetId: _currentState.colorFilterPresetId,
+                        colorFilterIntensity:
+                            _currentState.colorFilterIntensity,
                       );
                       _executeStateChange(newState);
                     },
@@ -6521,6 +6823,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     bgmVolume: _currentState.bgmVolume,
                     clips: _currentState.clips,
                     currentClipIndex: _currentState.currentClipIndex,
+                    colorFilterPresetId: _currentState.colorFilterPresetId,
+                    colorFilterIntensity: _currentState.colorFilterIntensity,
                   );
                   _executeStateChange(nextState);
                   Navigator.pop(context);
@@ -6610,6 +6914,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         bgmVolume: _currentState.bgmVolume,
         clips: _currentState.clips,
         currentClipIndex: _currentState.currentClipIndex,
+        colorFilterPresetId: _currentState.colorFilterPresetId,
+        colorFilterIntensity: _currentState.colorFilterIntensity,
       );
       _executeStateChange(nextState);
     }
@@ -6671,6 +6977,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       bgmVolume: _currentState.bgmVolume,
       clips: _currentState.clips,
       currentClipIndex: _currentState.currentClipIndex,
+      colorFilterPresetId: _currentState.colorFilterPresetId,
+      colorFilterIntensity: _currentState.colorFilterIntensity,
     );
     _executeStateChange(nextState);
   }

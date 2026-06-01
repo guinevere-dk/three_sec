@@ -95,6 +95,7 @@ flutter:
   assets:
     - assets/icon/
     - assets/legal/
+    - assets/luts/
     - assets/stickers/
     - assets/tutorial/videos/
 

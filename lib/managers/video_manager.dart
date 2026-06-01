@@ -26,6 +26,7 @@ import '../constants/clip_policy.dart';
 import '../models/clip_save_job_state.dart';
 import '../models/import_state.dart';
 import '../utils/brightness_adjustment_policy.dart';
+import '../utils/color_filter_preset_policy.dart';
 import '../utils/quality_policy.dart';
 
 enum ClipTransferUiState {
@@ -2547,6 +2548,8 @@ class VideoManager extends ChangeNotifier {
     String userTier = 'free',
     String canvasAspectRatioPreset = 'r9_16',
     Map<String, double>? brightnessAdjustments,
+    String? colorFilterPresetId,
+    double colorFilterIntensity = kColorFilterIntensityDefault,
     String? mergeSessionId,
     String? debugTag,
     bool Function()? isCancelRequested,
@@ -2823,9 +2826,13 @@ class VideoManager extends ChangeNotifier {
       final videoPaths = clips.map((c) => c.path).toList();
       final startTimes = clips.map((c) => c.startTime.inMilliseconds).toList();
       final endTimes = clips.map((c) => c.endTime.inMilliseconds).toList();
-      final videoEffects = brightnessAdjustmentsForExportVideoEffects(
-        brightnessAdjustments,
-      );
+      final videoEffects = <String, Object>{
+        ...brightnessAdjustmentsForExportVideoEffects(brightnessAdjustments),
+        ...colorFilterForExportVideoEffects(
+          presetId: colorFilterPresetId,
+          intensity: colorFilterIntensity,
+        ),
+      };
 
       Future<String?> invokeMergeAttempt({
         required int attempt,

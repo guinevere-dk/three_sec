@@ -1,5 +1,6 @@
 import '../utils/quality_policy.dart';
 import '../utils/brightness_adjustment_policy.dart';
+import '../utils/color_filter_preset_policy.dart';
 
 class VlogClip {
   final String id; // Unique ID
@@ -167,6 +168,8 @@ class VlogProject {
   String canvasBackgroundMode;
   String brightnessAdjustmentScope;
   Map<String, double> brightnessAdjustments;
+  String colorFilterPresetId;
+  double colorFilterIntensity;
   DateTime createdAt;
   DateTime updatedAt;
 
@@ -189,6 +192,8 @@ class VlogProject {
     this.canvasBackgroundMode = 'crop_fill',
     String? brightnessAdjustmentScope,
     Map<String, double>? brightnessAdjustments,
+    String? colorFilterPresetId,
+    Object? colorFilterIntensity,
     required this.createdAt,
     required this.updatedAt,
   }) : brightnessAdjustmentScope = normalizeBrightnessAdjustmentScope(
@@ -196,6 +201,10 @@ class VlogProject {
        ),
        brightnessAdjustments = normalizeBrightnessAdjustments(
          brightnessAdjustments,
+       ),
+       colorFilterPresetId = normalizeColorFilterPresetId(colorFilterPresetId),
+       colorFilterIntensity = normalizeColorFilterIntensity(
+         colorFilterIntensity,
        );
 
   // JSON -> Object
@@ -240,6 +249,10 @@ class VlogProject {
       brightnessAdjustments: brightnessAdjustmentsForProjectJson(
         json['brightnessAdjustments'],
       ),
+      colorFilterPresetId: normalizeColorFilterPresetId(
+        json['colorFilterPresetId'],
+      ),
+      colorFilterIntensity: json['colorFilterIntensity'],
       createdAt: DateTime.parse(json['createdAt']),
       updatedAt: DateTime.parse(json['updatedAt']),
     );
@@ -269,6 +282,10 @@ class VlogProject {
       'brightnessAdjustments': brightnessAdjustmentsForProjectJson(
         brightnessAdjustments,
       ),
+      'colorFilterPresetId': normalizeColorFilterPresetId(colorFilterPresetId),
+      'colorFilterIntensity': normalizeColorFilterIntensity(
+        colorFilterIntensity,
+      ),
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
     };
@@ -293,6 +310,8 @@ class VlogProject {
     String? canvasBackgroundMode,
     String? brightnessAdjustmentScope,
     Map<String, double>? brightnessAdjustments,
+    String? colorFilterPresetId,
+    Object? colorFilterIntensity,
     DateTime? updatedAt,
   }) {
     return VlogProject(
@@ -321,6 +340,8 @@ class VlogProject {
       brightnessAdjustments:
           brightnessAdjustments ??
           Map<String, double>.from(this.brightnessAdjustments),
+      colorFilterPresetId: colorFilterPresetId ?? this.colorFilterPresetId,
+      colorFilterIntensity: colorFilterIntensity ?? this.colorFilterIntensity,
       createdAt: createdAt,
       updatedAt: updatedAt ?? DateTime.now(), // 수정 시 시간 갱신
     );

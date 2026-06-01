@@ -17,6 +17,7 @@ import androidx.annotation.NonNull
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.FlutterInjector
 import android.text.style.RelativeSizeSpan
 import androidx.activity.enableEdgeToEdge
 
@@ -62,6 +63,8 @@ import android.util.Log
 import android.media.MediaMetadataRetriever
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import java.io.BufferedReader
+import java.io.InputStreamReader
 
 class MainActivity: FlutterFragmentActivity() {
     private val CHANNEL = "com.dk.three_sec/video_engine"
@@ -75,6 +78,13 @@ class MainActivity: FlutterFragmentActivity() {
     private var activeMergeAttempt: Int? = null
     @Volatile
     private var activeMergeRetryPlan: String? = null
+    private val colorLutCache = mutableMapOf<String, CubeLut>()
+
+    private data class CubeLut(
+        val assetPath: String,
+        val size: Int,
+        val rgbaBytes: ByteArray
+    )
 
     private fun logLifecycle(event: String, extra: String = "") {
         val suffix = if (extra.isBlank()) "" else " $extra"
@@ -1706,7 +1716,6 @@ class MainActivity: FlutterFragmentActivity() {
         Log.d("3S_4K", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         Log.d("3S_4K", "GPU 필터 생성 (등급: $userTier)")
         
-        // Premium 전용 필터
         if ((effects["moaColorAdjustmentV1"] as? Number)?.toInt() == 1) {
             val contrast = DEFAULT_CONTRAST + normalizedEffectPercent(effects, "contrast")
             if (contrast != DEFAULT_CONTRAST) {
@@ -1732,12 +1741,21 @@ class MainActivity: FlutterFragmentActivity() {
             }
 
             addAdvancedColorAdjustmentFilters(filters, effects)
+            addColorLutFilter(filters, effects)
 
             Log.d("3S_4K", "??珥?${filters.size}媛?GPU ?꾪꽣 ?앹꽦")
             Log.d("3S_4K", "?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺?곣봺")
             return filters
         }
 
+        addColorLutFilter(filters, effects)
+        if (filters.isNotEmpty()) {
+            Log.d("3S_4K", "✓ 총 ${filters.size}개 GPU 필터 생성")
+            Log.d("3S_4K", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            return filters
+        }
+
+        // Legacy premium-only effects path.
         if (userTier == "premium") {
             
             // 🎨 Contrast (대비)
@@ -1869,6 +1887,136 @@ class MainActivity: FlutterFragmentActivity() {
                 "  colorAdjust advanced_clarity=$clarity contrast=$clarityContrast saturation=$claritySaturation"
             )
         }
+    }
+
+    private fun addColorLutFilter(
+        filters: MutableList<GlEffect>,
+        effects: Map<String, Any>
+    ) {
+        if ((effects["moaColorLutV1"] as? Number)?.toInt() != 1) {
+            return
+        }
+
+        val assetPath = effects["colorFilterLutAsset"] as? String
+        val presetId = effects["colorFilterPresetId"] as? String ?: "unknown"
+        val intensity = ((effects["colorFilterIntensity"] as? Number)?.toFloat() ?: 1f)
+            .coerceIn(0f, 1f)
+
+        if (assetPath.isNullOrBlank() || intensity <= 0f) {
+            Log.d(
+                "3S_4K",
+                "  colorLut skipped preset=$presetId asset=${assetPath ?: "none"} intensity=$intensity"
+            )
+            return
+        }
+
+        val cubeLut = loadCubeLutFromFlutterAsset(assetPath)
+        if (cubeLut == null) {
+            Log.w(
+                "3S_4K",
+                "  color_lut_fallback reason=load_failed preset=$presetId asset=$assetPath"
+            )
+            return
+        }
+
+        filters.add(CubeLutEffect(cubeLut, intensity))
+        Log.d(
+            "3S_4K",
+            "  colorLut preset=$presetId asset=$assetPath size=${cubeLut.size} intensity=$intensity"
+        )
+    }
+
+    private fun loadCubeLutFromFlutterAsset(assetPath: String): CubeLut? {
+        synchronized(colorLutCache) {
+            colorLutCache[assetPath]?.let { return it }
+        }
+
+        return try {
+            val lookupKey = FlutterInjector.instance()
+                .flutterLoader()
+                .getLookupKeyForAsset(assetPath)
+            val parsed = assets.open(lookupKey).use { input ->
+                BufferedReader(InputStreamReader(input, Charsets.UTF_8)).use { reader ->
+                    parseCubeLut(assetPath, reader)
+                }
+            }
+            if (parsed != null) {
+                synchronized(colorLutCache) {
+                    colorLutCache[assetPath] = parsed
+                }
+            }
+            parsed
+        } catch (e: Exception) {
+            Log.w(
+                "3S_4K",
+                "color_lut_fallback reason=${e.javaClass.simpleName} asset=$assetPath"
+            )
+            null
+        }
+    }
+
+    private fun parseCubeLut(assetPath: String, reader: BufferedReader): CubeLut? {
+        var lutSize = 0
+        val values = ArrayList<Float>()
+        val whitespace = Regex("\\s+")
+
+        reader.lineSequence().forEach { rawLine ->
+            val line = rawLine.trim()
+            if (line.isEmpty() || line.startsWith("#")) {
+                return@forEach
+            }
+            when {
+                line.startsWith("TITLE", ignoreCase = true) -> return@forEach
+                line.startsWith("DOMAIN_MIN", ignoreCase = true) -> return@forEach
+                line.startsWith("DOMAIN_MAX", ignoreCase = true) -> return@forEach
+                line.startsWith("LUT_3D_SIZE", ignoreCase = true) -> {
+                    val parts = line.split(whitespace)
+                    lutSize = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                    return@forEach
+                }
+            }
+
+            val parts = line.split(whitespace)
+            if (parts.size < 3) {
+                return@forEach
+            }
+            val red = parts[0].toFloatOrNull()
+            val green = parts[1].toFloatOrNull()
+            val blue = parts[2].toFloatOrNull()
+            if (red != null && green != null && blue != null) {
+                values.add(red.coerceIn(0f, 1f))
+                values.add(green.coerceIn(0f, 1f))
+                values.add(blue.coerceIn(0f, 1f))
+            }
+        }
+
+        val expectedFloatCount = lutSize * lutSize * lutSize * 3
+        if (lutSize <= 1 || values.size != expectedFloatCount) {
+            Log.w(
+                "3S_4K",
+                "color_lut_fallback reason=invalid_cube asset=$assetPath size=$lutSize " +
+                    "values=${values.size} expected=$expectedFloatCount"
+            )
+            return null
+        }
+
+        val rgbaBytes = ByteArray(lutSize * lutSize * lutSize * 4)
+        var outIndex = 0
+        var inIndex = 0
+        while (inIndex < values.size) {
+            rgbaBytes[outIndex++] = Math.round(values[inIndex++] * 255f)
+                .coerceIn(0, 255)
+                .toByte()
+            rgbaBytes[outIndex++] = Math.round(values[inIndex++] * 255f)
+                .coerceIn(0, 255)
+                .toByte()
+            rgbaBytes[outIndex++] = Math.round(values[inIndex++] * 255f)
+                .coerceIn(0, 255)
+                .toByte()
+            rgbaBytes[outIndex++] = 255.toByte()
+        }
+
+        return CubeLut(assetPath = assetPath, size = lutSize, rgbaBytes = rgbaBytes)
     }
 
     private fun createHighlightAdjustmentMatrix(highlights: Float): FloatArray {
@@ -2056,6 +2204,190 @@ class MainActivity: FlutterFragmentActivity() {
                   adjusted = adjustShadows(adjusted, uShadows, shadowMask * abs(uShadows));
                   adjusted = adjustHighlights(adjusted, uHighlights, highlightMask * abs(uHighlights));
                   gl_FragColor = vec4(clamp(adjusted, 0.0, 1.0), color.a);
+                }
+            """
+        }
+    }
+
+    private class CubeLutEffect(
+        private val lut: CubeLut,
+        private val intensity: Float
+    ) : GlEffect {
+        override fun toGlShaderProgram(
+            context: android.content.Context,
+            useHdr: Boolean
+        ): androidx.media3.effect.GlShaderProgram {
+            return try {
+                CubeLutShaderProgram(useHdr, lut, intensity)
+            } catch (e: Exception) {
+                Log.w(
+                    "3S_4K",
+                    "color_lut_fallback reason=${e.javaClass.simpleName} asset=${lut.assetPath}"
+                )
+                RgbMatrix { _, _ -> IDENTITY_MATRIX }.toGlShaderProgram(context, useHdr)
+            }
+        }
+
+        override fun isNoOp(inputWidth: Int, inputHeight: Int): Boolean {
+            return intensity <= 0f
+        }
+
+        companion object {
+            private val IDENTITY_MATRIX = floatArrayOf(
+                1f, 0f, 0f, 0f,
+                0f, 1f, 0f, 0f,
+                0f, 0f, 1f, 0f,
+                0f, 0f, 0f, 1f
+            )
+        }
+    }
+
+    private class CubeLutShaderProgram(
+        useHdr: Boolean,
+        private val lut: CubeLut,
+        private val intensity: Float
+    ) : BaseGlShaderProgram(useHdr, 1) {
+        private val glProgram: GlProgram = GlProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+        private val lutTextureId: Int
+
+        init {
+            glProgram.setBufferAttribute(
+                "aFramePosition",
+                GlUtil.getNormalizedCoordinateBounds(),
+                2
+            )
+            glProgram.setBufferAttribute(
+                "aTexCoords",
+                GlUtil.getTextureCoordinateBounds(),
+                2
+            )
+            lutTextureId = createLutTexture(lut)
+        }
+
+        override fun configure(inputWidth: Int, inputHeight: Int): Size {
+            return Size(inputWidth, inputHeight)
+        }
+
+        override fun drawFrame(inputTexId: Int, presentationTimeUs: Long) {
+            try {
+                glProgram.use()
+                glProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
+                glProgram.setSamplerTexIdUniform("uLutSampler", lutTextureId, 1)
+                glProgram.setFloatUniform("uIntensity", intensity.coerceIn(0f, 1f))
+                glProgram.setFloatUniform("uLutSize", lut.size.toFloat())
+                glProgram.bindAttributesAndUniforms()
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+                GlUtil.checkGlError()
+            } catch (e: Exception) {
+                throw VideoFrameProcessingException.from(e, presentationTimeUs)
+            }
+        }
+
+        override fun release() {
+            try {
+                if (lutTextureId > 0) {
+                    val textures = intArrayOf(lutTextureId)
+                    GLES20.glDeleteTextures(1, textures, 0)
+                }
+                glProgram.delete()
+            } catch (e: Exception) {
+                throw VideoFrameProcessingException.from(e)
+            } finally {
+                super.release()
+            }
+        }
+
+        companion object {
+            private fun createLutTexture(lut: CubeLut): Int {
+                val textureIds = IntArray(1)
+                GLES20.glGenTextures(1, textureIds, 0)
+                val textureId = textureIds[0]
+                if (textureId == 0) {
+                    throw IllegalStateException("Unable to allocate LUT texture")
+                }
+
+                val buffer = ByteBuffer.allocateDirect(lut.rgbaBytes.size)
+                buffer.put(lut.rgbaBytes)
+                buffer.position(0)
+
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId)
+                GLES20.glTexParameteri(
+                    GLES20.GL_TEXTURE_2D,
+                    GLES20.GL_TEXTURE_MIN_FILTER,
+                    GLES20.GL_LINEAR
+                )
+                GLES20.glTexParameteri(
+                    GLES20.GL_TEXTURE_2D,
+                    GLES20.GL_TEXTURE_MAG_FILTER,
+                    GLES20.GL_LINEAR
+                )
+                GLES20.glTexParameteri(
+                    GLES20.GL_TEXTURE_2D,
+                    GLES20.GL_TEXTURE_WRAP_S,
+                    GLES20.GL_CLAMP_TO_EDGE
+                )
+                GLES20.glTexParameteri(
+                    GLES20.GL_TEXTURE_2D,
+                    GLES20.GL_TEXTURE_WRAP_T,
+                    GLES20.GL_CLAMP_TO_EDGE
+                )
+                GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1)
+                GLES20.glTexImage2D(
+                    GLES20.GL_TEXTURE_2D,
+                    0,
+                    GLES20.GL_RGBA,
+                    lut.size * lut.size,
+                    lut.size,
+                    0,
+                    GLES20.GL_RGBA,
+                    GLES20.GL_UNSIGNED_BYTE,
+                    buffer
+                )
+                GlUtil.checkGlError()
+                return textureId
+            }
+
+            private const val VERTEX_SHADER = """
+                attribute vec4 aFramePosition;
+                attribute vec2 aTexCoords;
+                varying vec2 vTexCoords;
+
+                void main() {
+                  gl_Position = aFramePosition;
+                  vTexCoords = aTexCoords;
+                }
+            """
+
+            private const val FRAGMENT_SHADER = """
+                precision mediump float;
+
+                uniform sampler2D uTexSampler;
+                uniform sampler2D uLutSampler;
+                uniform float uIntensity;
+                uniform float uLutSize;
+                varying vec2 vTexCoords;
+
+                vec3 sampleLut(vec3 color, float blueSlice) {
+                  float maxIndex = uLutSize - 1.0;
+                  float atlasWidth = uLutSize * uLutSize;
+                  float x = ((blueSlice * uLutSize) + (color.r * maxIndex) + 0.5) / atlasWidth;
+                  float y = ((color.g * maxIndex) + 0.5) / uLutSize;
+                  return texture2D(uLutSampler, vec2(x, y)).rgb;
+                }
+
+                void main() {
+                  vec4 color = texture2D(uTexSampler, vTexCoords);
+                  vec3 inputColor = clamp(color.rgb, 0.0, 1.0);
+                  float maxIndex = uLutSize - 1.0;
+                  float blue = inputColor.b * maxIndex;
+                  float blueLow = floor(blue);
+                  float blueHigh = min(maxIndex, blueLow + 1.0);
+                  float blueMix = fract(blue);
+                  vec3 lowColor = sampleLut(inputColor, blueLow);
+                  vec3 highColor = sampleLut(inputColor, blueHigh);
+                  vec3 lutColor = mix(lowColor, highColor, blueMix);
+                  vec3 outputColor = mix(inputColor, lutColor, clamp(uIntensity, 0.0, 1.0));
+                  gl_FragColor = vec4(clamp(outputColor, 0.0, 1.0), color.a);
                 }
             """
         }
