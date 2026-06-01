@@ -1,0 +1,4 @@
+Improved the video editor with a soft light visual theme.
+Refined toolbar, brightness, sound, canvas, and export UI for better readability and consistency.
+Made editing states easier to recognize while working on videos.
+Improved stability and internal validation.
