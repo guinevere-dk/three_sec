@@ -261,31 +261,48 @@ class VideoEditScreen extends StatefulWidget {
 }
 
 class _VideoEditScreenState extends State<VideoEditScreen> {
-  static const Color _editorBackground = Color(0xFF0E141D);
-  static const Color _editorGlassSurface = Color(0xB3192536);
-  static const Color _editorHeaderSurface = Color(0xCC121A24);
-  static const Color _editorSoftSurface = Color(0xE616202D);
-  static const Color _editorStroke = Color(0x26FFFFFF);
-  static const Color _editorHeaderStroke = Color(0x22FFFFFF);
+  static const Color _editorBackground = Color(0xFFF5F8FB);
+  static const Color _editorGlassSurface = Color(0xEFFFFFFF);
+  static const Color _editorHeaderSurface = Color(0xEFFFFFFF);
+  static const Color _editorSoftSurface = Color(0xFFF8FBFE);
+  static const Color _editorStroke = Color(0xFFE2ECF3);
+  static const Color _editorHeaderStroke = Color(0xFFE2ECF3);
   static const Color _editorPrimaryAccent = Color(0xFF59D5FF);
   static const Color _editorSecondaryAccent = Color(0xFFFFB86C);
   static const Color _editorCtaStart = Color(0xFF67E8F9);
   static const Color _editorCtaEnd = Color(0xFF38BDF8);
-  static const Color _editorModalBarrier = Color(0x73000000);
-  static const Color _editorChipSurface = Color(0xFF1E2633);
+  static const Color _editorModalBarrier = Color(0x66000000);
+  static const Color _editorChipSurface = Color(0xFFEAF2F8);
   static const Color _editorChipSelected = Color(0xFFB9F3FF);
-  static const Color _editorChipText = Color(0xFFB7C0CC);
+  static const Color _editorChipText = Color(0xFF4E5D70);
   static const Color _editorChipSelectedText = Color(0xFF071018);
-  static const Color _editorTextPrimary = Color(0xFFF8FAFC);
-  static const Color _editorTextMuted = Color(0xFFAAB7C8);
+  static const Color _editorTextPrimary = Color(0xFF071018);
+  static const Color _editorTextMuted = Color(0xFF647386);
+  static const Color _editorLightControlSurface = Color(0xFFFFFFFF);
+  static const Color _editorLightControlAltSurface = Color(0xFFF0F6FB);
+  static const Color _editorDivider = Color(0xFFD9E6EF);
+  static const Color _editorRulerMajor = Color(0xFF8CA0B3);
+  static const Color _editorRulerMinor = Color(0xFFCBD7E3);
+  static const Color _editorVideoOverlaySurface = Color(0xA6121A24);
+  static const Color _editorVideoOverlayStroke = Color(0x33FFFFFF);
+  static const Color _editorVideoOverlayTextPrimary = Color(0xFFF8FAFC);
   static const double _editorRadiusLarge = 24.0;
   static const double _editorRadius = 18.0;
   static const double _editorRadiusSmall = 12.0;
   static const List<BoxShadow> _editorPanelShadow = <BoxShadow>[
-    BoxShadow(color: Color(0x66000000), blurRadius: 24, offset: Offset(0, 12)),
+    BoxShadow(color: Color(0x1A214155), blurRadius: 22, offset: Offset(0, 10)),
   ];
   static const List<BoxShadow> _editorHeaderShadow = <BoxShadow>[
-    BoxShadow(color: Color(0x33000000), blurRadius: 20, offset: Offset(0, 8)),
+    BoxShadow(color: Color(0x14214155), blurRadius: 18, offset: Offset(0, 8)),
+  ];
+  static const List<BoxShadow> _editorControlShadow = <BoxShadow>[
+    BoxShadow(color: Color(0x14214155), blurRadius: 10, offset: Offset(0, 4)),
+  ];
+  static const List<BoxShadow> _editorActiveGlow = <BoxShadow>[
+    BoxShadow(color: Color(0x3359D5FF), blurRadius: 18, offset: Offset(0, 7)),
+  ];
+  static const List<BoxShadow> _editorVideoOverlayShadow = <BoxShadow>[
+    BoxShadow(color: Color(0x66000000), blurRadius: 18, offset: Offset(0, 8)),
   ];
   static const Color _bgColor = _editorBackground;
   static const Color _primaryColor = _editorPrimaryAccent;
@@ -2818,7 +2835,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         return LinearProgressIndicator(
                           value: _exportDialogProgress,
                           minHeight: 8,
-                          backgroundColor: Colors.white24,
+                          backgroundColor: _editorDivider,
                           color: _editorPrimaryAccent,
                         );
                       },
@@ -3741,10 +3758,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
       decoration: BoxDecoration(
-        color: _editorGlassSurface,
+        color: _editorVideoOverlaySurface,
         borderRadius: BorderRadius.circular(_editorRadius),
-        border: Border.all(color: _editorStroke),
-        boxShadow: _editorPanelShadow,
+        border: Border.all(color: _editorVideoOverlayStroke),
+        boxShadow: _editorVideoOverlayShadow,
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -3918,19 +3935,21 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 color: active
-                    ? _editorPrimaryAccent.withValues(alpha: 0.18)
-                    : Colors.white.withValues(alpha: 0.06),
+                    ? _editorPrimaryAccent.withValues(alpha: 0.22)
+                    : Colors.white.withValues(alpha: 0.08),
                 borderRadius: BorderRadius.circular(_editorRadiusSmall),
                 border: Border.all(
                   color: active
                       ? _editorPrimaryAccent.withValues(alpha: 0.5)
-                      : _editorStroke,
+                      : _editorVideoOverlayStroke,
                 ),
               ),
               child: Icon(
                 icon,
                 size: 24,
-                color: active ? _editorPrimaryAccent : _editorTextPrimary,
+                color: active
+                    ? _editorPrimaryAccent
+                    : _editorVideoOverlayTextPrimary,
               ),
             ),
           ),
@@ -4117,7 +4136,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     final enabled = onPressed != null;
     final iconColor = enabled
         ? _editorTextPrimary
-        : _editorTextMuted.withValues(alpha: 0.42);
+        : _editorTextMuted.withValues(alpha: 0.52);
     return Tooltip(
       message: tooltip,
       child: Semantics(
@@ -4137,13 +4156,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 color: enabled
-                    ? Colors.white.withValues(alpha: 0.08)
-                    : Colors.white.withValues(alpha: 0.035),
+                    ? _editorLightControlSurface.withValues(alpha: 0.82)
+                    : _editorLightControlAltSurface.withValues(alpha: 0.62),
                 borderRadius: BorderRadius.circular(_editorRadiusSmall),
                 border: Border.all(
                   color: enabled
-                      ? _editorStroke
-                      : _editorStroke.withValues(alpha: 0.45),
+                      ? _editorHeaderStroke
+                      : _editorHeaderStroke.withValues(alpha: 0.72),
                 ),
               ),
               child: Icon(icon, color: iconColor, size: iconSize),
@@ -4177,13 +4196,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 end: Alignment.bottomRight,
                 colors: enabled
                     ? const <Color>[_editorCtaStart, _editorCtaEnd]
-                    : const <Color>[Color(0xFF263244), Color(0xFF1A2230)],
+                    : const <Color>[Color(0xFFEAF2F8), Color(0xFFDDE8F0)],
               ),
               borderRadius: BorderRadius.circular(999),
               border: Border.all(
                 color: enabled
-                    ? Colors.white.withValues(alpha: 0.38)
-                    : _editorStroke.withValues(alpha: 0.55),
+                    ? Colors.white.withValues(alpha: 0.7)
+                    : _editorStroke,
               ),
               boxShadow: enabled
                   ? const <BoxShadow>[
@@ -4200,7 +4219,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               style: TextStyle(
                 color: enabled
                     ? const Color(0xFF07111F)
-                    : _editorTextMuted.withValues(alpha: 0.72),
+                    : _editorTextMuted.withValues(alpha: 0.68),
                 fontWeight: FontWeight.w900,
                 fontSize: 16,
               ),
@@ -4273,16 +4292,16 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       case _ProjectSaveUiState.localSaved:
         icon = Icons.save_outlined;
         label = 'Saved locally';
-        fg = const Color(0xFF7EF0C4);
-        bg = const Color(0xFF7EF0C4).withValues(alpha: 0.12);
-        border = const Color(0xFF7EF0C4).withValues(alpha: 0.32);
+        fg = const Color(0xFF0F9F73);
+        bg = const Color(0xFF7EF0C4).withValues(alpha: 0.16);
+        border = const Color(0xFF0F9F73).withValues(alpha: 0.28);
         break;
       case _ProjectSaveUiState.cloudSaved:
         icon = Icons.cloud_done_outlined;
         label = 'Cloud saved';
-        fg = const Color(0xFF7EF0C4);
-        bg = const Color(0xFF7EF0C4).withValues(alpha: 0.12);
-        border = const Color(0xFF7EF0C4).withValues(alpha: 0.32);
+        fg = const Color(0xFF0F9F73);
+        bg = const Color(0xFF7EF0C4).withValues(alpha: 0.16);
+        border = const Color(0xFF0F9F73).withValues(alpha: 0.28);
         break;
       case _ProjectSaveUiState.cloudFailed:
         icon = Icons.cloud_off_outlined;
@@ -4297,7 +4316,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         icon = Icons.cloud_queue;
         label = 'Autosave ready';
         fg = _textSecondary;
-        bg = Colors.white.withValues(alpha: 0.07);
+        bg = _editorLightControlAltSurface;
         border = _editorStroke;
         break;
     }
@@ -4535,12 +4554,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             end: Alignment.bottomRight,
             colors: active
                 ? <Color>[
-                    _editorPrimaryAccent.withValues(alpha: 0.24),
-                    _editorPrimaryAccent.withValues(alpha: 0.08),
+                    _editorPrimaryAccent.withValues(alpha: 0.2),
+                    const Color(0xFFE8F9FF),
                   ]
                 : <Color>[
-                    _editorSecondaryAccent.withValues(alpha: 0.22),
-                    _editorPrimaryAccent.withValues(alpha: 0.08),
+                    _editorSecondaryAccent.withValues(alpha: 0.15),
+                    _editorLightControlSurface,
                   ],
           )
         : null;
@@ -4562,7 +4581,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 height: 55.8,
                 decoration: BoxDecoration(
                   color: backgroundGradient == null
-                      ? Colors.white.withValues(alpha: 0.07)
+                      ? _editorLightControlSurface
                       : null,
                   gradient: backgroundGradient,
                   borderRadius: BorderRadius.circular(_editorRadius),
@@ -4570,21 +4589,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     color: borderColor,
                     width: active ? 1.4 : 1,
                   ),
-                  boxShadow: active
-                      ? const <BoxShadow>[
-                          BoxShadow(
-                            color: Color(0x3359D5FF),
-                            blurRadius: 14,
-                            offset: Offset(0, 6),
-                          ),
-                        ]
-                      : const <BoxShadow>[
-                          BoxShadow(
-                            color: Color(0x33000000),
-                            blurRadius: 10,
-                            offset: Offset(0, 4),
-                          ),
-                        ],
+                  boxShadow: active ? _editorActiveGlow : _editorControlShadow,
                 ),
                 child: Stack(
                   alignment: Alignment.center,
@@ -4665,7 +4670,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         decoration: BoxDecoration(
                           color: selected
                               ? _editorPrimaryAccent.withValues(alpha: 0.18)
-                              : Colors.white.withValues(alpha: 0.07),
+                              : _editorLightControlAltSurface,
                           borderRadius: BorderRadius.circular(999),
                           border: Border.all(
                             color: selected
@@ -4789,7 +4794,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 Icon(
                   selectedMeta.icon,
                   color: selectedNone
-                      ? Colors.white54
+                      ? _editorTextMuted
                       : selectedMeta.accentColor,
                   size: 18,
                 ),
@@ -4803,7 +4808,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      color: Colors.white,
+                      color: _editorTextPrimary,
                       fontSize: 12,
                       fontWeight: FontWeight.w800,
                     ),
@@ -4814,8 +4819,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     data: SliderTheme.of(context).copyWith(
                       trackHeight: 4,
                       activeTrackColor: selectedMeta.accentColor,
-                      inactiveTrackColor: Colors.white24,
-                      thumbColor: Colors.white,
+                      inactiveTrackColor: _editorDivider,
+                      thumbColor: selectedMeta.accentColor,
                       overlayColor: selectedMeta.accentColor.withAlpha(54),
                     ),
                     child: Slider(
@@ -4869,12 +4874,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     bool selected,
   ) {
     final meta = _colorFilterMoodMetaFor(preset);
-    final Color borderColor = selected
-        ? meta.accentColor
-        : Colors.white.withAlpha(31);
+    final Color borderColor = selected ? meta.accentColor : _editorStroke;
     final Color backgroundColor = selected
-        ? Colors.white.withAlpha(31)
-        : Colors.white.withAlpha(15);
+        ? meta.accentColor.withValues(alpha: 0.14)
+        : _editorLightControlAltSurface;
 
     return Semantics(
       button: true,
@@ -4908,7 +4911,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          color: selected ? Colors.white : Colors.white70,
+                          color: selected
+                              ? _editorTextPrimary
+                              : _editorTextMuted,
                           fontSize: 12,
                           fontWeight: FontWeight.w900,
                         ),
@@ -4919,7 +4924,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          color: selected ? Colors.white70 : Colors.white54,
+                          color: selected
+                              ? _editorTextMuted
+                              : _editorTextMuted.withValues(alpha: 0.78),
                           fontSize: 9.5,
                           height: 1.15,
                           fontWeight: FontWeight.w700,
@@ -5100,8 +5107,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               data: SliderTheme.of(context).copyWith(
                 trackHeight: 3,
                 activeTrackColor: _editorPrimaryAccent,
-                inactiveTrackColor: Colors.white24,
-                thumbColor: Colors.white,
+                inactiveTrackColor: _editorDivider,
+                thumbColor: _editorPrimaryAccent,
                 overlayColor: _editorPrimaryAccent.withValues(alpha: 0.18),
                 thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
                 overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
@@ -5279,7 +5286,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 child: Container(
                   width: 1,
                   height: isMajor ? height : (height * 0.62),
-                  color: isMajor ? Colors.white70 : Colors.white24,
+                  color: isMajor ? _editorRulerMajor : _editorRulerMinor,
                 ),
               );
             }),
@@ -5359,7 +5366,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   left: (width * centerRatio) - 0.5,
                   top: 0,
                   bottom: 0,
-                  child: Container(width: 1, color: Colors.white38),
+                  child: Container(
+                    width: 1,
+                    color: _editorRulerMajor.withValues(alpha: 0.65),
+                  ),
                 ),
                 Positioned(
                   left: thumbLeft - 6,
@@ -5478,7 +5488,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     decoration: BoxDecoration(
                       color: selected
                           ? _editorPrimaryAccent.withValues(alpha: 0.18)
-                          : Colors.white.withValues(alpha: 0.07),
+                          : _editorLightControlAltSurface,
                       borderRadius: BorderRadius.circular(999),
                       border: Border.all(
                         color: selected
@@ -5912,7 +5922,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         border: Border.all(color: _editorStroke),
         boxShadow: const <BoxShadow>[
           BoxShadow(
-            color: Color(0x55000000),
+            color: Color(0x1A214155),
             blurRadius: 14,
             offset: Offset(0, 5),
           ),
@@ -6505,7 +6515,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   onPressed: () => Navigator.pop(context),
                   child: const Text(
                     "Cancel",
-                    style: TextStyle(color: Colors.white54),
+                    style: TextStyle(color: _editorTextMuted),
                   ),
                 ),
                 ElevatedButton(
@@ -6566,17 +6576,25 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     return ListTile(
       title: Text(
         label,
-        style: TextStyle(color: enabled ? _editorTextPrimary : Colors.white24),
+        style: TextStyle(
+          color: enabled
+              ? _editorTextPrimary
+              : _editorTextMuted.withValues(alpha: 0.45),
+        ),
       ),
       leading: Icon(
         selected ? Icons.radio_button_checked : Icons.radio_button_off,
         color: enabled
             ? (selected ? _editorPrimaryAccent : _editorTextPrimary)
-            : Colors.white24,
+            : _editorTextMuted.withValues(alpha: 0.45),
       ),
       trailing: enabled
           ? null
-          : const Icon(Icons.lock, size: 16, color: Colors.white24),
+          : Icon(
+              Icons.lock,
+              size: 16,
+              color: _editorTextMuted.withValues(alpha: 0.45),
+            ),
       onTap: enabled ? () => onChanged(value) : null,
     );
   }
@@ -6793,7 +6811,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         width: 44,
         height: 5,
         decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.22),
+          color: _editorTextMuted.withValues(alpha: 0.26),
           borderRadius: BorderRadius.circular(999),
         ),
       ),
@@ -6926,7 +6944,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           _bgmPath == null ? "Add Music" : "Change Music",
                         ),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white.withValues(alpha: 0.08),
+                          backgroundColor: _editorLightControlAltSurface,
                           foregroundColor: _textPrimary,
                           side: const BorderSide(color: _editorStroke),
                           shape: RoundedRectangleBorder(
@@ -7123,7 +7141,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             data: SliderTheme.of(context).copyWith(
               trackHeight: 4,
               activeTrackColor: color,
-              inactiveTrackColor: Colors.white24,
+              inactiveTrackColor: _editorDivider,
               thumbColor: Colors.white,
               overlayColor: color.withValues(alpha: 0.18),
             ),
