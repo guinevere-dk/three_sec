@@ -11,6 +11,7 @@ import '../utils/haptics.dart';
 import '../utils/media_selection_helper.dart';
 import '../managers/video_manager.dart';
 import '../managers/user_status_manager.dart';
+import '../theme/moa_design_tokens.dart';
 import '../utils/quality_policy.dart';
 import 'package:intl/intl.dart';
 import '../models/vlog_project.dart';
@@ -254,7 +255,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
         _selectedFolderNames.isNotEmpty;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF4F6F8),
+      backgroundColor: MoaDesignTokens.background,
       body: GestureDetector(
         key: _folderGridKey, // Restore Key
         onScaleStart: (d) {
@@ -270,7 +271,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             SliverAppBar(
-              backgroundColor: const Color(0xFFF4F6F8),
+              backgroundColor: MoaDesignTokens.background,
               surfaceTintColor: Colors.transparent,
               pinned: true,
               floating: false,
@@ -281,7 +282,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
                     ? "${_selectedFolderNames.length}개 선택됨"
                     : "Project",
                 style: const TextStyle(
-                  color: Color(0xFF303236),
+                  color: MoaDesignTokens.textPrimary,
                   fontSize: 22,
                   fontWeight: FontWeight.w800,
                   letterSpacing: -1.1,
@@ -292,14 +293,18 @@ class _ProjectScreenState extends State<ProjectScreen> {
                   IconButton(
                     icon: Icon(
                       isAll ? Icons.check_box : Icons.check_box_outline_blank,
-                      color: Colors.black,
+                      color: MoaDesignTokens.textPrimary,
                     ),
                     onPressed: _toggleSelectAllFolders,
                   )
                 else ...[
                   // PRO Badge
                   IconButton(
-                    icon: const Icon(Icons.add, color: Colors.black, size: 21),
+                    icon: const Icon(
+                      Icons.add,
+                      color: MoaDesignTokens.textPrimary,
+                      size: 21,
+                    ),
                     onPressed: _showCreateFolderDialog,
                   ),
                 ],
@@ -398,7 +403,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
           _isFolderSelectionMode && _selectedFolderNames.isNotEmpty
           ? FloatingActionButton.extended(
               onPressed: _handleFolderBatchDelete,
-              backgroundColor: Colors.deepPurple,
+              backgroundColor: MoaDesignTokens.danger,
               icon: const Icon(Icons.delete),
               label: const Text("Delete"),
             )
@@ -424,7 +429,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
     final isFreeUser = !UserStatusManager().isStandardOrAbove();
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF4F6F8),
+      backgroundColor: MoaDesignTokens.background,
       body: GestureDetector(
         key: _projectGridKey, // Restore Key
         onScaleStart: (d) {
@@ -442,14 +447,14 @@ class _ProjectScreenState extends State<ProjectScreen> {
               physics: const AlwaysScrollableScrollPhysics(),
               slivers: [
                 SliverAppBar(
-                  backgroundColor: Colors.white.withValues(alpha: 0.92),
+                  backgroundColor: MoaDesignTokens.surface,
                   surfaceTintColor: Colors.transparent,
                   pinned: true,
                   toolbarHeight: 74,
                   leading: IconButton(
                     icon: const Icon(
                       Icons.arrow_back_ios_new,
-                      color: Colors.black,
+                      color: MoaDesignTokens.textPrimary,
                     ),
                     onPressed: () {
                       if (_isProjectSelectionMode) {
@@ -471,7 +476,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
                             ? "${_selectedProjectIds.length}개 선택됨"
                             : videoManager.currentVlogFolder,
                         style: const TextStyle(
-                          color: Color(0xFF111827),
+                          color: MoaDesignTokens.textPrimary,
                           fontSize: 16,
                           fontWeight: FontWeight.w800,
                           height: 0.98,
@@ -482,7 +487,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
                         Text(
                           "${projects.length} Projects",
                           style: TextStyle(
-                            color: const Color(0xFF94A3B8),
+                            color: MoaDesignTokens.textMuted,
                             fontSize: 13,
                             fontWeight: FontWeight.w500,
                             letterSpacing: 0,
@@ -497,7 +502,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
                           _selectedProjectIds.length == projects.length
                               ? Icons.check_box
                               : Icons.check_box_outline_blank,
-                          color: Colors.black,
+                          color: MoaDesignTokens.textPrimary,
                         ),
                         onPressed: _toggleSelectAllProjects,
                       ),
@@ -668,16 +673,10 @@ class _ProjectScreenState extends State<ProjectScreen> {
         child: Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: MoaDesignTokens.surface,
             borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: const Color(0xFFE2E8F0)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withAlpha(12),
-                blurRadius: 14,
-                offset: const Offset(0, 6),
-              ),
-            ],
+            border: Border.all(color: MoaDesignTokens.stroke),
+            boxShadow: MoaDesignTokens.cardShadow,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -689,12 +688,12 @@ class _ProjectScreenState extends State<ProjectScreen> {
                     width: 38,
                     height: 38,
                     decoration: BoxDecoration(
-                      color: const Color(0xFFE8F0FE),
+                      color: MoaDesignTokens.accentSoft.withValues(alpha: 0.55),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: const Icon(
                       Icons.workspace_premium_rounded,
-                      color: Color(0xFF1A73E8),
+                      color: MoaDesignTokens.accentStrong,
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -705,7 +704,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
                         Text(
                           'Standard 구독 시 Project 편집 가능',
                           style: TextStyle(
-                            color: Color(0xFF111827),
+                            color: MoaDesignTokens.textPrimary,
                             fontSize: 16,
                             fontWeight: FontWeight.w800,
                             height: 1.2,
@@ -715,7 +714,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
                         Text(
                           '무료 사용자는 프로젝트를 열지 않고 720p로 바로 내보낼 수 있습니다. Standard는 1080p 내보내기와 50GB Cloud 백업을 제공합니다.',
                           style: TextStyle(
-                            color: Color(0xFF64748B),
+                            color: MoaDesignTokens.textMuted,
                             fontSize: 12,
                             height: 1.35,
                           ),
@@ -1046,13 +1045,14 @@ class _StandardBenefitChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       decoration: BoxDecoration(
-        color: const Color(0xFFF1F5F9),
+        color: MoaDesignTokens.surfaceAlt,
         borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: MoaDesignTokens.stroke),
       ),
       child: Text(
         label,
         style: const TextStyle(
-          color: Color(0xFF334155),
+          color: MoaDesignTokens.textMuted,
           fontSize: 12,
           fontWeight: FontWeight.w700,
         ),

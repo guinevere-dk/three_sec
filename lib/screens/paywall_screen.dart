@@ -8,6 +8,7 @@ import '../managers/user_status_manager.dart';
 import '../services/auth_service.dart';
 import '../services/iap_service.dart';
 import '../services/standard_annual_offer_service.dart';
+import '../theme/moa_design_tokens.dart';
 import 'legal_document_screen.dart';
 import 'login_screen.dart';
 
@@ -19,10 +20,10 @@ class PaywallScreen extends StatefulWidget {
 }
 
 class _PaywallScreenState extends State<PaywallScreen> {
-  static const Color _gold = Color(0xFFD4AF37);
-  static const Color _goldDark = Color(0xFFB08D26);
-  static const Color _glassNavy = Color(0xCC111A26);
-  static const Color _glassBorder = Color(0x26FFFFFF);
+  static const Color _gold = MoaDesignTokens.accentStrong;
+  static const Color _goldDark = MoaDesignTokens.accentStrong;
+  static const Color _glassNavy = MoaDesignTokens.surface;
+  static const Color _glassBorder = MoaDesignTokens.stroke;
 
   final IAPService _iapService = IAPService();
   final AuthService _authService = AuthService();
@@ -244,7 +245,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: MoaDesignTokens.background,
       body: Stack(
         children: [
           // 1. Video Background
@@ -260,7 +261,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
               ),
             )
           else
-            Container(color: Colors.black), // Fallback
+            Container(color: MoaDesignTokens.background), // Fallback
           // 2. Blur Overlay + Tone Layer
           Positioned.fill(
             child: BackdropFilter(
@@ -271,31 +272,10 @@ class _PaywallScreenState extends State<PaywallScreen> {
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                     colors: [
-                      Color(0xCC050B12),
-                      Color(0xCC111A26),
-                      Color(0xCC070D14),
+                      Color(0xEEF5F8FB),
+                      Color(0xEFFFFFFF),
+                      Color(0xEEF2F7FA),
                     ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-          Positioned(
-            right: -140,
-            bottom: -40,
-            child: IgnorePointer(
-              child: Container(
-                width: 340,
-                height: 340,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: RadialGradient(
-                    colors: [
-                      _gold.withAlpha(90),
-                      _gold.withAlpha(10),
-                      Colors.transparent,
-                    ],
-                    stops: const [0.0, 0.35, 1.0],
                   ),
                 ),
               ),
@@ -316,11 +296,16 @@ class _PaywallScreenState extends State<PaywallScreen> {
                     children: [
                       Container(
                         decoration: BoxDecoration(
-                          color: Colors.black.withAlpha(70),
+                          color: MoaDesignTokens.surface,
                           shape: BoxShape.circle,
+                          border: Border.all(color: MoaDesignTokens.stroke),
+                          boxShadow: MoaDesignTokens.cardShadow,
                         ),
                         child: IconButton(
-                          icon: const Icon(Icons.close, color: Colors.white),
+                          icon: const Icon(
+                            Icons.close,
+                            color: MoaDesignTokens.textPrimary,
+                          ),
                           onPressed: () => Navigator.pop(context),
                         ),
                       ),
@@ -330,7 +315,9 @@ class _PaywallScreenState extends State<PaywallScreen> {
                           vertical: 8,
                         ),
                         decoration: BoxDecoration(
-                          color: Colors.black.withAlpha(45),
+                          color: MoaDesignTokens.accentSoft.withValues(
+                            alpha: 0.52,
+                          ),
                           borderRadius: BorderRadius.circular(999),
                           border: Border.all(color: _gold.withAlpha(110)),
                         ),
@@ -358,9 +345,9 @@ class _PaywallScreenState extends State<PaywallScreen> {
 
           if (_isPurchaseLoading)
             Container(
-              color: Colors.black54,
+              color: MoaDesignTokens.modalBarrier,
               child: const Center(
-                child: CircularProgressIndicator(color: Colors.white),
+                child: CircularProgressIndicator(color: _gold),
               ),
             ),
         ],
@@ -376,22 +363,12 @@ class _PaywallScreenState extends State<PaywallScreen> {
         color: _glassNavy,
         borderRadius: BorderRadius.circular(32),
         border: Border.all(color: _glassBorder),
-        gradient: LinearGradient(
+        gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [
-            const Color(0xFF1A2432).withAlpha(230),
-            const Color(0xFF0E1826).withAlpha(230),
-          ],
+          colors: [MoaDesignTokens.surface, MoaDesignTokens.surfaceSolid],
         ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withAlpha(64),
-            blurRadius: 24,
-            spreadRadius: 2,
-            offset: const Offset(0, 8),
-          ),
-        ],
+        boxShadow: MoaDesignTokens.panelShadow,
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -399,7 +376,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
           const Text(
             "MOA Standard로 더 자유롭게 기록하세요",
             style: TextStyle(
-              color: Colors.white,
+              color: MoaDesignTokens.textPrimary,
               fontSize: 24,
               fontWeight: FontWeight.bold,
             ),
@@ -448,20 +425,14 @@ class _PaywallScreenState extends State<PaywallScreen> {
             Text(
               _catalogError!,
               textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.white.withAlpha(180),
-                fontSize: 12,
-              ),
+              style: TextStyle(color: MoaDesignTokens.textMuted, fontSize: 12),
             ),
             TextButton(onPressed: _initIAP, child: const Text('Retry')),
           ] else if (_isCatalogLoading) ...[
             const SizedBox(height: 12),
             Text(
               '가격 정보를 불러오는 중...',
-              style: TextStyle(
-                color: Colors.white.withAlpha(160),
-                fontSize: 12,
-              ),
+              style: TextStyle(color: MoaDesignTokens.textMuted, fontSize: 12),
             ),
           ],
 
@@ -504,7 +475,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
                     },
               style: ElevatedButton.styleFrom(
                 backgroundColor: _gold,
-                foregroundColor: Colors.black,
+                foregroundColor: MoaDesignTokens.textPrimary,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(16),
                 ),
@@ -525,7 +496,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
             _planChangeHint,
             textAlign: TextAlign.center,
             style: TextStyle(
-              color: Colors.white.withAlpha(170),
+              color: MoaDesignTokens.textMuted,
               fontSize: 12,
               height: 1.35,
             ),
@@ -548,23 +519,23 @@ class _PaywallScreenState extends State<PaywallScreen> {
             (benefit) => Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
               decoration: BoxDecoration(
-                color: Colors.white.withAlpha(16),
+                color: MoaDesignTokens.surfaceAlt,
                 borderRadius: BorderRadius.circular(999),
-                border: Border.all(color: Colors.white.withAlpha(28)),
+                border: Border.all(color: MoaDesignTokens.stroke),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   const Icon(
                     Icons.check_circle,
-                    color: Colors.white54,
+                    color: MoaDesignTokens.accentStrong,
                     size: 16,
                   ),
                   const SizedBox(width: 6),
                   Text(
                     benefit,
                     style: TextStyle(
-                      color: Colors.white.withAlpha(235),
+                      color: MoaDesignTokens.textMuted,
                       fontSize: 12,
                       fontWeight: FontWeight.w700,
                     ),
@@ -595,16 +566,14 @@ class _PaywallScreenState extends State<PaywallScreen> {
         padding: EdgeInsets.all(isHero ? 16 : 12),
         decoration: BoxDecoration(
           color: isSelected
-              ? const Color(0xFF1A2432).withAlpha(240)
-              : Colors.white.withAlpha(10),
+              ? MoaDesignTokens.accentSoft.withValues(alpha: 0.44)
+              : MoaDesignTokens.surfaceAlt,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: isSelected ? _gold : Colors.white24,
+            color: isSelected ? _gold : MoaDesignTokens.stroke,
             width: isSelected ? 2 : 1,
           ),
-          boxShadow: isSelected
-              ? [BoxShadow(color: _gold.withAlpha(35), blurRadius: 16)]
-              : null,
+          boxShadow: isSelected ? MoaDesignTokens.activeGlow : null,
         ),
         child: Column(
           children: [
@@ -620,7 +589,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
                   style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.bold,
-                    color: Colors.black,
+                    color: MoaDesignTokens.textPrimary,
                   ),
                 ),
               ),
@@ -632,7 +601,9 @@ class _PaywallScreenState extends State<PaywallScreen> {
                 Text(
                   title,
                   style: TextStyle(
-                    color: Colors.white.withAlpha(isSelected ? 230 : 145),
+                    color: isSelected
+                        ? MoaDesignTokens.textPrimary
+                        : MoaDesignTokens.textMuted,
                     fontSize: 14,
                     fontWeight: FontWeight.w700,
                   ),
@@ -642,7 +613,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
                       ? Icons.check_circle
                       : Icons.radio_button_unchecked,
                   size: 20,
-                  color: isSelected ? _gold : Colors.white24,
+                  color: isSelected ? _gold : MoaDesignTokens.textFaint,
                 ),
               ],
             ),
@@ -650,7 +621,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
             Text(
               price,
               style: TextStyle(
-                color: Colors.white.withAlpha(isSelected ? 245 : 220),
+                color: MoaDesignTokens.textPrimary,
                 fontSize: isHero ? 20 : 18,
                 fontWeight: FontWeight.w800,
               ),
@@ -658,7 +629,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
             Text(
               periodLabel,
               style: TextStyle(
-                color: Colors.white.withAlpha(isSelected ? 170 : 120),
+                color: MoaDesignTokens.textMuted,
                 fontSize: 12,
                 fontWeight: FontWeight.w500,
               ),
@@ -681,7 +652,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
                 detailText,
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  color: Colors.white.withAlpha(isSelected ? 170 : 120),
+                  color: MoaDesignTokens.textMuted,
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
                   height: 1.2,
@@ -699,7 +670,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         _buildLegalTextButton('TERMS', LegalDocumentType.terms),
-        Text('  •  ', style: TextStyle(color: Colors.white.withAlpha(70))),
+        Text('  •  ', style: TextStyle(color: MoaDesignTokens.textFaint)),
         _buildLegalTextButton('PRIVACY', LegalDocumentType.privacy),
       ],
     );
@@ -720,7 +691,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
         child: Text(
           label,
           style: TextStyle(
-            color: Colors.white.withAlpha(110),
+            color: MoaDesignTokens.textMuted,
             fontSize: 11,
             fontWeight: FontWeight.w600,
             letterSpacing: 1.0,

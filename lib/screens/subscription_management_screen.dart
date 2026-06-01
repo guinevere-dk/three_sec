@@ -8,6 +8,7 @@ import '../managers/user_status_manager.dart';
 import '../services/auth_service.dart';
 import '../services/iap_service.dart';
 import '../services/promo_code_redeem_service.dart';
+import '../theme/moa_design_tokens.dart';
 import 'paywall_screen.dart';
 
 class SubscriptionManagementScreen extends StatefulWidget {
@@ -451,7 +452,11 @@ class _SubscriptionManagementScreenState
         : DateFormat('yyyy.MM.dd').format(expiryDate);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('구독 관리')),
+      backgroundColor: MoaDesignTokens.background,
+      appBar: AppBar(
+        title: const Text('구독 관리'),
+        backgroundColor: MoaDesignTokens.background,
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -622,9 +627,10 @@ class _InfoCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE9EEF5)),
+        color: MoaDesignTokens.surface,
+        borderRadius: BorderRadius.circular(MoaDesignTokens.radiusMd),
+        border: Border.all(color: MoaDesignTokens.stroke),
+        boxShadow: MoaDesignTokens.cardShadow,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -633,7 +639,7 @@ class _InfoCard extends StatelessWidget {
             title,
             style: const TextStyle(
               fontSize: 13,
-              color: Color(0xFF64748B),
+              color: MoaDesignTokens.textMuted,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -643,13 +649,16 @@ class _InfoCard extends StatelessWidget {
             style: const TextStyle(
               fontSize: 22,
               fontWeight: FontWeight.w800,
-              color: Color(0xFF0F172A),
+              color: MoaDesignTokens.textPrimary,
             ),
           ),
           const SizedBox(height: 4),
           Text(
             helper,
-            style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
+            style: const TextStyle(
+              fontSize: 12,
+              color: MoaDesignTokens.textFaint,
+            ),
           ),
         ],
       ),
@@ -665,9 +674,10 @@ class _FeatureGuideCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
+        color: MoaDesignTokens.surfaceSolid,
+        borderRadius: BorderRadius.circular(MoaDesignTokens.radiusMd),
+        border: Border.all(color: MoaDesignTokens.stroke),
+        boxShadow: MoaDesignTokens.cardShadow,
       ),
       child: const Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -677,7 +687,7 @@ class _FeatureGuideCard extends StatelessWidget {
             style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w700,
-              color: Color(0xFF0F172A),
+              color: MoaDesignTokens.textPrimary,
             ),
           ),
           SizedBox(height: 10),
@@ -704,7 +714,11 @@ class _FeatureBullet extends StatelessWidget {
       children: [
         const Padding(
           padding: EdgeInsets.only(top: 6),
-          child: Icon(Icons.circle, size: 6, color: Color(0xFF334155)),
+          child: Icon(
+            Icons.circle,
+            size: 6,
+            color: MoaDesignTokens.accentStrong,
+          ),
         ),
         const SizedBox(width: 8),
         Expanded(
@@ -713,7 +727,7 @@ class _FeatureBullet extends StatelessWidget {
             style: const TextStyle(
               fontSize: 13,
               height: 1.35,
-              color: Color(0xFF334155),
+              color: MoaDesignTokens.textMuted,
             ),
           ),
         ),

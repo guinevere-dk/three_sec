@@ -14,6 +14,7 @@ import '../managers/video_manager.dart';
 import '../managers/user_status_manager.dart';
 import '../services/cloud_service.dart';
 import '../services/auth_service.dart';
+import '../theme/moa_design_tokens.dart';
 import 'subscription_management_screen.dart';
 
 enum LibraryClipTransferAction {
@@ -423,7 +424,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         _selectedAlbumNames.isNotEmpty;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF4F6F8), // App BG Color
+      backgroundColor: MoaDesignTokens.background,
       body: GestureDetector(
         key: _albumGridKey, // Restore Key to GestureDetector
         onScaleStart: (d) {
@@ -441,7 +442,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           slivers: [
             // Library Header
             SliverAppBar(
-              backgroundColor: const Color(0xFFF4F6F8),
+              backgroundColor: MoaDesignTokens.background,
               surfaceTintColor: Colors.transparent,
               pinned: true,
               floating: false,
@@ -451,7 +452,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     ? "${_selectedAlbumNames.length}개 선택됨"
                     : "Library",
                 style: const TextStyle(
-                  color: Color(0xFF303236),
+                  color: MoaDesignTokens.textPrimary,
                   fontSize: 22,
                   fontWeight: FontWeight.w800,
                   letterSpacing: -1.1,
@@ -464,7 +465,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   IconButton(
                     icon: Icon(
                       isAll ? Icons.check_box : Icons.check_box_outline_blank,
-                      color: Colors.black,
+                      color: MoaDesignTokens.textPrimary,
                     ),
                     onPressed: _toggleSelectAllAlbums,
                   )
@@ -472,7 +473,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   if (showStandardBadge) _buildStandardHeaderBadge(),
                   IconButton(
                     key: widget.keyPickMedia,
-                    icon: const Icon(Icons.add, color: Colors.black, size: 21),
+                    icon: const Icon(
+                      Icons.add,
+                      color: MoaDesignTokens.textPrimary,
+                      size: 21,
+                    ),
                     onPressed: _showCreateAlbumDialog,
                   ),
                 ],
@@ -582,7 +587,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           _isAlbumSelectionMode && _selectedAlbumNames.isNotEmpty
           ? FloatingActionButton.extended(
               onPressed: _handleAlbumBatchDelete,
-              backgroundColor: Colors.redAccent,
+              backgroundColor: MoaDesignTokens.danger,
               icon: const Icon(Icons.delete),
               label: const Text("Delete"),
             )
@@ -631,7 +636,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: MoaDesignTokens.background,
       body: GestureDetector(
         key: _clipGridKey, // Restore Key to GestureDetector
         onScaleStart: (d) {
@@ -648,11 +653,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
           slivers: [
             // Detail Header
             SliverAppBar(
-              backgroundColor: Colors.white.withOpacity(0.9),
+              backgroundColor: MoaDesignTokens.surface,
               surfaceTintColor: Colors.transparent,
               pinned: true,
               leading: IconButton(
-                icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black),
+                icon: const Icon(
+                  Icons.arrow_back_ios_new,
+                  color: MoaDesignTokens.textPrimary,
+                ),
                 onPressed: () {
                   if (_isClipSelectionMode) {
                     setState(() {
@@ -673,7 +681,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         ? "${_selectedClipPaths.length}개 선택됨"
                         : "${videoManager.currentAlbum} $count",
                     style: const TextStyle(
-                      color: Colors.black,
+                      color: MoaDesignTokens.textPrimary,
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
                     ),
@@ -696,7 +704,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     key: widget.keyPickMedia,
                     icon: const Icon(
                       Icons.add_photo_alternate_outlined,
-                      color: Colors.black,
+                      color: MoaDesignTokens.textPrimary,
                     ),
                     onPressed: () => widget.onPickMedia(''),
                   ),
@@ -707,7 +715,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     child: const Text(
                       'Select All',
                       style: TextStyle(
-                        color: Color(0xFF1A73E8),
+                        color: MoaDesignTokens.accentStrong,
                         fontSize: 15,
                         fontWeight: FontWeight.w700,
                       ),
@@ -1764,7 +1772,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
               size: 18,
               color: value == 'favorites'
                   ? const Color(0xFFE91E63)
-                  : const Color(0xFF1A73E8),
+                  : MoaDesignTokens.accentStrong,
             )
           : Text(label),
       avatar: iconOnly || resolvedIcon == null
@@ -1774,16 +1782,30 @@ class _LibraryScreenState extends State<LibraryScreen> {
               size: 18,
               color: value == 'favorites'
                   ? const Color(0xFFE91E63)
-                  : const Color(0xFF1A73E8),
+                  : MoaDesignTokens.accentStrong,
             ),
       showCheckmark: !iconOnly,
       selected: selected,
       selectedColor: value == 'favorites'
           ? const Color(0xFFFFE5EC)
-          : const Color(0xFFE8F0FE),
+          : MoaDesignTokens.accentSoft,
+      backgroundColor: MoaDesignTokens.surfaceAlt,
+      disabledColor: MoaDesignTokens.surfaceAlt.withValues(alpha: 0.55),
+      side: BorderSide(
+        color: selected
+            ? MoaDesignTokens.accent.withValues(alpha: 0.62)
+            : MoaDesignTokens.stroke,
+      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+      labelStyle: TextStyle(
+        color: selected
+            ? MoaDesignTokens.textPrimary
+            : MoaDesignTokens.textMuted,
+        fontWeight: FontWeight.w800,
+      ),
       checkmarkColor: value == 'favorites'
           ? const Color(0xFFE91E63)
-          : const Color(0xFF1A73E8),
+          : MoaDesignTokens.accentStrong,
       onSelected: (_) => _setLibraryFilter(value),
     );
   }

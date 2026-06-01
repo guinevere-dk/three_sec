@@ -1,7 +1,10 @@
 import 'dart:async';
-import 'package:flutter/material.dart';
 import 'dart:io';
+
+import 'package:flutter/material.dart';
+
 import '../services/auth_service.dart';
+import '../theme/moa_design_tokens.dart';
 import 'legal_document_screen.dart';
 
 /// 소셜 로그인 화면
@@ -50,9 +53,9 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: Container(
-        decoration: BoxDecoration(
+        decoration: const BoxDecoration(
           gradient: LinearGradient(
-            colors: [Colors.black, Colors.grey[900]!],
+            colors: [MoaDesignTokens.background, MoaDesignTokens.surfaceSolid],
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
           ),
@@ -80,21 +83,27 @@ class _LoginScreenState extends State<LoginScreen> {
                     style: TextStyle(
                       fontSize: 48,
                       fontWeight: FontWeight.bold,
-                      color: Colors.white,
+                      color: MoaDesignTokens.textPrimary,
                       letterSpacing: 2,
                     ),
                   ),
                   const SizedBox(height: 12),
                   Text(
                     '2초의 순간을 기록하세요.',
-                    style: TextStyle(fontSize: 16, color: Colors.grey[400]),
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: MoaDesignTokens.textMuted,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
 
                   const SizedBox(height: 80),
 
                   // 로딩 인디케이터 또는 로그인 버튼들
                   if (_isLoading)
-                    const CircularProgressIndicator(color: Colors.white)
+                    const CircularProgressIndicator(
+                      color: MoaDesignTokens.accentStrong,
+                    )
                   else
                     Column(
                       children: [
@@ -148,11 +157,11 @@ class _LoginScreenState extends State<LoginScreen> {
                           const SizedBox(height: 16),
                           _buildSocialButton(
                             onPressed: _handleGuestSignIn,
-                            backgroundColor: const Color(0xFF1F2937),
-                            textColor: Colors.white,
+                            backgroundColor: MoaDesignTokens.surfaceAlt,
+                            textColor: MoaDesignTokens.textPrimary,
                             icon: Icons.person_outline,
                             label: '게스트로 시작',
-                            borderColor: const Color(0xFF4B5563),
+                            borderColor: MoaDesignTokens.stroke,
                           ),
                           const SizedBox(height: 8),
                           const Text(
@@ -160,7 +169,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               fontSize: 11,
-                              color: Color(0xFF94A3B8),
+                              color: MoaDesignTokens.textMuted,
                               height: 1.35,
                             ),
                           ),
@@ -174,7 +183,10 @@ class _LoginScreenState extends State<LoginScreen> {
                   Text(
                     '계속하면 MOA 이용약관과 개인정보 처리방침에 동의하게 됩니다.',
                     textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: MoaDesignTokens.textMuted,
+                    ),
                   ),
                   const SizedBox(height: 6),
                   Wrap(
@@ -185,7 +197,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         onPressed: () =>
                             openLegalDocument(context, LegalDocumentType.terms),
                         style: TextButton.styleFrom(
-                          foregroundColor: Colors.grey[400],
+                          foregroundColor: MoaDesignTokens.accentStrong,
                           padding: const EdgeInsets.symmetric(horizontal: 4),
                           minimumSize: Size.zero,
                           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -197,7 +209,10 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       Text(
                         '·',
-                        style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: MoaDesignTokens.textFaint,
+                        ),
                       ),
                       TextButton(
                         onPressed: () => openLegalDocument(
@@ -205,7 +220,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           LegalDocumentType.privacy,
                         ),
                         style: TextButton.styleFrom(
-                          foregroundColor: Colors.grey[400],
+                          foregroundColor: MoaDesignTokens.accentStrong,
                           padding: const EdgeInsets.symmetric(horizontal: 4),
                           minimumSize: Size.zero,
                           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -250,8 +265,9 @@ class _LoginScreenState extends State<LoginScreen> {
               : BorderSide.none,
         ),
         elevation: isDisabled ? 0 : 2,
-        disabledBackgroundColor: Colors.grey[800],
-        disabledForegroundColor: Colors.grey[600],
+        shadowColor: MoaDesignTokens.textPrimary.withValues(alpha: 0.12),
+        disabledBackgroundColor: MoaDesignTokens.surfaceAlt,
+        disabledForegroundColor: MoaDesignTokens.textFaint,
       ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,

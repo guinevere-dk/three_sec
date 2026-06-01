@@ -14,6 +14,7 @@ import '../services/cloud_service.dart';
 import '../services/app_update_service.dart';
 import '../managers/user_status_manager.dart';
 import '../managers/video_manager.dart';
+import '../theme/moa_design_tokens.dart';
 import '../utils/cloud_cost_policy.dart';
 import 'announcements_screen.dart';
 import 'cloud_backup_screen.dart';
@@ -85,9 +86,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  static const Color _bgColor = Color(0xFFF6F7F8);
-  static const Color _cardColor = Colors.white;
-  static const Color _primaryBlue = Color(0xFF2BADEE);
+  static const Color _bgColor = MoaDesignTokens.background;
+  static const Color _cardColor = MoaDesignTokens.surface;
+  static const Color _primaryBlue = MoaDesignTokens.accentStrong;
 
   bool _isSameSyncSummary(SyncStatusSummary a, SyncStatusSummary b) {
     return a.queuedCount == b.queuedCount &&
@@ -875,7 +876,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         title: const Text(
           'Profile',
           style: TextStyle(
-            color: Color(0xFF0F172A),
+            color: MoaDesignTokens.textPrimary,
             fontWeight: FontWeight.w800,
             fontSize: 24,
           ),
@@ -887,7 +888,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             child: Text(
               'Edit',
               style: TextStyle(
-                color: isGuestMode ? const Color(0xFF94A3AF) : _primaryBlue,
+                color: isGuestMode ? MoaDesignTokens.textFaint : _primaryBlue,
                 fontWeight: FontWeight.w700,
                 fontSize: 18,
               ),
@@ -919,7 +920,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       subscriptionLabel,
                       valueText: _statusLabelForProfile(tier),
                       valueColor: _primaryBlue,
-                      iconBgColor: const Color(0xFFEFF6FF),
+                      iconBgColor: MoaDesignTokens.accentSoft.withValues(
+                        alpha: 0.42,
+                      ),
                       iconColor: _primaryBlue,
                       onTap: _openStandardSubscriptionEntry,
                     ),
@@ -934,8 +937,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       Icons.system_update_alt,
                       '버전 확인',
                       valueText: _appVersionText,
-                      valueColor: const Color(0xFF64748B),
-                      iconBgColor: const Color(0xFFEFF6FF),
+                      valueColor: MoaDesignTokens.textMuted,
+                      iconBgColor: MoaDesignTokens.accentSoft.withValues(
+                        alpha: 0.42,
+                      ),
                       iconColor: _primaryBlue,
                       onTap: _checkForAppUpdate,
                     ),
@@ -962,7 +967,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     _buildMenuItem(
                       Icons.ios_share,
                       '앱 공유',
-                      iconBgColor: const Color(0xFFEFF6FF),
+                      iconBgColor: MoaDesignTokens.accentSoft.withValues(
+                        alpha: 0.42,
+                      ),
                       iconColor: _primaryBlue,
                       onTap: _shareApp,
                     ),
@@ -978,7 +985,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         '게스트에서 로그인하기',
                         valueText: '전환',
                         valueColor: _primaryBlue,
-                        iconBgColor: const Color(0xFFEFF6FF),
+                        iconBgColor: MoaDesignTokens.accentSoft.withValues(
+                          alpha: 0.42,
+                        ),
                         iconColor: _primaryBlue,
                         onTap: _isDeletingAccount
                             ? null
@@ -1065,7 +1074,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         style: const TextStyle(
           fontWeight: FontWeight.w800,
           fontSize: 12,
-          color: Color(0xFF94A3B8),
+          color: MoaDesignTokens.textFaint,
           letterSpacing: 1.0,
         ),
       ),
@@ -1094,12 +1103,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     border: Border.all(
-                      color: const Color(0xFFF8FAFC),
+                      color: MoaDesignTokens.surfaceSolid,
                       width: 5,
                     ),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.08),
+                        color: MoaDesignTokens.textPrimary.withValues(
+                          alpha: 0.08,
+                        ),
                         blurRadius: 14,
                         offset: const Offset(0, 5),
                       ),
@@ -1110,13 +1121,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             fit: BoxFit.cover,
                           )
                         : null,
-                    color: const Color(0xFFE2E8F0),
+                    color: MoaDesignTokens.surfaceAlt,
                   ),
                   child: (photoUrl == null || photoUrl.isEmpty)
                       ? const Icon(
                           Icons.person,
                           size: 63,
-                          color: Color(0xFF94A3B8),
+                          color: MoaDesignTokens.textFaint,
                         )
                       : null,
                 ),
@@ -1138,7 +1149,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         fontSize: isCompact ? 22 : 24,
                         fontWeight: FontWeight.w800,
                         letterSpacing: -0.3,
-                        color: const Color(0xFF0F172A),
+                        color: MoaDesignTokens.textPrimary,
                       ),
                     ),
                     const SizedBox(height: 4),
@@ -1147,7 +1158,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        color: Color(0xFF64748B),
+                        color: MoaDesignTokens.textMuted,
                         fontSize: 14,
                         fontWeight: FontWeight.w500,
                       ),
@@ -1160,13 +1171,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           vertical: 5,
                         ),
                         decoration: BoxDecoration(
-                          color: const Color(0xFFDBEAFE),
+                          color: MoaDesignTokens.accentSoft,
                           borderRadius: BorderRadius.circular(999),
                         ),
                         child: const Text(
                           '게스트 모드',
                           style: TextStyle(
-                            color: Color(0xFF1E3A8A),
+                            color: MoaDesignTokens.textPrimary,
                             fontWeight: FontWeight.w700,
                             fontSize: 11,
                           ),
@@ -1276,12 +1287,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
-        color: showWarning ? const Color(0xFFFFFBEB) : const Color(0xFFF8FAFC),
+        color: showWarning
+            ? MoaDesignTokens.warningSoft
+            : MoaDesignTokens.surfaceSolid,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: showWarning
-              ? const Color(0xFFFDE68A)
-              : const Color(0xFFE2E8F0),
+              ? MoaDesignTokens.warning.withValues(alpha: 0.42)
+              : MoaDesignTokens.stroke,
         ),
       ),
       child: Text(
@@ -1293,7 +1306,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         style: TextStyle(
           color: showWarning
               ? const Color(0xFF92400E)
-              : const Color(0xFF475569),
+              : MoaDesignTokens.textMuted,
           fontSize: 12,
           fontWeight: FontWeight.w700,
           height: 1.3,
@@ -1338,14 +1351,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       decoration: BoxDecoration(
         color: _cardColor,
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: const Color(0xFFE9EEF5)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        border: Border.all(color: MoaDesignTokens.stroke),
+        boxShadow: MoaDesignTokens.cardShadow,
       ),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -1358,7 +1365,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               style: const TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w800,
-                color: Color(0xFF0F172A),
+                color: MoaDesignTokens.textPrimary,
               ),
             )
           else if (isStorage)
@@ -1370,7 +1377,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     style: const TextStyle(
                       fontSize: 22,
                       fontWeight: FontWeight.w800,
-                      color: Color(0xFF0F172A),
+                      color: MoaDesignTokens.textPrimary,
                     ),
                   ),
                   TextSpan(
@@ -1378,7 +1385,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     style: const TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w700,
-                      color: Color(0xFF94A3B8),
+                      color: MoaDesignTokens.textFaint,
                     ),
                   ),
                 ],
@@ -1390,14 +1397,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
               style: const TextStyle(
                 fontSize: 22,
                 fontWeight: FontWeight.w800,
-                color: Color(0xFF0F172A),
+                color: MoaDesignTokens.textPrimary,
               ),
             ),
           const SizedBox(height: 2),
           Text(
             label,
             style: const TextStyle(
-              color: Color(0xFF64748B),
+              color: MoaDesignTokens.textMuted,
               fontSize: 12,
               fontWeight: FontWeight.w700,
               letterSpacing: 0.6,
@@ -1431,14 +1438,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       decoration: BoxDecoration(
         color: _cardColor,
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: const Color(0xFFE9EEF5)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        border: Border.all(color: MoaDesignTokens.stroke),
+        boxShadow: MoaDesignTokens.cardShadow,
       ),
       child: Column(
         children: [
@@ -1448,7 +1449,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               const Divider(
                 height: 1,
                 thickness: 1,
-                color: Color(0xFFEFF2F6),
+                color: MoaDesignTokens.stroke,
                 indent: 18,
                 endIndent: 18,
               ),
@@ -1462,9 +1463,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
     IconData icon,
     String title, {
     String? valueText,
-    Color valueColor = const Color(0xFF94A3B8),
-    Color iconColor = const Color(0xFF334155),
-    Color iconBgColor = const Color(0xFFF1F5F9),
+    Color valueColor = MoaDesignTokens.textFaint,
+    Color iconColor = MoaDesignTokens.textMuted,
+    Color iconBgColor = MoaDesignTokens.surfaceAlt,
     Future<void> Function()? onTap,
   }) {
     return InkWell(
@@ -1491,8 +1492,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   fontSize: 17,
                   fontWeight: FontWeight.w600,
                   color: onTap == null
-                      ? const Color(0xFF94A3B8)
-                      : const Color(0xFF0F172A),
+                      ? MoaDesignTokens.textFaint
+                      : MoaDesignTokens.textPrimary,
                 ),
               ),
             ),
@@ -1507,7 +1508,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               const SizedBox(width: 8),
             ],
-            const Icon(Icons.chevron_right, color: Color(0xFFCBD5E1), size: 24),
+            const Icon(
+              Icons.chevron_right,
+              color: MoaDesignTokens.textFaint,
+              size: 24,
+            ),
           ],
         ),
       ),
