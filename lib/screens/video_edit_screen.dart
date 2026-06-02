@@ -185,6 +185,8 @@ enum _TransformQuickAction { flip, rotate, angle }
 
 enum _BottomInlinePanel { none, sound, trimSpeedPreset, colorFilter }
 
+enum _PreviewPlaybackMode { clip, project }
+
 enum _TrimTimelineInteraction { none, playhead, startHandle, endHandle }
 
 enum _CloudClipEditState {
@@ -310,11 +312,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   static const Color _textSecondary = _editorTextMuted;
   static const double _bottomToolbarHeight = 88.0;
   static const double _inlineModePanelHeight = 110.0;
-  static const double _colorFilterPanelHeight = 138.0;
+  static const double _colorFilterPanelHeight = _inlineModePanelHeight;
   static const double _inlineModePanelGap = 2.0;
   static const double _transformOverlayBottomInset = 14.0;
   static const double _inlineModePanelSpacing = 1.0;
-  static const double _headerRowSpacing = 2.0;
+  static const double _headerRowSpacing = 8.0;
   static const double _inlineModePanelSidePadding = 12.0;
   static const double _inlineModePanelVerticalPadding = 6.0;
   static const double _inlineModeChipRowHeight = 28.0;
@@ -445,12 +447,27 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   EditorState? _colorFilterGestureBaseState;
   bool _colorFilterGestureDirty = false;
 
-  bool get _isPlaybackLockedForEditing =>
-      _playbackLockedByTransform ||
-      _isBrightnessMode ||
+  bool get _isSoundPanelActive =>
       _bottomInlinePanel == _BottomInlinePanel.sound;
 
+  bool get _isColorFilterMode =>
+      _bottomInlinePanel == _BottomInlinePanel.colorFilter;
+
+  bool get _isClipLocalPreviewMode =>
+      _isBrightnessMode || _isColorFilterMode || _isSoundPanelActive;
+
+  bool get _isLoopingVisualAdjustmentMode =>
+      _isBrightnessMode || _isColorFilterMode;
+
+  bool get _isPlaybackLockedForEditing =>
+      _playbackLockedByTransform || _isClipLocalPreviewMode;
+
   bool get _canUseTopClipNavigation => !_isExportUiBlocking;
+
+  bool get _shouldShowProjectSaveStatusChip =>
+      _saveUiState == _ProjectSaveUiState.saving ||
+      _saveUiState == _ProjectSaveUiState.retrying ||
+      _saveUiState == _ProjectSaveUiState.cloudFailed;
 
   // Audio State
   VideoPlayerController? _bgmController;
@@ -464,6 +481,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   // Clips Management
   List<VlogClip> _clips = [];
   int _currentClipIndex = 0;
+  _PreviewPlaybackMode _previewPlaybackMode = _PreviewPlaybackMode.clip;
 
   EditorState _sanitizeEditorStateForSupportedFeatures(EditorState state) {
     if (_enableDormantEditFeatures) return state;
@@ -752,11 +770,17 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     return nextRuntimeTier;
   }
 
+  Duration _getClipEndTime(VlogClip clip) {
+    final original = _getOriginalDuration(clip);
+    var end = clip.endTime == Duration.zero ? original : clip.endTime;
+    if (end < Duration.zero) end = Duration.zero;
+    if (original > Duration.zero && end > original) return original;
+    return end;
+  }
+
   Duration _getTrimmedDuration(VlogClip clip) {
     final start = clip.startTime;
-    final end = clip.endTime == Duration.zero
-        ? clip.originalDuration
-        : clip.endTime;
+    final end = _getClipEndTime(clip);
     if (end <= start) return Duration.zero;
     return end - start;
   }
@@ -1484,7 +1508,21 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         return;
       }
 
-      if (_isSoundOrBrightnessActive && pos >= clip.endTime) {
+      final clipEnd = _getClipEndTime(clip);
+      final hasPlayableClipRange = clipEnd > clip.startTime;
+
+      if (_isLoopingVisualAdjustmentMode &&
+          hasPlayableClipRange &&
+          pos >= clipEnd) {
+        _controller!.seekTo(clip.startTime);
+        if (_isPlaying) {
+          _controller!.play();
+          _bgmController?.play();
+        }
+        return;
+      }
+
+      if (_isSoundPanelActive && hasPlayableClipRange && pos >= clipEnd) {
         if (_isPlaying) {
           _pausePlaybackForEditingMode();
           _controller!.seekTo(clip.startTime);
@@ -1500,7 +1538,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       // 1. Trim Mode: Loop or Pause logic
       if (_isTrimMode) {
         _requestTrimUiRebuild();
-        if (pos >= clip.endTime) {
+        if (hasPlayableClipRange && pos >= clipEnd) {
           _controller!.pause();
           _controller!.seekTo(clip.startTime);
           if (mounted && !_isDisposed) {
@@ -1512,8 +1550,20 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         return;
       }
 
-      // 2. Normal Mode: Gapless playback with controller swap
-      if (pos >= clip.endTime) {
+      // 2. Normal Mode: clip-only or full-project playback.
+      if (hasPlayableClipRange && pos >= clipEnd) {
+        if (_previewPlaybackMode == _PreviewPlaybackMode.clip) {
+          _controller!.pause();
+          _bgmController?.pause();
+          _controller!.seekTo(clip.startTime);
+          if (mounted && !_isDisposed) {
+            setState(() {
+              _isPlaying = false;
+            });
+          }
+          return;
+        }
+
         if (_currentClipIndex < _clips.length - 1) {
           if (_nextController != null && _nextController!.value.isInitialized) {
             debugPrint(
@@ -1711,6 +1761,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       });
       if (_isTrimMode) {
         _ensureTrimUiStateForCurrentClip(force: true);
+        _scheduleTrimTimelineScrollToCurrent();
       }
     }
 
@@ -1741,24 +1792,19 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
     double globalPos = 0.0;
     for (int i = 0; i < _currentClipIndex; i++) {
-      final c = _clips[i];
-      globalPos += (c.endTime - c.startTime).inMilliseconds;
+      globalPos += _getTrimmedDuration(_clips[i]).inMilliseconds;
     }
 
     final currentClip = _clips[_currentClipIndex];
     // Current position within the trim range (pos - startTime)
     final currentRelPos = _controller!.value.position - currentClip.startTime;
     // ensure it's not negative if seek happens incorrectly, and clamp to duration
-    final duration =
-        (currentClip.endTime - currentClip.startTime).inMilliseconds;
+    final duration = _getTrimmedDuration(currentClip).inMilliseconds;
 
     globalPos += currentRelPos.inMilliseconds.clamp(0, duration);
 
     return globalPos;
   }
-
-  bool get _isSoundOrBrightnessActive =>
-      _isBrightnessMode || _bottomInlinePanel == _BottomInlinePanel.sound;
 
   double _getClipGlobalStartMs(int clipIndex) {
     if (clipIndex <= 0) return 0.0;
@@ -1777,7 +1823,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     final totalMs = _totalDuration.inMilliseconds.toDouble();
     final clampedValue = value.clamp(0.0, totalMs);
 
-    if (_isSoundOrBrightnessActive) {
+    if (_isClipLocalPreviewMode) {
       final clip = _clips[_currentClipIndex];
       final clipDuration = _getTrimmedDuration(clip).inMilliseconds.toDouble();
       if (clipDuration <= 0.0) {
@@ -2453,6 +2499,24 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     });
   }
 
+  void _resetCurrentClipTransformAngle() {
+    final clip = _getCurrentClipForTransform();
+    if (clip == null) return;
+    if (_quantizeAngleStep(clip.transformAngle) == 0.0) return;
+    if (_isTransformAngleDragging) {
+      _commitTransformGesture();
+      _isTransformAngleDragging = false;
+    }
+    _applyCurrentClipTransformInstant((transformClip) {
+      transformClip.transformAngle = 0.0;
+    });
+    if (mounted && !_isDisposed) {
+      setState(() {
+        _showTransformAngleNumericLabel = false;
+      });
+    }
+  }
+
   String _transformAngleModeLabel(_TransformAngleMode mode) {
     switch (mode) {
       case _TransformAngleMode.tilt:
@@ -2559,6 +2623,17 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   void _commitTrimGesture() {
+    final earlyPendingMs = _pendingTrimSeekMs ?? _pendingPlayheadTrimSeekMs;
+    if (earlyPendingMs != null) {
+      _trimSeekDebounceTimer?.cancel();
+      _trimSeekDebounceTimer = null;
+      _pendingTrimSeekMs = null;
+      _pendingPlayheadTrimSeekMs = null;
+      _trimPlayheadSeekScheduled = false;
+      _lastIssuedTrimSeekMs = earlyPendingMs;
+      _controller?.seekTo(Duration(milliseconds: earlyPendingMs));
+    }
+
     if (!_trimGestureDirty || _trimGestureBaseState == null) {
       _trimGestureBaseState = null;
       _trimGestureDirty = false;
@@ -2672,9 +2747,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   void _requestTrimUiRebuild({bool force = false}) {
     if (!mounted || _isDisposed) return;
     if (_isTrimMode && _trimUiStateNotifier != null) {
-      final currentMs = _controller?.value.position.inMilliseconds.toDouble();
-      if (currentMs != null) {
-        _syncTrimUiCurrentMs(currentMs);
+      if (_activeTrimTimelineInteraction != _TrimTimelineInteraction.playhead) {
+        final currentMs = _controller?.value.position.inMilliseconds.toDouble();
+        if (currentMs != null) {
+          _syncTrimUiCurrentMs(currentMs);
+        }
       }
       if (force) {
         _trimUiStateNotifier!.value = _trimUiStateNotifier!.value.copyWith();
@@ -2700,7 +2777,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         : clip.endTime;
 
     double startMs = clip.startTime.inMilliseconds.toDouble();
-    double endMs = clip.endTime.inMilliseconds.toDouble();
+    double endMs = _getClipEndTime(clip).inMilliseconds.toDouble();
     double maxMs = totalDuration.inMilliseconds.toDouble();
     if (maxMs <= 0) maxMs = kTargetClipMs.toDouble();
     if (endMs > maxMs) endMs = maxMs;
@@ -2999,18 +3076,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       _isTrimMode = true;
     });
     _ensureTrimUiStateForCurrentClip(force: true);
-
-    // Auto-scroll to selected clip for focus
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_timelineScrollController.hasClients) {
-        final double targetOffset = _currentClipIndex * 80.0; // Estimate
-        _timelineScrollController.animateTo(
-          targetOffset,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
-    });
+    _scheduleTrimTimelineScrollToCurrent();
   }
 
   bool _handleTrimBackAction() {
@@ -3478,6 +3544,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         (sourceAspect - canvasAspect).abs() > 0.02;
 
                     return GestureDetector(
+                      behavior: HitTestBehavior.opaque,
                       onTap: _isTransformModeActive ? null : _togglePlayPause,
                       onHorizontalDragEnd: _handlePreviewSwipe,
                       onScaleStart: _transformDirectManipulationEnabled
@@ -3509,7 +3576,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                                     child: SizedBox(
                                       width: value.size.width,
                                       height: value.size.height,
-                                      child: VideoPlayer(controller),
+                                      child: RepaintBoundary(
+                                        child: VideoPlayer(controller),
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -3529,13 +3598,19 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                             ),
                           if (!_isPlaying &&
                               !_transformDirectManipulationEnabled)
-                            Container(
-                              color: Colors.black26,
-                              child: const Center(
-                                child: Icon(
-                                  Icons.play_arrow,
-                                  color: Colors.white,
-                                  size: 64,
+                            GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: _isTransformModeActive
+                                  ? null
+                                  : _togglePlayPause,
+                              child: Container(
+                                color: Colors.black26,
+                                child: const Center(
+                                  child: Icon(
+                                    Icons.play_arrow,
+                                    color: Colors.white,
+                                    size: 64,
+                                  ),
                                 ),
                               ),
                             ),
@@ -3658,28 +3733,41 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(
-                        _formatDuration(
-                          Duration(milliseconds: globalPos.toInt()),
-                        ),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w700,
-                          shadows: [
-                            Shadow(blurRadius: 3, color: Colors.black54),
-                          ],
+                      SizedBox(
+                        width: 54,
+                        child: Text(
+                          _formatDuration(
+                            Duration(milliseconds: globalPos.toInt()),
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.clip,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                            shadows: [
+                              Shadow(blurRadius: 3, color: Colors.black54),
+                            ],
+                          ),
                         ),
                       ),
-                      Text(
-                        _formatDuration(globalDuration),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w700,
-                          shadows: [
-                            Shadow(blurRadius: 3, color: Colors.black54),
-                          ],
+                      Expanded(
+                        child: Center(child: _buildPlaybackModeToggle()),
+                      ),
+                      SizedBox(
+                        width: 54,
+                        child: Text(
+                          _formatDuration(globalDuration),
+                          maxLines: 1,
+                          overflow: TextOverflow.clip,
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                            shadows: [
+                              Shadow(blurRadius: 3, color: Colors.black54),
+                            ],
+                          ),
                         ),
                       ),
                     ],
@@ -3716,6 +3804,45 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildPlaybackModeToggle() {
+    final projectMode = _previewPlaybackMode == _PreviewPlaybackMode.project;
+    return Tooltip(
+      message: projectMode ? 'Full playback' : 'Clip playback',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: _togglePreviewPlaybackMode,
+        child: Container(
+          height: 24,
+          padding: const EdgeInsets.symmetric(horizontal: 9),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.4),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: const Color(0x44FFFFFF)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                projectMode ? Icons.playlist_play : Icons.stop_circle_outlined,
+                size: 14,
+                color: Colors.white,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                projectMode ? 'ALL' : 'CLIP',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -3875,6 +4002,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     ),
                   ),
                 ),
+                const SizedBox(width: 6),
+                _buildInlineIconButton(
+                  icon: Icons.restart_alt_rounded,
+                  tooltip: 'Reset angle',
+                  enabled: currentValue != 0.0,
+                  onTap: _resetCurrentClipTransformAngle,
+                ),
               ],
             ),
           ),
@@ -3958,6 +4092,45 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     );
   }
 
+  Widget _buildInlineIconButton({
+    required IconData icon,
+    required String tooltip,
+    required bool enabled,
+    required VoidCallback onTap,
+  }) {
+    final color = enabled
+        ? _editorTextPrimary
+        : _editorTextMuted.withValues(alpha: 0.45);
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(999),
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          borderRadius: BorderRadius.circular(999),
+          child: Container(
+            width: 28,
+            height: 28,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: enabled
+                  ? _editorLightControlAltSurface
+                  : _editorLightControlAltSurface.withValues(alpha: 0.62),
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: enabled
+                    ? _editorStroke
+                    : _editorStroke.withValues(alpha: 0.6),
+              ),
+            ),
+            child: Icon(icon, color: color, size: 17),
+          ),
+        ),
+      ),
+    );
+  }
+
   ColorFilter _getFilterMatrix() {
     final brightnessFilter = ColorFilter.matrix(
       brightnessPreviewColorMatrix(_previewAdjustmentsWithColorFilter()),
@@ -4006,8 +4179,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   Widget _buildHeader() {
     return Container(
-      margin: const EdgeInsets.fromLTRB(10, 6, 10, 3),
-      padding: const EdgeInsets.fromLTRB(10, 7, 10, 7),
+      margin: const EdgeInsets.fromLTRB(10, 8, 10, 6),
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
       decoration: BoxDecoration(
         color: _editorHeaderSurface,
         borderRadius: BorderRadius.circular(_editorRadiusLarge),
@@ -4052,12 +4225,16 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   icon: Icons.undo,
                   onPressed: _commandManager.canUndo ? _undo : null,
                   tooltip: 'Undo',
+                  buttonSize: 38,
+                  iconSize: 20,
                 ),
                 const SizedBox(width: 4),
                 _buildHeaderIconButton(
                   icon: Icons.redo,
                   onPressed: _commandManager.canRedo ? _redo : null,
                   tooltip: 'Redo',
+                  buttonSize: 38,
+                  iconSize: 20,
                 ),
                 const SizedBox(width: 4),
                 _buildHeaderIconButton(
@@ -4065,6 +4242,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   onPressed: _showCanvasPanel,
                   tooltip:
                       'Canvas ${_canvasAspectLabel(widget.project.canvasAspectRatioPreset)}',
+                  buttonSize: 38,
+                  iconSize: 20,
                 ),
                 const SizedBox(width: 6),
                 Container(
@@ -4098,6 +4277,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           !_canUseTopClipNavigation
                       ? null
                       : () => unawaited(_moveToAdjacentClip(-1)),
+                  buttonSize: 38,
+                  iconSize: 20,
                 ),
                 const SizedBox(width: 4),
                 _buildHeaderIconButton(
@@ -4109,15 +4290,19 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           !_canUseTopClipNavigation
                       ? null
                       : () => unawaited(_moveToAdjacentClip(1)),
+                  buttonSize: 38,
+                  iconSize: 20,
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 4),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: _buildProjectSaveStatusChip(),
-          ),
+          if (_shouldShowProjectSaveStatusChip) ...[
+            const SizedBox(height: 4),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: _buildProjectSaveStatusChip(),
+            ),
+          ],
           if (_subscriptionRestrictedDuringEdit) ...[
             const SizedBox(height: 4),
             _buildSubscriptionChangeNotice(),
@@ -4132,6 +4317,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     required VoidCallback? onPressed,
     required String tooltip,
     double iconSize = 22,
+    double buttonSize = 44,
   }) {
     final enabled = onPressed != null;
     final iconColor = enabled
@@ -4151,8 +4337,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             borderRadius: BorderRadius.circular(_editorRadiusSmall),
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 140),
-              width: 44,
-              height: 44,
+              width: buttonSize,
+              height: buttonSize,
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 color: enabled
@@ -4477,12 +4663,16 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 setState(() => _bottomInlinePanel = _BottomInlinePanel.none);
                 return;
               }
+              final willOpen =
+                  _bottomInlinePanel != _BottomInlinePanel.colorFilter;
               setState(() {
-                _bottomInlinePanel =
-                    _bottomInlinePanel == _BottomInlinePanel.colorFilter
-                    ? _BottomInlinePanel.none
-                    : _BottomInlinePanel.colorFilter;
+                _bottomInlinePanel = willOpen
+                    ? _BottomInlinePanel.colorFilter
+                    : _BottomInlinePanel.none;
               });
+              if (willOpen) {
+                unawaited(_startVisualAdjustmentLoopPreview());
+              }
             },
             active: _bottomInlinePanel == _BottomInlinePanel.colorFilter,
           ),
@@ -4769,17 +4959,17 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         _inlineModePanelSidePadding,
         _inlineModePanelSpacing,
       ),
-      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
       decoration: _inlineModePanelDecoration,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            height: 78,
+            height: 62,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               itemCount: kColorFilterPresetSpecs.length,
-              separatorBuilder: (_, index) => const SizedBox(width: 8),
+              separatorBuilder: (_, index) => const SizedBox(width: 6),
               itemBuilder: (context, index) {
                 final preset = kColorFilterPresetSpecs[index];
                 final selected = preset.id == selectedSpec.id;
@@ -4787,8 +4977,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               },
             ),
           ),
-          const SizedBox(height: 8),
-          Expanded(
+          const SizedBox(height: 4),
+          SizedBox(
+            height: 30,
             child: Row(
               children: [
                 Icon(
@@ -4890,8 +5081,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           onTap: () => _selectColorFilterPreset(preset.id),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 160),
-            width: 156,
-            padding: const EdgeInsets.all(8),
+            width: 132,
+            padding: const EdgeInsets.all(6),
             decoration: BoxDecoration(
               color: backgroundColor,
               borderRadius: BorderRadius.circular(16),
@@ -4921,7 +5112,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                       const SizedBox(height: 3),
                       Text(
                         meta.subtitle,
-                        maxLines: 2,
+                        maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           color: selected
@@ -4945,8 +5136,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   Widget _buildColorFilterMoodSwatch(_ColorFilterMoodMeta meta, bool selected) {
     return Container(
-      width: 42,
-      height: 58,
+      width: 34,
+      height: 48,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(12),
         gradient: LinearGradient(
@@ -4964,7 +5155,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             left: 0,
             right: 0,
             bottom: 0,
-            height: 22,
+            height: 18,
             child: DecoratedBox(
               decoration: BoxDecoration(
                 color: Colors.black.withAlpha(42),
@@ -4974,7 +5165,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               ),
             ),
           ),
-          Center(child: Icon(meta.icon, color: Colors.white, size: 20)),
+          Center(child: Icon(meta.icon, color: Colors.white, size: 17)),
           Positioned(
             right: 5,
             top: 5,
@@ -5167,6 +5358,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     });
 
     if (willEnter) {
+      unawaited(_startVisualAdjustmentLoopPreview());
       _e3SessionId = 'E3_${DateTime.now().millisecondsSinceEpoch}';
       _e3Seq = 0;
       _traceBrightnessEvent(
@@ -5803,8 +5995,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         builder: (ctx) {
                           // Use _clipDurations if available, otherwise fall back to clip times
                           final int durationSec;
-                          final clipTrimDuration =
-                              clip.endTime - clip.startTime;
+                          final clipTrimDuration = _getTrimmedDuration(clip);
                           final Duration durationToDisplay;
                           if (clipTrimDuration != Duration.zero) {
                             durationToDisplay = clipTrimDuration;
@@ -6238,7 +6429,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         _trimUiStateNotifier?.value = state.copyWith(
                           currentMs: nextCurrentMs,
                         );
-                        _trimGestureDirty = true;
                         _scheduleTrimPreviewSeek(
                           Duration(milliseconds: nextCurrentMs.toInt()),
                           reason: _TrimTimelineInteraction.playhead,
@@ -6265,7 +6455,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         _trimUiStateNotifier?.value = state.copyWith(
                           currentMs: nextCurrentMs,
                         );
-                        _trimGestureDirty = true;
                         _scheduleTrimPreviewSeek(
                           Duration(milliseconds: nextCurrentMs.toInt()),
                           reason: _TrimTimelineInteraction.playhead,
@@ -6312,12 +6501,25 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         _trimUiStateNotifier?.value = state.copyWith(
                           currentMs: targetMs,
                         );
-                        _trimGestureDirty = true;
                         _scheduleTrimPreviewSeek(
                           Duration(milliseconds: targetMs.toInt()),
                           reason: _TrimTimelineInteraction.playhead,
                         );
                         _requestTrimUiRebuild();
+                      },
+                      onTapUp: (_) {
+                        if (_activeTrimTimelineInteraction ==
+                            _TrimTimelineInteraction.playhead) {
+                          _isTrimPlayheadDragging = false;
+                          _commitTrimGesture();
+                        }
+                      },
+                      onTapCancel: () {
+                        if (_activeTrimTimelineInteraction ==
+                            _TrimTimelineInteraction.playhead) {
+                          _isTrimPlayheadDragging = false;
+                          _commitTrimGesture();
+                        }
                       },
                       child: Container(
                         width: 28,
@@ -6384,6 +6586,15 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     final shouldPlay = !_isPlaying;
 
     if (shouldPlay) {
+      if (_currentClipIndex < _clips.length) {
+        final clip = _clips[_currentClipIndex];
+        final clipEnd = _getClipEndTime(clip);
+        final position = _controller!.value.position;
+        if (clipEnd > clip.startTime &&
+            (position < clip.startTime || position >= clipEnd)) {
+          unawaited(_controller!.seekTo(clip.startTime));
+        }
+      }
       _controller!.play();
       _bgmController?.play();
     } else {
@@ -6398,6 +6609,77 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     }
   }
 
+  Future<void> _startVisualAdjustmentLoopPreview() async {
+    if (_controller == null ||
+        !_isInitialized ||
+        _isDisposed ||
+        _currentClipIndex >= _clips.length) {
+      return;
+    }
+
+    final clip = _clips[_currentClipIndex];
+    final clipEnd = _getClipEndTime(clip);
+    if (clipEnd <= clip.startTime) return;
+
+    await _controller!.seekTo(clip.startTime);
+    if (_controller == null || _isDisposed) return;
+
+    await _controller!.play();
+    await _bgmController?.play();
+    if (mounted && !_isDisposed) {
+      setState(() {
+        _isPlaying = true;
+      });
+    } else {
+      _isPlaying = true;
+    }
+  }
+
+  void _togglePreviewPlaybackMode() {
+    setState(() {
+      _previewPlaybackMode = _previewPlaybackMode == _PreviewPlaybackMode.clip
+          ? _PreviewPlaybackMode.project
+          : _PreviewPlaybackMode.clip;
+    });
+  }
+
+  void _scheduleTrimTimelineScrollToCurrent({bool animated = true}) {
+    if (!_isTrimMode || !mounted || _isDisposed) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          _isDisposed ||
+          !_isTrimMode ||
+          !_timelineScrollController.hasClients) {
+        return;
+      }
+      final screenWidth = MediaQuery.of(context).size.width;
+      final selectedTrackWidth = screenWidth * 0.7;
+      final selectedOuterWidth = selectedTrackWidth + 20.0;
+      final horizontalPadding = (screenWidth - selectedTrackWidth) / 2;
+      const inactiveOuterWidth = 70.0;
+      const separatorWidth = 8.0;
+
+      final selectedCenter =
+          horizontalPadding +
+          (_currentClipIndex * (inactiveOuterWidth + separatorWidth)) +
+          (selectedOuterWidth / 2);
+      final targetOffset = (selectedCenter - (screenWidth / 2)).clamp(
+        0.0,
+        _timelineScrollController.position.maxScrollExtent,
+      );
+
+      if (animated) {
+        _timelineScrollController.animateTo(
+          targetOffset,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOut,
+        );
+      } else {
+        _timelineScrollController.jumpTo(targetOffset);
+      }
+    });
+  }
+
   Future<void> _moveToAdjacentClip(int direction) async {
     if (_clips.isEmpty || _isDisposed || !_canUseTopClipNavigation) return;
     final target = (_currentClipIndex + direction).clamp(0, _clips.length - 1);
@@ -6408,7 +6690,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     if (_isBrightnessMode) {
       _commitBrightnessGesture();
     }
+    if (_isColorFilterMode) {
+      _commitColorFilterGesture();
+    }
     await _loadClip(target, autoPlay: _isPlaying);
+    _scheduleTrimTimelineScrollToCurrent();
   }
 
   void _handlePreviewSwipe(DragEndDetails details) {
