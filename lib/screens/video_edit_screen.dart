@@ -6716,6 +6716,16 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       try {
         if (controller == null || !_isInitialized) return;
 
+        final shouldResume =
+            _visualAdjustmentPlaybackPausedByUser ||
+            !(controller.value.isPlaying ||
+                _isPlaying ||
+                _playbackStartPending);
+        if (shouldResume) {
+          await _startVisualAdjustmentLoopPreview(restart: false);
+          return;
+        }
+
         _visualAdjustmentPlaybackRequestId++;
         if (mounted && !_isDisposed && _controller == controller) {
           setState(() {
@@ -6801,7 +6811,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     }
   }
 
-  Future<void> _startVisualAdjustmentLoopPreview() async {
+  Future<void> _startVisualAdjustmentLoopPreview({bool restart = true}) async {
     final controller = _controller;
     if (controller == null ||
         !_isInitialized ||
@@ -6816,7 +6826,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
     final requestId = ++_visualAdjustmentPlaybackRequestId;
     _visualAdjustmentPlaybackPausedByUser = false;
-    await controller.seekTo(clip.startTime);
+    final currentPosition = controller.value.position;
+    final seekPosition =
+        !restart &&
+            currentPosition >= clip.startTime &&
+            currentPosition < clipEnd
+        ? currentPosition
+        : clip.startTime;
+    await controller.seekTo(seekPosition);
     if (_controller != controller ||
         _isDisposed ||
         _visualAdjustmentPlaybackPausedByUser ||

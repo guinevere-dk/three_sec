@@ -5,7 +5,7 @@ Examples:
   python tools/google_play_release.py --track internal --validate-only
   python tools/google_play_release.py --track production --rollout 0.05 --confirm-production --validate-only
   python tools/google_play_release.py --track production --rollout 0.05 --confirm-production
-  python tools/google_play_release.py --track production --rollout 1 --confirm-production
+  python tools/google_play_release.py --track production --rollout 1 --confirm-production --confirm-full-production
 """
 
 from __future__ import annotations
@@ -55,6 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--release-name")
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--confirm-production", action="store_true")
+    parser.add_argument("--confirm-full-production", action="store_true")
     return parser.parse_args()
 
 
@@ -137,6 +138,10 @@ def validate_inputs(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             raise ReleaseError("Production uploads require --confirm-production.")
         if not (0.0 < args.rollout <= 1.0):
             raise ReleaseError("Production rollout must use 0.0 < --rollout <= 1.0.")
+        if args.rollout >= 1.0 and not args.confirm_full_production:
+            raise ReleaseError(
+                "100% production releases require --confirm-full-production."
+            )
 
     aab = resolve_path(root, args.aab)
     if not aab.is_file():
