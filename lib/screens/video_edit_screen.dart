@@ -376,6 +376,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   VideoPlayerController? _controller;
   bool _isInitialized = false;
   bool _isPlaying = false;
+  bool _playbackStartPending = false;
   bool _isMissingFile = false;
   bool _isCloudClipLoadFailed = false;
   int? _activeMissingClipIndex;
@@ -439,6 +440,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   bool _brightnessPanelFrameScheduled = false;
   EditorState? _brightnessGestureBaseState;
   bool _brightnessGestureDirty = false;
+  bool _visualAdjustmentPlaybackPausedByUser = false;
+  bool _visualAdjustmentTapInFlight = false;
+  int _lastVisualAdjustmentTapHandledAtMs = 0;
+  int _visualAdjustmentPlaybackRequestId = 0;
   String _e3SessionId = '';
   int _e3Seq = 0;
   Map<String, double> _brightnessAdjustments = defaultBrightnessAdjustments();
@@ -456,8 +461,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   bool get _isClipLocalPreviewMode =>
       _isBrightnessMode || _isColorFilterMode || _isSoundPanelActive;
 
+  bool get _isVisualAdjustmentMode => _isBrightnessMode || _isColorFilterMode;
+
   bool get _isLoopingVisualAdjustmentMode =>
-      _isBrightnessMode || _isColorFilterMode;
+      _isVisualAdjustmentMode && !_visualAdjustmentPlaybackPausedByUser;
 
   bool get _isPlaybackLockedForEditing =>
       _playbackLockedByTransform || _isClipLocalPreviewMode;
@@ -787,15 +794,48 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   Duration _getOriginalDuration(VlogClip clip) {
     if (clip.originalDuration != Duration.zero) return clip.originalDuration;
+    final cached = _getCachedOriginalDuration(clip);
+    if (cached != Duration.zero) return cached;
     if (clip.endTime != Duration.zero) return clip.endTime;
     return Duration.zero;
   }
 
+  int _indexOfClip(VlogClip clip) {
+    final identicalIndex = _clips.indexWhere((candidate) {
+      return identical(candidate, clip);
+    });
+    if (identicalIndex >= 0) return identicalIndex;
+    return _clips.indexWhere((candidate) => candidate.id == clip.id);
+  }
+
+  Duration _getCachedOriginalDuration(VlogClip clip) {
+    final index = _indexOfClip(clip);
+    if (index >= 0 && index < _clipDurations.length) {
+      final cached = _clipDurations[index];
+      if (cached != Duration.zero) return cached;
+    }
+    if (index == _currentClipIndex &&
+        _controller != null &&
+        _controller!.value.isInitialized) {
+      final controllerDuration = _controller!.value.duration;
+      if (controllerDuration != Duration.zero) return controllerDuration;
+    }
+    return Duration.zero;
+  }
+
   void _recalculateTimelineMetrics() {
+    final previousDurations = List<Duration>.from(_clipDurations);
     _clipDurations.clear();
     _totalDuration = Duration.zero;
-    for (final clip in _clips) {
-      final original = _getOriginalDuration(clip);
+    for (int i = 0; i < _clips.length; i++) {
+      final clip = _clips[i];
+      var original = _getOriginalDuration(clip);
+      if (original == Duration.zero && i < previousDurations.length) {
+        original = previousDurations[i];
+      }
+      if (clip.originalDuration == Duration.zero && original > Duration.zero) {
+        clip.originalDuration = original;
+      }
       _clipDurations.add(original);
 
       var end = clip.endTime == Duration.zero ? original : clip.endTime;
@@ -1482,15 +1522,15 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
     // Sync BGM
     final isPlaying = _controller!.value.isPlaying;
-    if (isPlaying != _isPlaying) {
-      if (mounted && !_isDisposed) setState(() => _isPlaying = isPlaying);
+    if (isPlaying) {
+      _playbackStartPending = false;
+    }
+    final effectiveIsPlaying = isPlaying || _isPlaying || _playbackStartPending;
+    if (isPlaying && !_isPlaying) {
+      if (mounted && !_isDisposed) setState(() => _isPlaying = true);
       if (_bgmController != null) {
         try {
-          if (isPlaying) {
-            _bgmController!.play();
-          } else {
-            _bgmController!.pause();
-          }
+          _bgmController!.play();
         } catch (e) {
           debugPrint('\n\n⛔⛔⛔ [LISTENER] BGM control FAILED: $e ⛔⛔⛔\n');
         }
@@ -1502,7 +1542,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     if (_currentClipIndex < _clips.length) {
       final clip = _clips[_currentClipIndex];
 
-      if (_playbackLockedByTransform && _isPlaying) {
+      if (_playbackLockedByTransform && effectiveIsPlaying) {
         _pausePlaybackForEditingMode();
         _controller!.seekTo(clip.startTime);
         return;
@@ -1515,7 +1555,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           hasPlayableClipRange &&
           pos >= clipEnd) {
         _controller!.seekTo(clip.startTime);
-        if (_isPlaying) {
+        if (effectiveIsPlaying) {
           _controller!.play();
           _bgmController?.play();
         }
@@ -1523,7 +1563,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       }
 
       if (_isSoundPanelActive && hasPlayableClipRange && pos >= clipEnd) {
-        if (_isPlaying) {
+        if (effectiveIsPlaying) {
           _pausePlaybackForEditingMode();
           _controller!.seekTo(clip.startTime);
           if (mounted && !_isDisposed) {
@@ -1539,6 +1579,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       if (_isTrimMode) {
         _requestTrimUiRebuild();
         if (hasPlayableClipRange && pos >= clipEnd) {
+          _playbackStartPending = false;
           _controller!.pause();
           _controller!.seekTo(clip.startTime);
           if (mounted && !_isDisposed) {
@@ -1553,6 +1594,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       // 2. Normal Mode: clip-only or full-project playback.
       if (hasPlayableClipRange && pos >= clipEnd) {
         if (_previewPlaybackMode == _PreviewPlaybackMode.clip) {
+          _playbackStartPending = false;
           _controller!.pause();
           _bgmController?.pause();
           _controller!.seekTo(clip.startTime);
@@ -1619,6 +1661,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           }
         } else {
           // Stop at project end and reset to the first playable clip.
+          _playbackStartPending = false;
           _controller!.pause();
           _bgmController?.pause();
           if (mounted && !_isDisposed) {
@@ -1658,10 +1701,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         setState(() {
           _isInitialized = false;
           _isPlaying = false;
+          _playbackStartPending = false;
         });
       } else {
         _isInitialized = false;
         _isPlaying = false;
+        _playbackStartPending = false;
       }
 
       // Give one frame so VideoPlayer widget detaches before native dispose.
@@ -1724,6 +1769,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           _activeMissingClipIndex = index;
           _isInitialized = false;
           _isPlaying = false;
+          _playbackStartPending = false;
         });
       }
       return;
@@ -1776,7 +1822,16 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       return;
     }
     if (autoPlay) {
+      _playbackStartPending = true;
       await _controller!.play();
+      _playbackStartPending = false;
+      if (mounted && !_isDisposed) {
+        setState(() {
+          _isPlaying = true;
+        });
+      } else {
+        _isPlaying = true;
+      }
     }
 
     _preloadNextClip();
@@ -2631,6 +2686,16 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       _pendingPlayheadTrimSeekMs = null;
       _trimPlayheadSeekScheduled = false;
       _lastIssuedTrimSeekMs = earlyPendingMs;
+      final notifier = _trimUiStateNotifier;
+      if (notifier != null) {
+        final state = notifier.value;
+        notifier.value = state.copyWith(
+          currentMs: earlyPendingMs
+              .toDouble()
+              .clamp(state.startMs, state.endMs)
+              .toDouble(),
+        );
+      }
       _controller?.seekTo(Duration(milliseconds: earlyPendingMs));
     }
 
@@ -2726,6 +2791,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   void _pausePlaybackForEditingMode() {
+    _playbackStartPending = false;
     if (_isPlaying) {
       try {
         _controller?.pause();
@@ -3545,7 +3611,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
                     return GestureDetector(
                       behavior: HitTestBehavior.opaque,
-                      onTap: _isTransformModeActive ? null : _togglePlayPause,
+                      onTap: (_isTransformModeActive || _isVisualAdjustmentMode)
+                          ? null
+                          : _handlePreviewTap,
                       onHorizontalDragEnd: _handlePreviewSwipe,
                       onScaleStart: _transformDirectManipulationEnabled
                           ? _onPreviewTransformGestureStart
@@ -3596,25 +3664,18 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                                 ),
                               ),
                             ),
-                          if (!_isPlaying &&
-                              !_transformDirectManipulationEnabled)
-                            GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onTap: _isTransformModeActive
-                                  ? null
-                                  : _togglePlayPause,
-                              child: Container(
-                                color: Colors.black26,
-                                child: const Center(
-                                  child: Icon(
-                                    Icons.play_arrow,
-                                    color: Colors.white,
-                                    size: 64,
-                                  ),
-                                ),
+                          _buildPausedPreviewScrim(controller),
+                          _buildVideoProgressOverlay(),
+                          _buildPausedPreviewPlayButton(controller),
+                          if (_isVisualAdjustmentMode)
+                            Positioned.fill(
+                              child: Listener(
+                                behavior: HitTestBehavior.opaque,
+                                onPointerUp: (_) =>
+                                    _handleVisualAdjustmentPreviewTap(),
+                                child: const SizedBox.expand(),
                               ),
                             ),
-                          _buildVideoProgressOverlay(),
                           _buildTrimSpeedPresetOverlay(),
                         ],
                       ),
@@ -3629,6 +3690,61 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     );
   }
 
+  bool _isPreviewVisuallyPlaying(VideoPlayerValue value) {
+    return value.isPlaying || _isPlaying || _playbackStartPending;
+  }
+
+  bool _shouldShowPausedPreviewControls(VideoPlayerValue value) {
+    return !_isPreviewVisuallyPlaying(value) &&
+        !_transformDirectManipulationEnabled;
+  }
+
+  Widget _buildPausedPreviewScrim(VideoPlayerController controller) {
+    return ValueListenableBuilder<VideoPlayerValue>(
+      valueListenable: controller,
+      builder: (context, value, child) {
+        if (!_shouldShowPausedPreviewControls(value)) {
+          return const SizedBox.shrink();
+        }
+        return const IgnorePointer(child: ColoredBox(color: Colors.black26));
+      },
+    );
+  }
+
+  Widget _buildPausedPreviewPlayButton(VideoPlayerController controller) {
+    return ValueListenableBuilder<VideoPlayerValue>(
+      valueListenable: controller,
+      builder: (context, value, child) {
+        if (!_shouldShowPausedPreviewControls(value)) {
+          return const SizedBox.shrink();
+        }
+        return Center(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _isTransformModeActive ? null : _handlePreviewTap,
+            child: SizedBox(
+              width: 112,
+              height: 112,
+              child: Center(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.18),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.play_arrow,
+                    color: Colors.white,
+                    size: 64,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   Widget _buildVideoProgressOverlay() {
     if (_isTransformModeActive) return _buildTransformQuickOverlayInPreview();
     final controller = _controller;
@@ -3639,6 +3755,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       builder: (context, VideoPlayerValue value, child) {
         final globalPos = _calculateGlobalPosition();
         final globalDuration = _totalDuration; // Fix missing variable
+        final previewPlaying = _isPreviewVisuallyPlaying(value);
 
         if (_isTrimMode) {
           return Align(
@@ -3651,7 +3768,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   children: [
                     InkWell(
                       borderRadius: BorderRadius.circular(999),
-                      onTap: _togglePlayPause,
+                      onTap: () => unawaited(_togglePlayPause()),
                       child: Container(
                         width: 38,
                         height: 38,
@@ -3660,7 +3777,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           shape: BoxShape.circle,
                         ),
                         child: Icon(
-                          _isPlaying ? Icons.pause : Icons.play_arrow,
+                          previewPlaying ? Icons.pause : Icons.play_arrow,
                           color: Colors.white,
                           size: 22,
                         ),
@@ -6467,9 +6584,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           return;
                         }
                         _isTrimPlayheadDragging = false;
-                        _setTrimTimelineInteraction(
-                          _TrimTimelineInteraction.none,
-                        );
                         _commitTrimGesture();
                       },
                       onTapDown: (details) {
@@ -6577,40 +6691,119 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   // 내보내기 및 유틸
 
-  void _togglePlayPause() {
+  void _handlePreviewTap() {
+    unawaited(_handlePreviewTapAsync());
+  }
+
+  void _handleVisualAdjustmentPreviewTap() {
+    if (!_isVisualAdjustmentMode || _isTransformModeActive) return;
+    _handlePreviewTap();
+  }
+
+  Future<void> _handlePreviewTapAsync() async {
     if (_playbackLockedByTransform) {
       Fluttertoast.showToast(msg: '편집 모드에서 재생이 잠김입니다.');
       return;
     }
-    if (_controller == null || !_isInitialized) return;
-    final shouldPlay = !_isPlaying;
+
+    if (_isVisualAdjustmentMode) {
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      if (nowMs - _lastVisualAdjustmentTapHandledAtMs < 450) return;
+      _lastVisualAdjustmentTapHandledAtMs = nowMs;
+      if (_visualAdjustmentTapInFlight) return;
+      _visualAdjustmentTapInFlight = true;
+      final controller = _controller;
+      try {
+        if (controller == null || !_isInitialized) return;
+
+        _visualAdjustmentPlaybackRequestId++;
+        if (mounted && !_isDisposed && _controller == controller) {
+          setState(() {
+            _visualAdjustmentPlaybackPausedByUser = true;
+            _playbackStartPending = false;
+            _isPlaying = false;
+          });
+        } else {
+          _visualAdjustmentPlaybackPausedByUser = true;
+          _playbackStartPending = false;
+          _isPlaying = false;
+        }
+        try {
+          await controller.pause();
+        } catch (_) {}
+        try {
+          await _bgmController?.pause();
+        } catch (_) {}
+        return;
+      } finally {
+        _visualAdjustmentTapInFlight = false;
+      }
+    }
+
+    await _togglePlayPause();
+  }
+
+  Future<void> _togglePlayPause() async {
+    if (_playbackLockedByTransform) {
+      Fluttertoast.showToast(msg: '편집 모드에서 재생이 잠김입니다.');
+      return;
+    }
+    final controller = _controller;
+    if (controller == null || !_isInitialized) return;
+    final shouldPlay =
+        !(controller.value.isPlaying || _isPlaying || _playbackStartPending);
 
     if (shouldPlay) {
       if (_currentClipIndex < _clips.length) {
         final clip = _clips[_currentClipIndex];
         final clipEnd = _getClipEndTime(clip);
-        final position = _controller!.value.position;
+        final position = controller.value.position;
         if (clipEnd > clip.startTime &&
             (position < clip.startTime || position >= clipEnd)) {
-          unawaited(_controller!.seekTo(clip.startTime));
+          await controller.seekTo(clip.startTime);
+        } else if (clipEnd <= clip.startTime &&
+            controller.value.duration > Duration.zero &&
+            position >= controller.value.duration) {
+          await controller.seekTo(Duration.zero);
         }
       }
-      _controller!.play();
-      _bgmController?.play();
+      if (_controller != controller || _isDisposed) return;
+      _playbackStartPending = true;
+      if (mounted && !_isDisposed) {
+        setState(() {
+          _isPlaying = true;
+        });
+      } else {
+        _isPlaying = true;
+      }
+      try {
+        await controller.play();
+        await _bgmController?.play();
+      } finally {
+        _playbackStartPending = false;
+      }
+      if (mounted && !_isDisposed && _controller == controller) {
+        setState(() {
+          _isPlaying = true;
+        });
+      }
     } else {
-      _controller!.pause();
-      _bgmController?.pause();
-    }
-
-    if (mounted && !_isDisposed) {
-      setState(() {
-        _isPlaying = shouldPlay;
-      });
+      _playbackStartPending = false;
+      await controller.pause();
+      await _bgmController?.pause();
+      if (mounted && !_isDisposed && _controller == controller) {
+        setState(() {
+          _isPlaying = false;
+        });
+      } else {
+        _isPlaying = false;
+      }
     }
   }
 
   Future<void> _startVisualAdjustmentLoopPreview() async {
-    if (_controller == null ||
+    final controller = _controller;
+    if (controller == null ||
         !_isInitialized ||
         _isDisposed ||
         _currentClipIndex >= _clips.length) {
@@ -6621,17 +6814,53 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     final clipEnd = _getClipEndTime(clip);
     if (clipEnd <= clip.startTime) return;
 
-    await _controller!.seekTo(clip.startTime);
-    if (_controller == null || _isDisposed) return;
+    final requestId = ++_visualAdjustmentPlaybackRequestId;
+    _visualAdjustmentPlaybackPausedByUser = false;
+    await controller.seekTo(clip.startTime);
+    if (_controller != controller ||
+        _isDisposed ||
+        _visualAdjustmentPlaybackPausedByUser ||
+        _visualAdjustmentPlaybackRequestId != requestId) {
+      return;
+    }
 
-    await _controller!.play();
-    await _bgmController?.play();
+    _playbackStartPending = true;
     if (mounted && !_isDisposed) {
       setState(() {
         _isPlaying = true;
       });
     } else {
       _isPlaying = true;
+    }
+    try {
+      await controller.play();
+      await _bgmController?.play();
+    } finally {
+      _playbackStartPending = false;
+    }
+    if (_controller != controller ||
+        _isDisposed ||
+        _visualAdjustmentPlaybackPausedByUser ||
+        _visualAdjustmentPlaybackRequestId != requestId) {
+      try {
+        await controller.pause();
+      } catch (_) {}
+      try {
+        await _bgmController?.pause();
+      } catch (_) {}
+      if (mounted && !_isDisposed && _controller == controller) {
+        setState(() {
+          _isPlaying = false;
+        });
+      } else {
+        _isPlaying = false;
+      }
+      return;
+    }
+    if (mounted && !_isDisposed && _controller == controller) {
+      setState(() {
+        _isPlaying = true;
+      });
     }
   }
 
