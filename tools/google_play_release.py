@@ -5,6 +5,7 @@ Examples:
   python tools/google_play_release.py --track internal --validate-only
   python tools/google_play_release.py --track production --rollout 0.05 --confirm-production --validate-only
   python tools/google_play_release.py --track production --rollout 0.05 --confirm-production
+  python tools/google_play_release.py --track production --rollout 1 --confirm-production
 """
 
 from __future__ import annotations
@@ -134,8 +135,8 @@ def validate_inputs(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     if args.track == "production":
         if not args.confirm_production:
             raise ReleaseError("Production uploads require --confirm-production.")
-        if not (0.0 < args.rollout < 1.0):
-            raise ReleaseError("Production rollout must be staged: use 0.0 < --rollout < 1.0.")
+        if not (0.0 < args.rollout <= 1.0):
+            raise ReleaseError("Production rollout must use 0.0 < --rollout <= 1.0.")
 
     aab = resolve_path(root, args.aab)
     if not aab.is_file():
@@ -216,8 +217,9 @@ def run() -> int:
                 "releaseNotes": release["release_notes"],
             }
             if args.track == "production":
-                track_release["status"] = "inProgress"
-                track_release["userFraction"] = args.rollout
+                if args.rollout < 1.0:
+                    track_release["status"] = "inProgress"
+                    track_release["userFraction"] = args.rollout
 
             track_result = service.edits().tracks().update(
                 packageName=args.package_name,

@@ -1,0 +1,3 @@
+Fixed video editor playback boundary handling.
+Improved clip playback, all-clips playback, trim playhead stability, brightness preview playback, and filter preview playback.
+Updated in-app update handling for more reliable Play update detection.
