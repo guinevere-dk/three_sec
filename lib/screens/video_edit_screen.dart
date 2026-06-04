@@ -21,6 +21,7 @@ import '../utils/brightness_adjustment_policy.dart';
 import '../utils/clip_duration_label.dart';
 import '../utils/color_filter_preset_policy.dart';
 import '../utils/quality_policy.dart';
+import '../utils/trim_timeline_interaction_policy.dart';
 import 'subscription_management_screen.dart';
 
 // 자막 데이터 모델
@@ -6214,6 +6215,16 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     final double itemWidth = MediaQuery.of(context).size.width * 0.7;
     const double trackHeight = 70.0;
     const double outerHeight = 90.0;
+    const double trimHandleWidth = kTrimTimelineHandleHitWidth;
+    const double trimPlayheadWidth = kTrimTimelinePlayheadHitWidth;
+    final playheadReceivesPointer = shouldTrimPlayheadReceivePointer(
+      startPercent: startPercent,
+      endPercent: endPercent,
+      currentPercent: scrubberPercent,
+      timelineWidth: itemWidth,
+      handleHitWidth: trimHandleWidth,
+      playheadHitWidth: trimPlayheadWidth,
+    );
 
     if (itemWidth.isNaN || maxMs.isNaN || itemWidth <= 0 || maxMs <= 0) {
       return Container(height: outerHeight, color: Colors.red);
@@ -6318,7 +6329,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     ),
                   ),
                   Positioned(
-                    left: itemWidth * startPercent - 12,
+                    left: itemWidth * startPercent - (trimHandleWidth / 2),
                     top: 0,
                     child: GestureDetector(
                       behavior: HitTestBehavior.opaque,
@@ -6326,17 +6337,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         if (_activeTrimTimelineInteraction ==
                             _TrimTimelineInteraction.playhead) {
                           return;
-                        }
-                        final timelineBox =
-                            timelineContext.findRenderObject() as RenderBox?;
-                        if (timelineBox != null) {
-                          final localX = timelineBox
-                              .globalToLocal(details.globalPosition)
-                              .dx;
-                          if ((localX - itemWidth * scrubberPercent).abs() <=
-                              18) {
-                            return;
-                          }
                         }
                         if (_isTrimPlayheadDragging) {
                           return;
@@ -6397,7 +6397,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         _commitTrimGesture();
                       },
                       child: Container(
-                        width: 24,
+                        width: trimHandleWidth,
                         height: trackHeight,
                         decoration: const BoxDecoration(
                           color: Color(0xFFF2F20D),
@@ -6412,7 +6412,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     ),
                   ),
                   Positioned(
-                    left: itemWidth * endPercent - 12,
+                    left: itemWidth * endPercent - (trimHandleWidth / 2),
                     top: 0,
                     child: GestureDetector(
                       behavior: HitTestBehavior.opaque,
@@ -6420,17 +6420,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         if (_activeTrimTimelineInteraction ==
                             _TrimTimelineInteraction.playhead) {
                           return;
-                        }
-                        final timelineBox =
-                            timelineContext.findRenderObject() as RenderBox?;
-                        if (timelineBox != null) {
-                          final localX = timelineBox
-                              .globalToLocal(details.globalPosition)
-                              .dx;
-                          if ((localX - itemWidth * scrubberPercent).abs() <=
-                              18) {
-                            return;
-                          }
                         }
                         if (_isTrimPlayheadDragging) {
                           return;
@@ -6493,7 +6482,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         _commitTrimGesture();
                       },
                       child: Container(
-                        width: 24,
+                        width: trimHandleWidth,
                         height: trackHeight,
                         decoration: const BoxDecoration(
                           color: Color(0xFFF2F20D),
@@ -6508,150 +6497,154 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     ),
                   ),
                   Positioned(
-                    left: (itemWidth * scrubberPercent) - 14,
+                    left:
+                        (itemWidth * scrubberPercent) - (trimPlayheadWidth / 2),
                     top: 0,
                     bottom: 0,
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onHorizontalDragStart: (details) {
-                        if (_activeTrimTimelineInteraction ==
-                            _TrimTimelineInteraction.startHandle) {
-                          _commitTrimGesture();
-                        }
-                        if (_activeTrimTimelineInteraction ==
-                            _TrimTimelineInteraction.endHandle) {
-                          _commitTrimGesture();
-                        }
+                    child: IgnorePointer(
+                      ignoring: !playheadReceivesPointer,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onHorizontalDragStart: (details) {
+                          if (_activeTrimTimelineInteraction ==
+                              _TrimTimelineInteraction.startHandle) {
+                            _commitTrimGesture();
+                          }
+                          if (_activeTrimTimelineInteraction ==
+                              _TrimTimelineInteraction.endHandle) {
+                            _commitTrimGesture();
+                          }
 
-                        final state = _trimUiStateNotifier?.value ?? uiState;
-                        _setTrimTimelineInteraction(
-                          _TrimTimelineInteraction.playhead,
-                        );
-                        _startTrimGesture();
-                        _isTrimPlayheadDragging = true;
-                        _isTrimStartHandleDragging = false;
-                        _isTrimEndHandleDragging = false;
-
-                        final timelineBox =
-                            timelineContext.findRenderObject() as RenderBox?;
-                        if (timelineBox == null) return;
-                        final localX = timelineBox
-                            .globalToLocal(details.globalPosition)
-                            .dx;
-                        final nextCurrentMs = _trimTimelineMsFromLocalX(
-                          localX: localX,
-                          state: state,
-                          timelineWidth: itemWidth,
-                        );
-                        _trimUiStateNotifier?.value = state.copyWith(
-                          currentMs: nextCurrentMs,
-                        );
-                        _scheduleTrimPreviewSeek(
-                          Duration(milliseconds: nextCurrentMs.toInt()),
-                          reason: _TrimTimelineInteraction.playhead,
-                        );
-                        _requestTrimUiRebuild();
-                      },
-                      onHorizontalDragUpdate: (details) {
-                        if (_activeTrimTimelineInteraction !=
-                            _TrimTimelineInteraction.playhead) {
-                          return;
-                        }
-                        final state = _trimUiStateNotifier?.value ?? uiState;
-                        final timelineBox =
-                            timelineContext.findRenderObject() as RenderBox?;
-                        if (timelineBox == null) return;
-                        final localX = timelineBox
-                            .globalToLocal(details.globalPosition)
-                            .dx;
-                        final nextCurrentMs = _trimTimelineMsFromLocalX(
-                          localX: localX,
-                          state: state,
-                          timelineWidth: itemWidth,
-                        );
-                        _trimUiStateNotifier?.value = state.copyWith(
-                          currentMs: nextCurrentMs,
-                        );
-                        _scheduleTrimPreviewSeek(
-                          Duration(milliseconds: nextCurrentMs.toInt()),
-                          reason: _TrimTimelineInteraction.playhead,
-                        );
-                        _requestTrimUiRebuild();
-                      },
-                      onHorizontalDragEnd: (_) {
-                        if (_activeTrimTimelineInteraction !=
-                            _TrimTimelineInteraction.playhead) {
-                          return;
-                        }
-                        _isTrimPlayheadDragging = false;
-                        _commitTrimGesture();
-                      },
-                      onTapDown: (details) {
-                        if (_isTrimStartHandleDragging ||
-                            _isTrimEndHandleDragging) {
-                          _commitTrimGesture();
+                          final state = _trimUiStateNotifier?.value ?? uiState;
+                          _setTrimTimelineInteraction(
+                            _TrimTimelineInteraction.playhead,
+                          );
+                          _startTrimGesture();
+                          _isTrimPlayheadDragging = true;
                           _isTrimStartHandleDragging = false;
                           _isTrimEndHandleDragging = false;
-                        }
-                        _setTrimTimelineInteraction(
-                          _TrimTimelineInteraction.playhead,
-                        );
-                        _startTrimGesture();
-                        _isTrimPlayheadDragging = false;
-                        _isTrimStartHandleDragging = false;
-                        _isTrimEndHandleDragging = false;
-                        final state = _trimUiStateNotifier?.value ?? uiState;
-                        final timelineBox =
-                            timelineContext.findRenderObject() as RenderBox?;
-                        if (timelineBox == null) return;
-                        final localX = timelineBox
-                            .globalToLocal(details.globalPosition)
-                            .dx;
-                        final targetMs = _trimTimelineMsFromLocalX(
-                          localX: localX,
-                          state: state,
-                          timelineWidth: itemWidth,
-                        );
-                        _trimUiStateNotifier?.value = state.copyWith(
-                          currentMs: targetMs,
-                        );
-                        _scheduleTrimPreviewSeek(
-                          Duration(milliseconds: targetMs.toInt()),
-                          reason: _TrimTimelineInteraction.playhead,
-                        );
-                        _requestTrimUiRebuild();
-                      },
-                      onTapUp: (_) {
-                        if (_activeTrimTimelineInteraction ==
-                            _TrimTimelineInteraction.playhead) {
+
+                          final timelineBox =
+                              timelineContext.findRenderObject() as RenderBox?;
+                          if (timelineBox == null) return;
+                          final localX = timelineBox
+                              .globalToLocal(details.globalPosition)
+                              .dx;
+                          final nextCurrentMs = _trimTimelineMsFromLocalX(
+                            localX: localX,
+                            state: state,
+                            timelineWidth: itemWidth,
+                          );
+                          _trimUiStateNotifier?.value = state.copyWith(
+                            currentMs: nextCurrentMs,
+                          );
+                          _scheduleTrimPreviewSeek(
+                            Duration(milliseconds: nextCurrentMs.toInt()),
+                            reason: _TrimTimelineInteraction.playhead,
+                          );
+                          _requestTrimUiRebuild();
+                        },
+                        onHorizontalDragUpdate: (details) {
+                          if (_activeTrimTimelineInteraction !=
+                              _TrimTimelineInteraction.playhead) {
+                            return;
+                          }
+                          final state = _trimUiStateNotifier?.value ?? uiState;
+                          final timelineBox =
+                              timelineContext.findRenderObject() as RenderBox?;
+                          if (timelineBox == null) return;
+                          final localX = timelineBox
+                              .globalToLocal(details.globalPosition)
+                              .dx;
+                          final nextCurrentMs = _trimTimelineMsFromLocalX(
+                            localX: localX,
+                            state: state,
+                            timelineWidth: itemWidth,
+                          );
+                          _trimUiStateNotifier?.value = state.copyWith(
+                            currentMs: nextCurrentMs,
+                          );
+                          _scheduleTrimPreviewSeek(
+                            Duration(milliseconds: nextCurrentMs.toInt()),
+                            reason: _TrimTimelineInteraction.playhead,
+                          );
+                          _requestTrimUiRebuild();
+                        },
+                        onHorizontalDragEnd: (_) {
+                          if (_activeTrimTimelineInteraction !=
+                              _TrimTimelineInteraction.playhead) {
+                            return;
+                          }
                           _isTrimPlayheadDragging = false;
                           _commitTrimGesture();
-                        }
-                      },
-                      onTapCancel: () {
-                        if (_activeTrimTimelineInteraction ==
-                            _TrimTimelineInteraction.playhead) {
+                        },
+                        onTapDown: (details) {
+                          if (_isTrimStartHandleDragging ||
+                              _isTrimEndHandleDragging) {
+                            _commitTrimGesture();
+                            _isTrimStartHandleDragging = false;
+                            _isTrimEndHandleDragging = false;
+                          }
+                          _setTrimTimelineInteraction(
+                            _TrimTimelineInteraction.playhead,
+                          );
+                          _startTrimGesture();
                           _isTrimPlayheadDragging = false;
-                          _commitTrimGesture();
-                        }
-                      },
-                      child: Container(
-                        width: 28,
-                        alignment: Alignment.center,
-                        child: Center(
-                          child: Container(
-                            width: 2,
-                            height: trackHeight,
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(999),
-                              boxShadow: const [
-                                BoxShadow(
-                                  color: Colors.black45,
-                                  blurRadius: 3,
-                                  offset: Offset(0, 1),
-                                ),
-                              ],
+                          _isTrimStartHandleDragging = false;
+                          _isTrimEndHandleDragging = false;
+                          final state = _trimUiStateNotifier?.value ?? uiState;
+                          final timelineBox =
+                              timelineContext.findRenderObject() as RenderBox?;
+                          if (timelineBox == null) return;
+                          final localX = timelineBox
+                              .globalToLocal(details.globalPosition)
+                              .dx;
+                          final targetMs = _trimTimelineMsFromLocalX(
+                            localX: localX,
+                            state: state,
+                            timelineWidth: itemWidth,
+                          );
+                          _trimUiStateNotifier?.value = state.copyWith(
+                            currentMs: targetMs,
+                          );
+                          _scheduleTrimPreviewSeek(
+                            Duration(milliseconds: targetMs.toInt()),
+                            reason: _TrimTimelineInteraction.playhead,
+                          );
+                          _requestTrimUiRebuild();
+                        },
+                        onTapUp: (_) {
+                          if (_activeTrimTimelineInteraction ==
+                              _TrimTimelineInteraction.playhead) {
+                            _isTrimPlayheadDragging = false;
+                            _commitTrimGesture();
+                          }
+                        },
+                        onTapCancel: () {
+                          if (_activeTrimTimelineInteraction ==
+                              _TrimTimelineInteraction.playhead) {
+                            _isTrimPlayheadDragging = false;
+                            _commitTrimGesture();
+                          }
+                        },
+                        child: Container(
+                          width: trimPlayheadWidth,
+                          alignment: Alignment.center,
+                          child: Center(
+                            child: Container(
+                              width: 2,
+                              height: trackHeight,
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(999),
+                                boxShadow: const [
+                                  BoxShadow(
+                                    color: Colors.black45,
+                                    blurRadius: 3,
+                                    offset: Offset(0, 1),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),

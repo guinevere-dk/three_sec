@@ -1,0 +1,3 @@
+Fixed an issue where the right Trim handle did not respond immediately in the editor.
+Made color filter presets more visibly expressive.
+Improved both filter previews and export LUTs.

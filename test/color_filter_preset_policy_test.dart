@@ -45,7 +45,7 @@ void main() {
       expect(payload['colorFilterLutAsset'], 'assets/luts/moa_clear_sky.cube');
     });
 
-    test('preview adjustments scale with intensity', () {
+    test('preview adjustments scale with visibly strong intensity', () {
       final full = colorFilterPreviewAdjustments(
         presetId: kColorFilterPresetKoreanTravelPop,
         intensity: 1.0,
@@ -55,8 +55,12 @@ void main() {
         intensity: 0.5,
       );
 
-      expect(full['saturation'], 16.0);
-      expect(half['saturation'], 8.0);
+      expect(full['contrast'], 30.0);
+      expect(full['saturation'], 46.0);
+      expect(full['clarity'], 20.0);
+      expect(half['contrast'], 15.0);
+      expect(half['saturation'], 23.0);
+      expect(half['clarity'], 10.0);
       expect(
         colorFilterPreviewAdjustments(
           presetId: kColorFilterPresetNone,
@@ -64,6 +68,26 @@ void main() {
         ),
         isEmpty,
       );
+    });
+
+    test('active presets have obvious preview strength at full intensity', () {
+      for (final preset in kColorFilterPresetSpecs) {
+        if (preset.id == kColorFilterPresetNone) continue;
+
+        final adjustments = colorFilterPreviewAdjustments(
+          presetId: preset.id,
+          intensity: 1.0,
+        );
+
+        final saturation = adjustments['saturation'] ?? 0.0;
+        final contrast = adjustments['contrast'] ?? 0.0;
+        final clarity = adjustments['clarity'] ?? 0.0;
+        expect(
+          saturation.abs() + contrast.abs() + clarity.abs(),
+          greaterThanOrEqualTo(50.0),
+          reason: '${preset.id} should visibly change the preview at 100%',
+        );
+      }
     });
   });
 
