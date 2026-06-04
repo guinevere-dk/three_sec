@@ -31,6 +31,9 @@
   - `build/app/outputs/bundle/release/app-release.aab`
   - `build/app/outputs/mapping/release/mapping.txt`
 - Play API `validate-only` passed for production versionCode `217` before commit.
+- Play API commit succeeded for production release `MOA 2.1.7 (217)`.
+- `firebase deploy --only hosting` completed for `fir-3s-8edb9`.
+- Live `https://fir-3s-8edb9.web.app/app-update.json` returned `latestVersion: 2.1.7` and `latestVersionCode: 217`.
 
 ## Release Tool Safety
 
