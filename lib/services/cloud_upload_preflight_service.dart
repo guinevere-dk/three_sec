@@ -191,11 +191,17 @@ class CloudUploadPreflightService {
   bool isStandardUploadReady(File file, CloudUploadVideoProbe probe) {
     if (probe.fileSize <= 0) return false;
     if (!isWithinStandardCloudVideoObjectLimit(probe.fileSize)) return false;
-    if (!isClipDurationWithinTargetContract(probe.durationMs)) return false;
+    if (!_isCloudUploadDurationAcceptable(probe.durationMs)) return false;
     if (!probe.isWithin1080pEnvelope) return false;
     final bitrate = probe.estimatedBitrate;
     if (bitrate != null && bitrate > maxStandardBitrate) return false;
     return p.extension(file.path).toLowerCase() == '.mp4';
+  }
+
+  bool _isCloudUploadDurationAcceptable(int? durationMs) {
+    if (isClipDurationWithinTargetContract(durationMs)) return true;
+    if (!isClipDurationAcceptableForSave(durationMs)) return false;
+    return durationMs! <= kTargetCaptureMs + kTargetClipMetadataToleranceMs;
   }
 
   Future<void> cleanupTemporaryResult(

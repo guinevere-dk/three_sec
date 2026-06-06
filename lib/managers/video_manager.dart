@@ -55,6 +55,345 @@ enum ProjectSaveCloudStatus {
   failedOrUnavailable,
 }
 
+typedef AutoCloudUploadDebugUploader =
+    Future<String?> Function({
+      required File videoFile,
+      required String albumName,
+      required bool isFavorite,
+      required String localPath,
+    });
+
+double clampExportAudioVolume(num volume) => volume.clamp(0.0, 1.0).toDouble();
+
+List<double> buildOriginalAudioVolumesByClip({
+  required List<VlogClip> clips,
+  required double originalAudioVolume,
+}) {
+  final masterVolume = clampExportAudioVolume(originalAudioVolume);
+  return clips
+      .map((clip) => clampExportAudioVolume(masterVolume * clip.volume))
+      .toList(growable: false);
+}
+
+List<double> resolveOriginalAudioVolumesByClip({
+  required List<VlogClip> clips,
+  required Map<String, double> audioConfig,
+  List<double>? originalAudioVolumes,
+}) {
+  return <double>[
+    for (var index = 0; index < clips.length; index++)
+      clampExportAudioVolume(
+        originalAudioVolumes != null && index < originalAudioVolumes.length
+            ? originalAudioVolumes[index]
+            : (audioConfig[clips[index].path] ?? 1.0),
+      ),
+  ];
+}
+
+@visibleForTesting
+VlogProject debugBuildCopiedProjectForFolder({
+  required VlogProject project,
+  required String targetFolder,
+  required DateTime timestamp,
+}) {
+  return VlogProject(
+    id: '${timestamp.microsecondsSinceEpoch}_${project.id.hashCode}',
+    title: '${project.title} (Copy)',
+    clips: project.clips
+        .map(
+          (clip) => clip.copyWith(
+            id: '${timestamp.microsecondsSinceEpoch}_${clip.id.hashCode}',
+          ),
+        )
+        .toList(),
+    audioConfig: Map<String, double>.from(project.audioConfig),
+    bgmPath: project.bgmPath,
+    bgmVolume: project.bgmVolume,
+    quality: project.quality,
+    isFavorite: project.isFavorite,
+    folderName: targetFolder,
+    ownerAccountId: project.ownerAccountId,
+    lockState: project.lockState,
+    trashedFromFolderName: null,
+    canvasAspectRatioPreset: project.canvasAspectRatioPreset,
+    canvasBackgroundMode: project.canvasBackgroundMode,
+    brightnessAdjustmentScope: project.brightnessAdjustmentScope,
+    brightnessAdjustments: Map<String, double>.from(
+      project.brightnessAdjustments,
+    ),
+    colorFilterPresetId: project.colorFilterPresetId,
+    colorFilterIntensity: project.colorFilterIntensity,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  );
+}
+
+@visibleForTesting
+String debugCloudPlaceholderPathForVideoMetadata(
+  String albumName,
+  VideoMetadata video,
+) {
+  final safeAlbum = albumName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+  final safeName = video.fileName.isEmpty
+      ? '${video.videoId}.mp4'
+      : video.fileName;
+  return 'cloud_only://$safeAlbum/${video.videoId}/$safeName';
+}
+
+@visibleForTesting
+List<VlogProject> mergeCloudProjectsForProjectList({
+  required List<VlogProject> localProjects,
+  required Iterable<ProjectCloudMetadata> cloudProjects,
+  required Iterable<VideoMetadata> cloudVideos,
+  required String? ownerAccountId,
+  required DateTime fallbackTimestamp,
+}) {
+  final videosByLocalPath = <String, VideoMetadata>{};
+  final videosByVideoId = <String, VideoMetadata>{};
+  final videosByFileName = <String, VideoMetadata?>{};
+  final seenVideoIds = <String>{};
+  for (final video in cloudVideos) {
+    if (video.isDeleted || video.isTombstone) continue;
+    if (video.uploadStatus.toLowerCase() != 'completed') continue;
+
+    final videoId = video.videoId.trim();
+    if (videoId.isNotEmpty && !seenVideoIds.add(videoId)) continue;
+    if (videoId.isNotEmpty) {
+      videosByVideoId[videoId] = video;
+    }
+
+    final localPath = video.localPath?.trim();
+    if (localPath != null && localPath.isNotEmpty) {
+      videosByLocalPath[localPath] = video;
+    }
+
+    final fileName = video.fileName.trim();
+    if (fileName.isNotEmpty) {
+      videosByFileName[fileName] = videosByFileName.containsKey(fileName)
+          ? null
+          : video;
+    }
+  }
+
+  final merged = <VlogProject>[...localProjects];
+
+  int? indexForCloud(ProjectCloudMetadata cloud) {
+    final localProjectId = cloud.localProjectId.trim();
+    final cloudProjectId = cloud.projectId.trim();
+    for (var i = 0; i < merged.length; i++) {
+      final project = merged[i];
+      if (project.id == localProjectId) return i;
+      if (cloudProjectId.isNotEmpty &&
+          project.cloudProjectId == cloudProjectId) {
+        return i;
+      }
+    }
+    return null;
+  }
+
+  final expectedOwner = ownerAccountId?.trim();
+
+  for (final cloud in cloudProjects) {
+    final localProjectId = cloud.localProjectId.trim();
+    if (cloud.deleted || localProjectId.isEmpty) continue;
+    final cloudOwner = cloud.uid.trim();
+    if (expectedOwner != null &&
+        expectedOwner.isNotEmpty &&
+        cloudOwner.isNotEmpty &&
+        cloudOwner != expectedOwner) {
+      continue;
+    }
+
+    final existingIndex = indexForCloud(cloud);
+    if (existingIndex != null) {
+      final existing = merged[existingIndex];
+      final remappedClips = _remapMissingLocalProjectClipsToCloudPlaceholders(
+        clips: existing.clips,
+        videosByLocalPath: videosByLocalPath,
+        videosByVideoId: videosByVideoId,
+        videosByFileName: videosByFileName,
+      );
+      merged[existingIndex] = existing.copyWith(
+        clips: remappedClips,
+        ownerAccountId: existing.ownerAccountId ?? ownerAccountId ?? cloud.uid,
+        cloudProjectId: cloud.projectId,
+        cloudSyncedAt: cloud.lastSyncedAt,
+        updatedAt: existing.updatedAt,
+      );
+      continue;
+    }
+
+    final createdAt =
+        cloud.clientCreatedAt ?? cloud.lastSyncedAt ?? fallbackTimestamp;
+    final updatedAt = cloud.clientUpdatedAt ?? cloud.lastSyncedAt ?? createdAt;
+    final hasUnsafeClipPath = cloud.clipPaths.any(
+      (clipPath) => !_isSafeCloudProjectClipPath(clipPath),
+    );
+    if (hasUnsafeClipPath) continue;
+
+    final clips = <VlogClip>[];
+    for (final clipPath in cloud.clipPaths) {
+      final matchedVideo = _matchProjectClipToCloudVideo(
+        clipPath: clipPath,
+        videosByLocalPath: videosByLocalPath,
+        videosByVideoId: videosByVideoId,
+        videosByFileName: videosByFileName,
+      );
+      if (matchedVideo == null) {
+        continue;
+      }
+      clips.add(_cloudOnlyProjectClipFromVideo(matchedVideo));
+    }
+
+    merged.add(
+      VlogProject(
+        id: localProjectId,
+        title: cloud.title.trim().isEmpty ? 'Cloud Project' : cloud.title,
+        clips: clips,
+        folderName: cloud.folderName.trim().isEmpty ? '기본' : cloud.folderName,
+        ownerAccountId: ownerAccountId ?? cloud.uid,
+        lockState: cloud.lockState.trim().isEmpty
+            ? 'unlocked'
+            : cloud.lockState,
+        cloudProjectId: cloud.projectId,
+        cloudSyncedAt: cloud.lastSyncedAt,
+        createdAt: createdAt,
+        updatedAt: updatedAt,
+      ),
+    );
+  }
+
+  merged.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+  return merged;
+}
+
+@visibleForTesting
+List<String> mergeProjectFoldersForProjectList({
+  required Iterable<String> existingFolders,
+  required Iterable<VlogProject> projects,
+}) {
+  final ordered = <String>[];
+
+  void addFolder(String folderName) {
+    final normalized = folderName.trim();
+    if (normalized.isEmpty) return;
+    if (!ordered.contains(normalized)) ordered.add(normalized);
+  }
+
+  addFolder('기본');
+
+  for (final folder in existingFolders) {
+    if (folder == '기본' || folder == '휴지통') continue;
+    addFolder(folder);
+  }
+
+  for (final project in projects) {
+    if (project.folderName == '기본' || project.folderName == '휴지통') {
+      continue;
+    }
+    addFolder(project.folderName);
+  }
+
+  addFolder('휴지통');
+  return ordered;
+}
+
+String _cloudAlbumNameForProjectVideo(VideoMetadata video) {
+  if (video.isTrash) return '휴지통';
+  final trimmed = video.albumName.trim();
+  return trimmed.isEmpty ? '일상' : trimmed;
+}
+
+VlogClip _cloudOnlyProjectClipFromVideo(VideoMetadata video) {
+  final duration = video.durationMs != null
+      ? Duration(milliseconds: video.durationMs!)
+      : Duration.zero;
+  final albumName = _cloudAlbumNameForProjectVideo(video);
+  return VlogClip(
+    path: debugCloudPlaceholderPathForVideoMetadata(albumName, video),
+    originalDuration: duration,
+    endTime: duration,
+  );
+}
+
+List<VlogClip> _remapMissingLocalProjectClipsToCloudPlaceholders({
+  required List<VlogClip> clips,
+  required Map<String, VideoMetadata> videosByLocalPath,
+  required Map<String, VideoMetadata> videosByVideoId,
+  required Map<String, VideoMetadata?> videosByFileName,
+}) {
+  final remapped = <VlogClip>[];
+  for (final clip in clips) {
+    if (clip.path.startsWith('cloud_only://') || File(clip.path).existsSync()) {
+      remapped.add(clip);
+      continue;
+    }
+
+    final matchedVideo = _matchProjectClipToCloudVideo(
+      clipPath: clip.path,
+      videosByLocalPath: videosByLocalPath,
+      videosByVideoId: videosByVideoId,
+      videosByFileName: videosByFileName,
+    );
+    if (matchedVideo == null) {
+      if (_isSafeCloudProjectClipPath(clip.path)) remapped.add(clip);
+      continue;
+    }
+
+    final cloudClip = _cloudOnlyProjectClipFromVideo(matchedVideo);
+    remapped.add(
+      clip.copyWith(
+        path: cloudClip.path,
+        originalDuration: cloudClip.originalDuration,
+        endTime: cloudClip.endTime,
+      ),
+    );
+  }
+  return remapped;
+}
+
+VideoMetadata? _matchProjectClipToCloudVideo({
+  required String clipPath,
+  required Map<String, VideoMetadata> videosByLocalPath,
+  required Map<String, VideoMetadata> videosByVideoId,
+  required Map<String, VideoMetadata?> videosByFileName,
+}) {
+  final placeholderVideoId = _cloudOnlyPlaceholderVideoId(clipPath);
+  if (placeholderVideoId != null) {
+    return videosByVideoId[placeholderVideoId];
+  }
+
+  final exactLocalPathMatch = videosByLocalPath[clipPath];
+  if (exactLocalPathMatch != null) return exactLocalPathMatch;
+
+  final fileName = p.basename(clipPath);
+  if (!videosByFileName.containsKey(fileName)) return null;
+  return videosByFileName[fileName];
+}
+
+String? _cloudOnlyPlaceholderVideoId(String clipPath) {
+  if (!clipPath.startsWith('cloud_only://')) return null;
+  final withoutScheme = clipPath.substring('cloud_only://'.length);
+  final parts = withoutScheme.split('/');
+  if (parts.length < 2) return null;
+  final videoId = parts[1].trim();
+  return videoId.isEmpty ? null : videoId;
+}
+
+bool _isSafeCloudProjectClipPath(String clipPath) {
+  final normalized = clipPath.replaceAll('\\', '/').toLowerCase();
+  if (normalized.startsWith('http://') ||
+      normalized.startsWith('https://') ||
+      normalized.startsWith('gs://') ||
+      RegExp(r'^users/[^/]+/videos/[^/]+/').hasMatch(normalized)) {
+    return false;
+  }
+  return !normalized.contains('edit_session_cache') &&
+      !normalized.contains('export_session_cache') &&
+      !normalized.contains('cloud_clip_session_cache') &&
+      !normalized.contains('cloud_video_cache');
+}
+
 class ProjectSaveResult {
   final ProjectSaveLocalStatus localStatus;
   final ProjectSaveCloudStatus cloudStatus;
@@ -151,6 +490,7 @@ class VideoManager extends ChangeNotifier {
   final Set<String> _cloudSyncedPaths = {};
   final Map<String, VideoMetadata> _cloudMetadataByPath = {};
   Future<Uint8List?> Function(String storagePath)? _debugCloudThumbnailFetcher;
+  AutoCloudUploadDebugUploader? _debugAutoCloudUploadUploader;
   final Map<String, int> _cloudThumbnailRuntimeCounts = {
     'cloud_thumbnail_fetch_attempt_count': 0,
     'cloud_thumbnail_fetch_success_count': 0,
@@ -1018,6 +1358,7 @@ class VideoManager extends ChangeNotifier {
 
       await _hydrateProjectCloudMetadata();
       vlogProjects = _filterProjectsForCurrentSession(vlogProjects);
+      _syncProjectFoldersFromProjects();
       notifyListeners();
     } catch (e) {
       print("Error loading projects: $e");
@@ -1057,24 +1398,24 @@ class VideoManager extends ChangeNotifier {
     final cloudMap = await CloudService().getUserVlogProjectMetadataMap();
     if (cloudMap.isEmpty) return;
 
-    bool changed = false;
-    vlogProjects = vlogProjects.map((project) {
-      final cloud = cloudMap[project.id];
-      if (cloud == null) return project;
+    await _ensureCloudVideoMetadataForProjectMerge();
 
-      final bool sameId = project.cloudProjectId == cloud.projectId;
-      final bool sameTime = project.cloudSyncedAt == cloud.lastSyncedAt;
-      if (sameId && sameTime) return project;
+    final before = jsonEncode(
+      vlogProjects.map((project) => project.toJson()).toList(growable: false),
+    );
+    final mergedProjects = mergeCloudProjectsForProjectList(
+      localProjects: vlogProjects,
+      cloudProjects: cloudMap.values,
+      cloudVideos: _cloudMetadataByPath.values,
+      ownerAccountId: UserStatusManager().userId,
+      fallbackTimestamp: DateTime.now(),
+    );
+    final after = jsonEncode(
+      mergedProjects.map((project) => project.toJson()).toList(growable: false),
+    );
+    vlogProjects = mergedProjects;
 
-      changed = true;
-      return project.copyWith(
-        cloudProjectId: cloud.projectId,
-        cloudSyncedAt: cloud.lastSyncedAt,
-        updatedAt: project.updatedAt,
-      );
-    }).toList();
-
-    if (!changed) return;
+    if (before == after) return;
 
     for (final project in vlogProjects) {
       try {
@@ -1091,22 +1432,38 @@ class VideoManager extends ChangeNotifier {
     }
   }
 
+  void _syncProjectFoldersFromProjects() {
+    vlogAlbums = mergeProjectFoldersForProjectList(
+      existingFolders: vlogAlbums,
+      projects: vlogProjects,
+    );
+  }
+
+  Future<void> _ensureCloudVideoMetadataForProjectMerge() async {
+    final videos = await CloudService().getCompletedUserVideos(
+      includeTrash: true,
+    );
+    for (final video in videos) {
+      if (video.isDeleted || video.isTombstone) continue;
+      final albumName = _cloudAlbumNameForLibrary(video);
+      _cloudMetadataByPath[_cloudPlaceholderPath(albumName, video)] = video;
+    }
+  }
+
+  List<VlogProject> projectsInFolder(String folderName) {
+    final normalizedFolder = folderName.trim();
+    if (normalizedFolder.isEmpty) return const <VlogProject>[];
+    return vlogProjects
+        .where((project) => project.folderName == normalizedFolder)
+        .toList();
+  }
+
+  int projectCountInFolder(String folderName) =>
+      projectsInFolder(folderName).length;
+
   // 현재 폴더에 맞는 프로젝트 필터링
   List<VlogProject> get filteredProjects {
-    if (currentVlogFolder == '휴지통') {
-      return vlogProjects.where((p) => p.folderName == '휴지통').toList();
-    }
-    // 휴지통이 아닌 경우: 해당 폴더인 것만 (단, '기본'의 경우 null도 포괄 가능하지만, 모델 기본값이 '기본'이므로 일치 비교)
-    // 폴더 이동 시 '휴지통'으로 보내지 않은 프로젝트만 보여야 함 (휴지통 기능이 폴더 필드로 통합됨)
-    // 만약 currentVlogFolder가 비어있으면(전체보기?) -> 요구사항은 currentVlogFolder 사용
-    if (currentVlogFolder.isEmpty)
-      return vlogProjects
-          .where((p) => p.folderName != '휴지통')
-          .toList(); // Fallback
-
-    return vlogProjects
-        .where((p) => p.folderName == currentVlogFolder)
-        .toList();
+    return projectsInFolder(currentVlogFolder);
   }
 
   // 프로젝트 폴더 이동
@@ -1150,27 +1507,10 @@ class VideoManager extends ChangeNotifier {
     String targetFolder,
   ) async {
     final timestamp = DateTime.now();
-    final copiedProject = VlogProject(
-      id: '${timestamp.microsecondsSinceEpoch}_${project.id.hashCode}',
-      title: '${project.title} (Copy)',
-      clips: project.clips
-          .map(
-            (clip) => clip.copyWith(
-              id: '${timestamp.microsecondsSinceEpoch}_${clip.id.hashCode}',
-            ),
-          )
-          .toList(),
-      audioConfig: Map<String, double>.from(project.audioConfig),
-      bgmPath: project.bgmPath,
-      bgmVolume: project.bgmVolume,
-      quality: project.quality,
-      isFavorite: project.isFavorite,
-      folderName: targetFolder,
-      ownerAccountId: project.ownerAccountId,
-      lockState: project.lockState,
-      trashedFromFolderName: null,
-      createdAt: timestamp,
-      updatedAt: timestamp,
+    final copiedProject = debugBuildCopiedProjectForFolder(
+      project: project,
+      targetFolder: targetFolder,
+      timestamp: timestamp,
     );
 
     vlogProjects.insert(0, copiedProject);
@@ -1594,7 +1934,7 @@ class VideoManager extends ChangeNotifier {
 
     return {
       'durationMs': durationMs,
-      'outputPath': outputPath,
+      'outputPath': '<redacted-path>',
       'fileSize': fileSize,
       'actualBitrate': actualBitrate,
       'actualBitrateReason': actualBitrate == null ? actualBitrateReason : null,
@@ -2542,8 +2882,10 @@ class VideoManager extends ChangeNotifier {
   Future<String?> exportVlog({
     required List<VlogClip> clips, // Changed to List<VlogClip>
     required Map<String, double> audioConfig,
+    List<double>? audioConfigByClipIndex,
     String? bgmPath,
     double bgmVolume = 0.5,
+    bool forceMuteOriginal = false,
     String quality = kQualityDefaultCaptureQuality,
     String userTier = 'free',
     String canvasAspectRatioPreset = 'r9_16',
@@ -2666,18 +3008,26 @@ class VideoManager extends ChangeNotifier {
     final Set<String> seenPaths = <String>{};
     final List<String> missingAudioPaths = [];
     final List<String> zeroVolumePaths = [];
+    final resolvedOriginalAudioVolumes = resolveOriginalAudioVolumesByClip(
+      clips: clips,
+      audioConfig: audioConfig,
+      originalAudioVolumes: audioConfigByClipIndex,
+    );
+    final hasIndexedAudioConfig =
+        audioConfigByClipIndex?.length == clips.length;
 
-    for (final clip in clips) {
+    for (var index = 0; index < clips.length; index++) {
+      final clip = clips[index];
       final String clipPath = clip.path;
       if (!seenPaths.add(clipPath)) {
         duplicatePathCount++;
       }
-      if (!audioConfig.containsKey(clipPath)) {
+      if (!hasIndexedAudioConfig && !audioConfig.containsKey(clipPath)) {
         missingAudioConfigCount++;
         if (missingAudioPaths.length < 3) missingAudioPaths.add(clipPath);
       }
-      final double? audioVolume = audioConfig[clipPath];
-      if (audioVolume != null && audioVolume <= 0) {
+      final audioVolume = resolvedOriginalAudioVolumes[index];
+      if (audioVolume <= 0) {
         zeroOrNegativeVolumeCount++;
         if (zeroVolumePaths.length < 3) {
           zeroVolumePaths.add(clipPath);
@@ -2701,13 +3051,16 @@ class VideoManager extends ChangeNotifier {
         quality: clampedQuality,
       );
 
+      final effectiveBgmPath = bgmVolume <= 0.0 ? null : bgmPath;
+
       debugPrint(
         '[VideoManager][Export] args_summary '
         'clipCount=${clips.length} totalDurationMs=$totalDurationMs '
         'quality=$clampedQuality tier=$normalizedTier '
         'targetFps=${exportProfile.targetFps} targetBitrate=${exportProfile.targetBitrate} codec=${exportProfile.videoCodec} '
-        'audioConfigCount=${audioConfig.length} hasBgm=${bgmPath?.isNotEmpty == true} '
-        'bgmVolume=$bgmVolume '
+        'audioConfigCount=${audioConfig.length} hasBgm=${effectiveBgmPath?.isNotEmpty == true} '
+        'audioConfigByClipIndexCount=${audioConfigByClipIndex?.length ?? 0} '
+        'bgmVolume=$bgmVolume forceMuteOriginal=$forceMuteOriginal '
         'memoryPressureRecent=${hasRecentMemoryPressure} '
         'memoryPressureElapsedMs=${millisSinceLastMemoryPressure ?? -1} '
         'eventCount=${memoryPressureEventCount}',
@@ -2739,8 +3092,8 @@ class VideoManager extends ChangeNotifier {
         'sessionId=$resolvedMergeSessionId traceId=$mergeTraceId caller=${callerTag ?? "unknown"} '
         'duplicateClipPaths=$duplicatePathCount missingAudioConfigCount=$missingAudioConfigCount '
         'zeroOrNegativeVolumeCount=$zeroOrNegativeVolumeCount '
-        'missingAudioSamples=${missingAudioPaths.join("|")} '
-        'zeroVolumeSamples=${zeroVolumePaths.join("|")} ',
+        'missingAudioSampleCount=${missingAudioPaths.length} '
+        'zeroVolumeSampleCount=${zeroVolumePaths.length} ',
       );
 
       // 1. 🛡️ 권한 체크 (Android 13 대응)
@@ -2826,13 +3179,31 @@ class VideoManager extends ChangeNotifier {
       final videoPaths = clips.map((c) => c.path).toList();
       final startTimes = clips.map((c) => c.startTime.inMilliseconds).toList();
       final endTimes = clips.map((c) => c.endTime.inMilliseconds).toList();
+      final audioChangesByClipIndex = resolvedOriginalAudioVolumes;
+      final colorFilterEffects = colorFilterForExportVideoEffects(
+        presetId: colorFilterPresetId,
+        intensity: colorFilterIntensity,
+      );
+      final hasClipSpecificBrightnessEffects = clips.any(
+        (clip) =>
+            hasNonDefaultBrightnessAdjustments(clip.brightnessAdjustments),
+      );
       final videoEffects = <String, Object>{
-        ...brightnessAdjustmentsForExportVideoEffects(brightnessAdjustments),
-        ...colorFilterForExportVideoEffects(
-          presetId: colorFilterPresetId,
-          intensity: colorFilterIntensity,
-        ),
+        if (!hasClipSpecificBrightnessEffects)
+          ...brightnessAdjustmentsForExportVideoEffects(brightnessAdjustments),
+        ...colorFilterEffects,
       };
+      final videoEffectsByClipIndex = hasClipSpecificBrightnessEffects
+          ? <Map<String, Object>>[
+              for (final clip in clips)
+                <String, Object>{
+                  ...brightnessAdjustmentsForExportVideoEffects(
+                    clip.brightnessAdjustments,
+                  ),
+                  ...colorFilterEffects,
+                },
+            ]
+          : const <Map<String, Object>>[];
 
       Future<String?> invokeMergeAttempt({
         required int attempt,
@@ -2846,12 +3217,15 @@ class VideoManager extends ChangeNotifier {
           'endTimes': endTimes, // Pass end times
           'outputPath': outputPath,
           'audioChanges': audioConfig,
-          'bgmPath': bgmPath,
+          'audioChangesByClipIndex': audioChangesByClipIndex,
+          'bgmPath': effectiveBgmPath,
           'bgmVolume': bgmVolume,
+          'forceMuteOriginal': forceMuteOriginal,
           'quality': qualityValue,
           'userTier': normalizedTier,
           'canvasAspectRatioPreset': canvasAspectRatioPreset,
           'videoEffects': videoEffects,
+          'videoEffectsByClipIndex': videoEffectsByClipIndex,
           'targetFps': videoQualityProfile(qualityValue).targetFps,
           'targetBitrate': videoQualityProfile(qualityValue).targetBitrate,
           'videoCodec': videoQualityProfile(qualityValue).videoCodec,
@@ -2869,6 +3243,7 @@ class VideoManager extends ChangeNotifier {
           '[VideoManager][Export] invoking_merge start clipCount=${clips.length} '
           'quality=$qualityValue tier=$normalizedTier totalDurationMs=$totalDurationMs '
           'videoEffects=${videoEffects.keys.join("|")} '
+          'clipSpecificVideoEffects=${videoEffectsByClipIndex.isNotEmpty} '
           'targetFps=${videoQualityProfile(qualityValue).targetFps} '
           'targetBitrate=${videoQualityProfile(qualityValue).targetBitrate} '
           'attempt=$attempt retryPlan=$retryPlan audioSimplify=$audioSimplify '
@@ -2913,7 +3288,7 @@ class VideoManager extends ChangeNotifier {
         }
         debugPrint(
           '[VideoManager][Export] invoke_merge_done '
-          'elapsedMs=$mergeElapsedMs result=$result '
+          'elapsedMs=$mergeElapsedMs result=${result == null ? "null" : "<redacted-path>"} '
           'clipCount=${clips.length} quality=$qualityValue '
           'attempt=$attempt retryPlan=$retryPlan '
           'sessionId=$resolvedMergeSessionId traceId=$mergeTraceId '
@@ -2933,7 +3308,7 @@ class VideoManager extends ChangeNotifier {
         );
 
         debugPrint(
-          '[VideoManager][Export] MergeComplete result=$result '
+          '[VideoManager][Export] MergeComplete result=${result == null ? "null" : "<redacted-path>"} '
           'attempt=$attempt retryPlan=$retryPlan '
           'sessionId=$resolvedMergeSessionId traceId=$mergeTraceId '
           'caller=${callerTag ?? "unknown"}',
@@ -2965,7 +3340,7 @@ class VideoManager extends ChangeNotifier {
               reason: 'Gal.putVideo',
             );
             debugPrint(
-              '[VideoManager][Export] SavedToGallery result=$result album=MOA',
+              '[VideoManager][Export] SavedToGallery result=<redacted-path> album=MOA',
             );
           } catch (e) {
             _logExportState(
@@ -3884,6 +4259,36 @@ class VideoManager extends ChangeNotifier {
   }
 
   @visibleForTesting
+  void debugSetAutoCloudUploadUploader(AutoCloudUploadDebugUploader? uploader) {
+    _debugAutoCloudUploadUploader = uploader;
+  }
+
+  @visibleForTesting
+  Future<bool> debugSaveRecordedVideoFallbackForTesting({
+    required String sourcePath,
+    required String outputPath,
+    required String albumName,
+    required int? sourceDurationMs,
+    String reason = 'debug_test',
+  }) {
+    return _saveRecordedVideoFallback(
+      sourcePath: sourcePath,
+      outputPath: outputPath,
+      albumName: albumName,
+      sourceDurationMs: sourceDurationMs,
+      reason: reason,
+    );
+  }
+
+  @visibleForTesting
+  Future<void> debugEnqueueAutoCloudUploadAfterLocalSaveForTesting({
+    required String path,
+    required String albumName,
+  }) {
+    return _enqueueAutoCloudUploadAfterLocalSave(path, albumName);
+  }
+
+  @visibleForTesting
   void debugResetCloudThumbnailRuntimeDebugCounts() {
     for (final key in _cloudThumbnailRuntimeCounts.keys.toList()) {
       _cloudThumbnailRuntimeCounts[key] = 0;
@@ -4546,6 +4951,7 @@ class VideoManager extends ChangeNotifier {
       final fallbackSaved = await _saveRecordedVideoFallback(
         sourcePath: sourcePath,
         outputPath: currentPath,
+        albumName: albumName,
         sourceDurationMs: sourceDurationMs,
         reason: 'normalize_failed',
         retryNormalizeCount: retryNormalizeCount,
@@ -4563,10 +4969,11 @@ class VideoManager extends ChangeNotifier {
         );
         throw StateError('영상 길이 정규화에 실패했고 저장 허용 기준(2000ms 초과)을 통과하지 못했습니다.');
       }
+      final fallbackDurationMs = await _getVideoDurationMsNative(currentPath);
       await _logRecordedSaveComplete(
         event: 'recorded_save_complete',
         outputPath: currentPath,
-        durationMs: await _getVideoDurationMsNative(currentPath),
+        durationMs: fallbackDurationMs,
         qualityProfile: captureProfile,
         saveElapsedMs: DateTime.now().millisecondsSinceEpoch - saveStartMs,
         normalizeSuccess: false,
@@ -4616,6 +5023,7 @@ class VideoManager extends ChangeNotifier {
       final fallbackSaved = await _saveRecordedVideoFallback(
         sourcePath: sourcePath,
         outputPath: currentPath,
+        albumName: albumName,
         sourceDurationMs: sourceDurationMs,
         reason: failureReason,
         normalizedDurationMs: normalizedDurationMs,
@@ -4637,10 +5045,11 @@ class VideoManager extends ChangeNotifier {
           '정규화 결과 길이가 ${postVerifyDurationMs ?? -1}ms라 저장 허용 기준(2000ms 초과)을 통과하지 못했습니다.',
         );
       }
+      final fallbackDurationMs = await _getVideoDurationMsNative(currentPath);
       await _logRecordedSaveComplete(
         event: 'recorded_save_complete',
         outputPath: currentPath,
-        durationMs: await _getVideoDurationMsNative(currentPath),
+        durationMs: fallbackDurationMs,
         qualityProfile: captureProfile,
         saveElapsedMs: DateTime.now().millisecondsSinceEpoch - saveStartMs,
         normalizeSuccess: true,
@@ -4666,24 +5075,11 @@ class VideoManager extends ChangeNotifier {
       'normalizeSuccess=$normalized',
     );
 
-    await _setClipOwnership(
+    await _finalizeRecordedClipLocalSave(
       currentPath,
-      ownerAccountId: UserStatusManager().userId,
+      albumName,
+      durationMs: postVerifyDurationMs,
     );
-    await _upsertLocalIndexClip(currentPath);
-
-    await _removeDurationCacheForPath(currentPath);
-    await _setDurationCacheForPath(
-      currentPath,
-      Duration(
-        milliseconds: postVerifyDurationMs ?? _targetRecordingDurationMs,
-      ),
-    );
-    unawaited(_enqueueAutoCloudUploadAfterLocalSave(currentPath, albumName));
-    if (currentAlbum == albumName) {
-      await loadClipsFromCurrentAlbum();
-    }
-    await _updateAlbumClipCounts();
     await _logRecordedSaveComplete(
       event: 'recorded_save_complete',
       outputPath: currentPath,
@@ -4694,6 +5090,25 @@ class VideoManager extends ChangeNotifier {
       fallbackUsed: false,
       reason: 'success',
     );
+  }
+
+  Future<void> _finalizeRecordedClipLocalSave(
+    String path,
+    String albumName, {
+    required int? durationMs,
+  }) async {
+    await _setClipOwnership(path, ownerAccountId: UserStatusManager().userId);
+    await _upsertLocalIndexClip(path);
+    await _removeDurationCacheForPath(path);
+    await _setDurationCacheForPath(
+      path,
+      Duration(milliseconds: durationMs ?? _targetRecordingDurationMs),
+    );
+    unawaited(_enqueueAutoCloudUploadAfterLocalSave(path, albumName));
+    if (currentAlbum == albumName) {
+      await loadClipsFromCurrentAlbum();
+    }
+    await _updateAlbumClipCounts();
   }
 
   Future<void> _logRecordedSaveComplete({
@@ -4865,6 +5280,7 @@ class VideoManager extends ChangeNotifier {
   Future<bool> _saveRecordedVideoFallback({
     required String sourcePath,
     required String outputPath,
+    required String albumName,
     required int? sourceDurationMs,
     required String reason,
     int? normalizedDurationMs,
@@ -4927,23 +5343,11 @@ class VideoManager extends ChangeNotifier {
         'outputPath=<redacted-path>',
       );
 
-      await _setClipOwnership(
+      await _finalizeRecordedClipLocalSave(
         outputPath,
-        ownerAccountId: UserStatusManager().userId,
+        albumName,
+        durationMs: fallbackDurationMs,
       );
-      await _removeDurationCacheForPath(outputPath);
-      if (fallbackDurationMs != null && fallbackDurationMs > 0) {
-        await _setDurationCacheForPath(
-          outputPath,
-          Duration(milliseconds: fallbackDurationMs),
-        );
-      }
-      await _upsertLocalIndexClip(outputPath);
-      unawaited(
-        _enqueueAutoCloudUploadAfterLocalSave(outputPath, currentAlbum),
-      );
-      await loadClipsFromCurrentAlbum();
-      await _updateAlbumClipCounts();
       return true;
     } catch (e) {
       debugPrint(
@@ -5030,7 +5434,8 @@ class VideoManager extends ChangeNotifier {
       });
 
       debugPrint(
-        '[VideoManager] normalizeRecordedVideo_response result=$result',
+        '[VideoManager] normalizeRecordedVideo_response '
+        'result=${result == null ? "null" : "<redacted-result>"}',
       );
 
       final durationMs = await _getVideoDurationMsNative(outputPath);
@@ -5038,7 +5443,7 @@ class VideoManager extends ChangeNotifier {
         'event': 'normalize_complete',
         'result': result,
         'success': result == 'SUCCESS',
-        'sourcePath': sourcePath,
+        'sourcePath': '<redacted-path>',
         'aspectPreset': _normalizeRecordedAspectPreset(aspectPreset),
         'targetDurationMs': effectiveTargetDurationMs,
         'elapsedMs': DateTime.now().millisecondsSinceEpoch - normalizeStartMs,
@@ -5203,8 +5608,10 @@ class VideoManager extends ChangeNotifier {
     String path,
     String albumName,
   ) async {
+    final debugUploader = _debugAutoCloudUploadUploader;
     final userStatus = UserStatusManager();
-    if (AuthService().isGuest || !userStatus.canStartNewCloudWrite()) {
+    if (!userStatus.canStartNewCloudWrite() ||
+        (debugUploader == null && AuthService().isGuest)) {
       return;
     }
 
@@ -5219,19 +5626,29 @@ class VideoManager extends ChangeNotifier {
     }
 
     try {
-      final file = File(path);
-      if (!await file.exists()) return;
       markClipTransferPendingUpload(path);
+      final file = File(path);
+      if (!await file.exists()) {
+        clearClipTransferUiState(path);
+        return;
+      }
       debugPrint(
         '[VideoManager][AutoCloudUpload] immediate_start '
         'state=${preUploadState.name} album=$albumName',
       );
-      final videoId = await CloudService().uploadVideoImmediate(
-        videoFile: file,
-        albumName: albumName,
-        isFavorite: favorites.contains(path),
-        localPath: path,
-      );
+      final videoId = debugUploader == null
+          ? await CloudService().uploadVideoImmediate(
+              videoFile: file,
+              albumName: albumName,
+              isFavorite: favorites.contains(path),
+              localPath: path,
+            )
+          : await debugUploader(
+              videoFile: file,
+              albumName: albumName,
+              isFavorite: favorites.contains(path),
+              localPath: path,
+            );
       if (videoId == null) {
         markClipTransferUploadFailed(path);
         return;
@@ -5241,6 +5658,10 @@ class VideoManager extends ChangeNotifier {
         'path=<redacted-path> '
         'video_id_present=${videoId.trim().isNotEmpty}',
       );
+      if (await file.exists()) {
+        await markClipCloudSynced(path);
+      }
+      clearClipTransferUiState(path);
     } catch (e) {
       markClipTransferUploadFailed(path);
       debugPrint(

@@ -61,6 +61,8 @@ class CloudService {
   static const String _errorTierRequired = 'tier_required';
   static const String _errorStorageLimit = 'storage_limit';
   static const String _errorCloudApiDisabled = 'cloud_api_disabled';
+  static const String _errorCloudUploadServiceUnavailable =
+      'cloud_upload_service_unavailable';
   static const String _errorSubscriptionExpired = 'subscription_expired';
   static const String _errorPermissionDenied = 'permission_denied';
   static const String _errorNetwork = 'network_unavailable';
@@ -628,6 +630,14 @@ class CloudService {
 
   SyncErrorDetail _cloudUsageFailureDetail(Object error) {
     if (error is CloudUsageServiceException) {
+      if (isCloudApiUnavailableReservationError(error)) {
+        return const SyncErrorDetail(
+          code: _errorCloudUploadServiceUnavailable,
+          retryable: true,
+          copy:
+              'Cloud upload service is temporarily unavailable. The local original remains on this device.',
+        );
+      }
       return switch (error.code) {
         'unauthenticated' => const SyncErrorDetail(
           code: _errorAuthRequired,
@@ -663,6 +673,31 @@ class CloudService {
     }
 
     return _classifySyncError(error.toString());
+  }
+
+  String _safeCloudUploadErrorSummary(Object error) {
+    if (error is CloudUsageServiceException) {
+      return 'CloudUsageServiceException(code=${error.code}, '
+          'message=${_redactErrorForMetadata(error.message)})';
+    }
+    if (error is FirebaseException) {
+      return 'FirebaseException(plugin=${error.plugin}, code=${error.code}, '
+          'message=${_redactErrorForMetadata(error.message ?? '')})';
+    }
+    return '${error.runtimeType}: ${_redactErrorForMetadata(error.toString())}';
+  }
+
+  @visibleForTesting
+  static bool isCloudApiUnavailableReservationError(Object error) {
+    if (error is! CloudUsageServiceException) return false;
+    final code = error.code.trim().toLowerCase();
+    return code == 'unimplemented' ||
+        code == 'unavailable' ||
+        code.startsWith('http_404') ||
+        code.startsWith('http_501') ||
+        code.startsWith('http_502') ||
+        code.startsWith('http_503') ||
+        code.startsWith('http_504');
   }
 
   Future<void> _cancelUploadReservationBestEffort({
@@ -885,16 +920,27 @@ class CloudService {
       requestId = uploadRequestId;
       final fileName = p.basename(uploadFile.path);
       final preflightMetadata = preflight.toFirestoreMetadata();
-      reservation = await _cloudUsageService.prepareCloudUpload(
-        requestId: uploadRequestId,
-        fileName: fileName,
-        fileSize: fileSize,
-        contentType: _contentTypeForVideoPath(uploadFile.path),
-        albumName: albumName,
-        source: 'library_upload',
-        isFavorite: isFavorite,
-        metadata: preflightMetadata,
-      );
+      try {
+        reservation = await _cloudUsageService.prepareCloudUpload(
+          requestId: uploadRequestId,
+          fileName: fileName,
+          fileSize: fileSize,
+          contentType: _contentTypeForVideoPath(uploadFile.path),
+          albumName: albumName,
+          source: 'library_upload',
+          isFavorite: isFavorite,
+          metadata: preflightMetadata,
+        );
+      } catch (e) {
+        if (isCloudApiUnavailableReservationError(e)) {
+          print(
+            '[CloudService][Diag] immediate_upload_reservation_unavailable '
+            'client_completion_fallback=false '
+            'reason=${_safeCloudUploadErrorSummary(e)}',
+          );
+        }
+        rethrow;
+      }
       videoId = reservation.videoId;
       final storagePath = reservation.storagePath;
       final thumbnailStoragePath = reservation.thumbnailStoragePath;
@@ -1016,6 +1062,11 @@ class CloudService {
       print(
         '[CloudService] ✗ 즉시 업로드 실패 '
         '(code=${detail.code}, retryable=${detail.retryable})',
+      );
+      print(
+        '[CloudService][Diag] immediate_upload_error '
+        'detailCode=${detail.code} retryable=${detail.retryable} '
+        'error=${_safeCloudUploadErrorSummary(e)}',
       );
       logThumbnailDiagnostics('failure');
       return null;
@@ -3436,6 +3487,7 @@ class VideoMetadata {
   final String uid;
   final String fileName;
   final String storagePath;
+  final String? localPath;
   final String albumName;
   final bool isFavorite;
   final int fileSize;
@@ -3463,6 +3515,7 @@ class VideoMetadata {
     required this.uid,
     required this.fileName,
     required this.storagePath,
+    this.localPath,
     required this.albumName,
     required this.isFavorite,
     required this.fileSize,
@@ -3497,15 +3550,16 @@ class VideoMetadata {
       uid: _readString(data['uid']),
       fileName: _readString(data['fileName']),
       storagePath: _readString(data['storagePath']),
+      localPath: _readNullableString(data['localPath']),
       albumName: _readString(data['albumName']),
       isFavorite: data['isFavorite'] ?? false,
       fileSize: _readInt(data['fileSize']) ?? 0,
       uploadStatus: _readString(data['uploadStatus'], fallback: 'unknown'),
       uploadProgress: _readInt(data['uploadProgress']) ?? 0,
       downloadUrl: _readNullableString(data['downloadUrl']),
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
-      updatedAt: (data['updatedAt'] as Timestamp?)?.toDate(),
-      completedAt: (data['completedAt'] as Timestamp?)?.toDate(),
+      createdAt: _readDate(data['createdAt']),
+      updatedAt: _readDate(data['updatedAt']),
+      completedAt: _readDate(data['completedAt']),
       errorCopy: data['errorCopy'] as String?,
       lifecycleState: _readString(data['lifecycleState'], fallback: 'active'),
       cloudState: _readString(data['cloudState'], fallback: 'active'),
@@ -3575,26 +3629,71 @@ int? _readInt(Object? value) {
   return null;
 }
 
+List<String> _readStringList(Object? value) {
+  if (value is Iterable) {
+    return value.map(_readString).where((item) => item.isNotEmpty).toList();
+  }
+  return const <String>[];
+}
+
+DateTime? _readDate(Object? value) {
+  if (value is Timestamp) return value.toDate();
+  if (value is DateTime) return value;
+  if (value is String) return DateTime.tryParse(value);
+  return null;
+}
+
 class ProjectCloudMetadata {
   final String projectId;
   final String localProjectId;
   final String uid;
+  final String title;
+  final List<String> clipPaths;
+  final int clipCount;
+  final String folderName;
+  final String lockState;
+  final DateTime? clientCreatedAt;
+  final DateTime? clientUpdatedAt;
   final DateTime? lastSyncedAt;
+  final bool deleted;
 
   const ProjectCloudMetadata({
     required this.projectId,
     required this.localProjectId,
     required this.uid,
+    this.title = '',
+    this.clipPaths = const <String>[],
+    this.clipCount = 0,
+    this.folderName = '',
+    this.lockState = 'unlocked',
+    this.clientCreatedAt,
+    this.clientUpdatedAt,
     this.lastSyncedAt,
+    this.deleted = false,
   });
 
   factory ProjectCloudMetadata.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
+    return ProjectCloudMetadata.fromMap(doc.id, data);
+  }
+
+  factory ProjectCloudMetadata.fromMap(
+    String projectId,
+    Map<String, dynamic> data,
+  ) {
     return ProjectCloudMetadata(
-      projectId: doc.id,
-      localProjectId: data['localProjectId'] as String? ?? '',
-      uid: data['uid'] as String? ?? '',
-      lastSyncedAt: (data['lastSyncedAt'] as Timestamp?)?.toDate(),
+      projectId: projectId,
+      localProjectId: _readString(data['localProjectId']),
+      uid: _readString(data['uid']),
+      title: _readString(data['title']),
+      clipPaths: _readStringList(data['clipPaths']),
+      clipCount: _readInt(data['clipCount']) ?? 0,
+      folderName: _readString(data['folderName']),
+      lockState: _readString(data['lockState'], fallback: 'unlocked'),
+      clientCreatedAt: _readDate(data['clientCreatedAt']),
+      clientUpdatedAt: _readDate(data['clientUpdatedAt']),
+      lastSyncedAt: _readDate(data['lastSyncedAt']),
+      deleted: data['deleted'] == true,
     );
   }
 }

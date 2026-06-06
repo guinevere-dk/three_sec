@@ -57,6 +57,39 @@ void main() {
       },
     );
 
+    test(
+      'accepts saved fallback capture duration without normalization',
+      () async {
+        var normalizerCalled = false;
+        final source = await writeFile('fallback_capture.mp4', 128 * 1024);
+        final service = CloudUploadPreflightService(
+          cacheDirProvider: () async => tempDir,
+          probeReader: (file) async => CloudUploadVideoProbe(
+            durationMs: kTargetCaptureMs + 1,
+            width: 1080,
+            height: 1920,
+            fileSize: await file.length(),
+            estimatedBitrate: 300 * 1000,
+          ),
+          normalizer: (_, _) async {
+            normalizerCalled = true;
+            return null;
+          },
+        );
+
+        final result = await service.prepareForStandardUpload(source);
+
+        expect(result.decision, CloudUploadPreflightDecision.readyOriginal);
+        expect(result.uploadFile?.path, source.path);
+        expect(result.canUpload, isTrue);
+        expect(normalizerCalled, isFalse);
+        expect(
+          result.toFirestoreMetadata()['durationMs'],
+          kTargetCaptureMs + 1,
+        );
+      },
+    );
+
     test('normalizes long or high-resolution input before upload', () async {
       final source = await writeFile('raw_4k.mov', 8 * 1024 * 1024);
       final service = CloudUploadPreflightService(

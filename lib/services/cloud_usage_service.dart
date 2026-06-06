@@ -138,7 +138,35 @@ class CloudUsageService {
         )
         .timeout(_timeout);
 
-    final decoded = _decodeResponse(response.body);
+    final decoded = _tryDecodeResponse(response.body);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      final error = decoded?['error'];
+      if (error is Map) {
+        final normalized = Map<String, dynamic>.from(error);
+        throw CloudUsageServiceException(
+          code: _normalizeCallableStatus(
+            _readString(normalized['status'], fallback: 'unknown'),
+          ),
+          message: _readString(
+            normalized['message'],
+            fallback: 'Cloud function failed.',
+          ),
+          details: normalized['details'],
+        );
+      }
+      throw CloudUsageServiceException(
+        code: 'http_${response.statusCode}',
+        message: 'Cloud function HTTP request failed.',
+      );
+    }
+
+    if (decoded == null) {
+      throw const CloudUsageServiceException(
+        code: 'invalid_response',
+        message: 'Cloud function response was not valid JSON.',
+      );
+    }
+
     final error = decoded['error'];
     if (error is Map) {
       final normalized = Map<String, dynamic>.from(error);
@@ -151,13 +179,6 @@ class CloudUsageService {
           fallback: 'Cloud function failed.',
         ),
         details: normalized['details'],
-      );
-    }
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw CloudUsageServiceException(
-        code: 'http_${response.statusCode}',
-        message: 'Cloud function HTTP request failed.',
       );
     }
 
@@ -192,20 +213,16 @@ class CloudUsageService {
     );
   }
 
-  Map<String, dynamic> _decodeResponse(String body) {
+  Map<String, dynamic>? _tryDecodeResponse(String body) {
     try {
       final decoded = jsonDecode(body);
       if (decoded is Map) {
         return Map<String, dynamic>.from(decoded);
       }
     } catch (_) {
-      // Handled by invalid_response below.
+      return null;
     }
-
-    throw const CloudUsageServiceException(
-      code: 'invalid_response',
-      message: 'Cloud function response was not valid JSON.',
-    );
+    return null;
   }
 
   static String _normalizeCallableStatus(String status) {

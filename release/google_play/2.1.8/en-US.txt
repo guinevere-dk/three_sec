@@ -1,0 +1,3 @@
+Fixed an issue where Standard plan recordings could remain local instead of uploading to Cloud.
+Fixed Cloud Project visibility when signing in to the same account on another device.
+Stabilized Project default-folder counts during folder navigation.

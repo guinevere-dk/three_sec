@@ -165,15 +165,20 @@ class _ProjectScreenState extends State<ProjectScreen> {
     );
   }
 
-  Future<void> _loadProjectsFromCurrentFolder() async {
+  Future<void> _loadProjectsFromCurrentFolder(String folderName) async {
+    final activeFolder = folderName.trim();
     await videoManager.loadProjects();
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    if (_isInFolderDetail &&
+        activeFolder.isNotEmpty &&
+        videoManager.currentVlogFolder.isEmpty) {
+      videoManager.currentVlogFolder = activeFolder;
+    }
+    setState(() {});
   }
 
   int _projectCountInFolder(String folderName) {
-    return videoManager.vlogProjects
-        .where((p) => p.folderName == folderName)
-        .length;
+    return videoManager.projectCountInFolder(folderName);
   }
 
   bool _hasLocalProjectClip(VlogClip clip) {
@@ -374,7 +379,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
                                 _selectedProjectIds.clear();
                                 _isProjectSelectionMode = false;
                               });
-                              _loadProjectsFromCurrentFolder();
+                              _loadProjectsFromCurrentFolder(folderName);
                             }
                           },
                           onLongPress: canSelect
@@ -424,8 +429,8 @@ class _ProjectScreenState extends State<ProjectScreen> {
   }
 
   Widget _buildDetailView() {
-    // Use filteredProjects instead of vlogProjects
-    final projects = videoManager.filteredProjects;
+    final currentFolder = videoManager.currentVlogFolder;
+    final projects = videoManager.projectsInFolder(currentFolder);
     final isFreeUser = !UserStatusManager().isStandardOrAbove();
 
     return Scaffold(
@@ -474,7 +479,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
                       Text(
                         _isProjectSelectionMode
                             ? "${_selectedProjectIds.length}개 선택됨"
-                            : videoManager.currentVlogFolder,
+                            : currentFolder,
                         style: const TextStyle(
                           color: MoaDesignTokens.textPrimary,
                           fontSize: 16,
@@ -983,9 +988,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
       currentFolder: videoManager.currentVlogFolder,
       excludeFolders: const ["휴지통"],
       itemSubtitleBuilder: (folderName) {
-        final count = videoManager.vlogProjects
-            .where((p) => p.folderName == folderName)
-            .length;
+        final count = videoManager.projectCountInFolder(folderName);
         return '$count projects';
       },
     );
