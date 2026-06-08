@@ -1,0 +1,7 @@
+Improved media import, editing, and capture stability.
+
+- Fixed clip registration order when importing multiple clips from multiple videos.
+- Mixed Cloud and Clip items by capture date in the library.
+- Added clearer progress and state reporting while saving imported clips.
+- Improved per-clip filters and brightness adjustments in the editor.
+- Improved camera stabilization and smoother focus behavior while recording.

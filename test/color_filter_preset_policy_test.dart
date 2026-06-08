@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:three_s/managers/video_manager.dart';
 import 'package:three_s/models/vlog_project.dart';
 import 'package:three_s/utils/color_filter_preset_policy.dart';
 
@@ -121,5 +122,121 @@ void main() {
       expect(json['colorFilterPresetId'], kColorFilterPresetNone);
       expect(json['colorFilterIntensity'], 1.0);
     });
+
+    test('clip-specific color filters round-trip per clip', () {
+      final project = VlogProject.fromJson({
+        'id': 'project-3',
+        'title': 'Project',
+        'colorFilterPresetId': kColorFilterPresetWarmSunset,
+        'colorFilterIntensity': 0.4,
+        'clips': const [
+          {
+            'id': 'clip-1',
+            'path': 'clip_1.mp4',
+            'colorFilterPresetId': kColorFilterPresetClearSky,
+            'colorFilterIntensity': 0.65,
+          },
+          {'id': 'clip-2', 'path': 'clip_2.mp4'},
+        ],
+        'createdAt': DateTime(2026, 5, 21).toIso8601String(),
+        'updatedAt': DateTime(2026, 5, 21).toIso8601String(),
+      });
+
+      final json = project.toJson();
+      final clips = json['clips'] as List<Object?>;
+      final firstClip = clips.first as Map<String, Object?>;
+      final secondClip = clips[1] as Map<String, Object?>;
+
+      expect(project.colorFilterPresetId, kColorFilterPresetWarmSunset);
+      expect(project.colorFilterIntensity, 0.4);
+      expect(project.clips[0].colorFilterPresetId, kColorFilterPresetClearSky);
+      expect(project.clips[0].colorFilterIntensity, 0.65);
+      expect(project.clips[1].colorFilterPresetId, kColorFilterPresetNone);
+      expect(project.clips[1].colorFilterIntensity, 1.0);
+      expect(firstClip['colorFilterPresetId'], kColorFilterPresetClearSky);
+      expect(firstClip['colorFilterIntensity'], 0.65);
+      expect(secondClip['colorFilterPresetId'], kColorFilterPresetNone);
+      expect(secondClip['colorFilterIntensity'], 1.0);
+    });
+
+    test('project copy preserves clip-specific color filters', () {
+      final project = VlogProject(
+        id: 'project-4',
+        title: 'Project',
+        clips: [
+          VlogClip(
+            id: 'clip-1',
+            path: 'clip_1.mp4',
+            colorFilterPresetId: kColorFilterPresetClearSky,
+            colorFilterIntensity: 0.7,
+          ),
+          VlogClip(
+            id: 'clip-2',
+            path: 'clip_2.mp4',
+            colorFilterPresetId: kColorFilterPresetFilmGreen,
+            colorFilterIntensity: 0.25,
+          ),
+        ],
+        colorFilterPresetId: kColorFilterPresetWarmSunset,
+        colorFilterIntensity: 0.5,
+        createdAt: DateTime(2026, 5, 21),
+        updatedAt: DateTime(2026, 5, 21),
+      );
+
+      final copied = debugBuildCopiedProjectForFolder(
+        project: project,
+        targetFolder: 'target',
+        timestamp: DateTime(2026, 6, 5, 12),
+      );
+      final reopened = VlogProject.fromJson(copied.toJson());
+
+      expect(reopened.colorFilterPresetId, kColorFilterPresetWarmSunset);
+      expect(reopened.colorFilterIntensity, 0.5);
+      expect(reopened.clips[0].colorFilterPresetId, kColorFilterPresetClearSky);
+      expect(reopened.clips[0].colorFilterIntensity, 0.7);
+      expect(
+        reopened.clips[1].colorFilterPresetId,
+        kColorFilterPresetFilmGreen,
+      );
+      expect(reopened.clips[1].colorFilterIntensity, 0.25);
+      expect(reopened.clips[0].path, project.clips[0].path);
+      expect(reopened.clips[0].id, isNot(project.clips[0].id));
+    });
+
+    test(
+      'mixed clip filters keep project fallback separate from clip state',
+      () {
+        final project = VlogProject(
+          id: 'project-5',
+          title: 'Project',
+          clips: [
+            VlogClip(
+              id: 'clip-1',
+              path: 'clip_1.mp4',
+              colorFilterPresetId: kColorFilterPresetClearSky,
+              colorFilterIntensity: 0.7,
+            ),
+            VlogClip(id: 'clip-2', path: 'clip_2.mp4'),
+          ],
+          colorFilterPresetId: kColorFilterPresetWarmSunset,
+          colorFilterIntensity: 0.5,
+          createdAt: DateTime(2026, 5, 21),
+          updatedAt: DateTime(2026, 5, 21),
+        );
+
+        expect(hasActiveClipColorFilters(project.clips), isTrue);
+
+        final reopened = VlogProject.fromJson(project.toJson());
+        expect(reopened.colorFilterPresetId, kColorFilterPresetWarmSunset);
+        expect(reopened.colorFilterIntensity, 0.5);
+        expect(
+          reopened.clips[0].colorFilterPresetId,
+          kColorFilterPresetClearSky,
+        );
+        expect(reopened.clips[0].colorFilterIntensity, 0.7);
+        expect(reopened.clips[1].colorFilterPresetId, kColorFilterPresetNone);
+        expect(reopened.clips[1].colorFilterIntensity, 1.0);
+      },
+    );
   });
 }

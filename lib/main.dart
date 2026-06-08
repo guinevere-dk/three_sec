@@ -39,6 +39,7 @@ import 'screens/clip_extractor_screen.dart'; // ✅ 추가
 import 'theme/moa_design_tokens.dart';
 import 'theme/moa_theme.dart';
 import 'widgets/video_widgets.dart';
+import 'utils/media_import_order_policy.dart';
 import 'utils/quality_policy.dart';
 
 late List<CameraDescription> cameras;
@@ -2029,14 +2030,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
   List<PendingImportItem> _buildPendingImportItems(List<String> selectedItems) {
     final List<PendingImportItem> pendingItems =
-        selectedItems
-            .asMap()
-            .entries
+        orderMediaImportItemsForProcessing(selectedItems)
             .map(
               (entry) => PendingImportItem(
-                path: entry.value,
-                mediaType: _detectExternalMediaType(entry.value),
-                orderIndex: entry.key,
+                path: entry.item,
+                mediaType: _detectExternalMediaType(entry.item),
+                orderIndex: entry.effectiveIndex,
               ),
             )
             .toList(growable: false)

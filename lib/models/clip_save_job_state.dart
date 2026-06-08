@@ -151,9 +151,18 @@ class ClipSaveJobState {
     );
   }
 
+  int get terminalCount => completed + failed + skipped + canceled;
+
+  double get progressValue {
+    if (total <= 0) return 0.0;
+    return (terminalCount / total).clamp(0.0, 1.0).toDouble();
+  }
+
+  String percentText() => '${(progressValue * 100).round()}%';
+
   String progressText() {
     if (total == 0) return '0/0';
-    return '$completed/$total 완료 · 실행중 $running · 실패 $failed · 건너뜀 $skipped · 취소 $canceled';
+    return '${percentText()} · $completed/$total 완료 · 실행중 $running · 실패 $failed · 건너뜀 $skipped · 취소 $canceled';
   }
 
   bool get hasPendingOrActive => queue.any(

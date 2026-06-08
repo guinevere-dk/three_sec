@@ -1,8 +1,12 @@
 import 'dart:math' as math;
 
 const String kBrightnessAdjustmentScopeProjectWide = 'project_wide';
+const String kBrightnessAdjustmentScopeClipSpecific = 'clip_specific';
 
 String normalizeBrightnessAdjustmentScope(String? raw) {
+  if (raw == kBrightnessAdjustmentScopeClipSpecific) {
+    return kBrightnessAdjustmentScopeClipSpecific;
+  }
   return kBrightnessAdjustmentScopeProjectWide;
 }
 
@@ -149,6 +153,16 @@ Map<String, double> normalizeBrightnessAdjustments(Object? raw) {
 
 Map<String, double> brightnessAdjustmentsForProjectJson(Object? raw) {
   return normalizeBrightnessAdjustments(raw);
+}
+
+bool hasNonDefaultBrightnessAdjustments(Object? raw) {
+  final normalized = normalizeBrightnessAdjustments(raw);
+  for (final spec in kBrightnessAdjustmentSpecs) {
+    if ((normalized[spec.key] ?? spec.defaultValue) != spec.defaultValue) {
+      return true;
+    }
+  }
+  return false;
 }
 
 Map<String, double> brightnessAdjustmentsForNativePayload(Object? raw) {

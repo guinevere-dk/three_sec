@@ -22,6 +22,9 @@ class VlogClip {
   int timelineThumbDurationMs;
   int timelineThumbCount;
   List<String> timelineThumbPaths;
+  Map<String, double> brightnessAdjustments;
+  String colorFilterPresetId;
+  double colorFilterIntensity;
 
   VlogClip({
     String? id,
@@ -43,7 +46,17 @@ class VlogClip {
     this.timelineThumbDurationMs = 0,
     this.timelineThumbCount = 0,
     this.timelineThumbPaths = const [],
-  }) : id = id ?? '${DateTime.now().millisecondsSinceEpoch}_${path.hashCode}';
+    Map<String, double>? brightnessAdjustments,
+    String? colorFilterPresetId,
+    Object? colorFilterIntensity,
+  }) : id = id ?? '${DateTime.now().millisecondsSinceEpoch}_${path.hashCode}',
+       brightnessAdjustments = normalizeBrightnessAdjustments(
+         brightnessAdjustments,
+       ),
+       colorFilterPresetId = normalizeColorFilterPresetId(colorFilterPresetId),
+       colorFilterIntensity = normalizeColorFilterIntensity(
+         colorFilterIntensity,
+       );
 
   factory VlogClip.fromJson(Map<String, dynamic> json) {
     return VlogClip(
@@ -71,6 +84,13 @@ class VlogClip {
       timelineThumbPaths:
           (json['timelineThumbPaths'] as List?)?.whereType<String>().toList() ??
           const [],
+      brightnessAdjustments: brightnessAdjustmentsForProjectJson(
+        json['brightnessAdjustments'],
+      ),
+      colorFilterPresetId: normalizeColorFilterPresetId(
+        json['colorFilterPresetId'],
+      ),
+      colorFilterIntensity: json['colorFilterIntensity'],
     );
   }
 
@@ -95,6 +115,13 @@ class VlogClip {
       'timelineThumbDurationMs': timelineThumbDurationMs,
       'timelineThumbCount': timelineThumbCount,
       'timelineThumbPaths': timelineThumbPaths,
+      'brightnessAdjustments': brightnessAdjustmentsForProjectJson(
+        brightnessAdjustments,
+      ),
+      'colorFilterPresetId': normalizeColorFilterPresetId(colorFilterPresetId),
+      'colorFilterIntensity': normalizeColorFilterIntensity(
+        colorFilterIntensity,
+      ),
     };
   }
 
@@ -118,6 +145,9 @@ class VlogClip {
     int? timelineThumbDurationMs,
     int? timelineThumbCount,
     List<String>? timelineThumbPaths,
+    Map<String, double>? brightnessAdjustments,
+    String? colorFilterPresetId,
+    Object? colorFilterIntensity,
   }) {
     return VlogClip(
       id: id ?? this.id,
@@ -142,8 +172,22 @@ class VlogClip {
           timelineThumbDurationMs ?? this.timelineThumbDurationMs,
       timelineThumbCount: timelineThumbCount ?? this.timelineThumbCount,
       timelineThumbPaths: timelineThumbPaths ?? this.timelineThumbPaths,
+      brightnessAdjustments:
+          brightnessAdjustments ??
+          Map<String, double>.from(this.brightnessAdjustments),
+      colorFilterPresetId: colorFilterPresetId ?? this.colorFilterPresetId,
+      colorFilterIntensity: colorFilterIntensity ?? this.colorFilterIntensity,
     );
   }
+}
+
+bool hasActiveClipColorFilters(Iterable<VlogClip> clips) {
+  return clips.any(
+    (clip) =>
+        normalizeColorFilterPresetId(clip.colorFilterPresetId) !=
+            kColorFilterPresetNone &&
+        normalizeColorFilterIntensity(clip.colorFilterIntensity) > 0.0,
+  );
 }
 
 class VlogProject {
@@ -278,7 +322,9 @@ class VlogProject {
       'cloudSyncedAt': cloudSyncedAt?.toIso8601String(),
       'canvasAspectRatioPreset': canvasAspectRatioPreset,
       'canvasBackgroundMode': canvasBackgroundMode,
-      'brightnessAdjustmentScope': kBrightnessAdjustmentScopeProjectWide,
+      'brightnessAdjustmentScope': normalizeBrightnessAdjustmentScope(
+        brightnessAdjustmentScope,
+      ),
       'brightnessAdjustments': brightnessAdjustmentsForProjectJson(
         brightnessAdjustments,
       ),

@@ -140,6 +140,15 @@ class ImportState {
     return list;
   }
 
+  int get terminalCount => completed + failed + skipped + canceled;
+
+  double get progressValue {
+    if (total <= 0) return 0.0;
+    return (terminalCount / total).clamp(0.0, 1.0).toDouble();
+  }
+
+  String percentText() => '${(progressValue * 100).round()}%';
+
   String progressText() {
     if (total == 0) return '0/0';
     int ready = 0;
@@ -163,7 +172,7 @@ class ImportState {
       }
     }
 
-    return '처리완료 $completed · 처리중 $processing · 준비 $ready · 실패 $failed';
+    return '${percentText()} · 처리완료 $completed/$total · 처리중 $processing · 준비 $ready · 실패 $failed';
   }
 
   ImportState copyWith({
@@ -190,4 +199,3 @@ class ImportState {
     );
   }
 }
-

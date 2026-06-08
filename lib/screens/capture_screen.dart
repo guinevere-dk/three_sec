@@ -12,6 +12,7 @@ import '../constants/clip_policy.dart';
 import '../main.dart';
 import '../managers/video_manager.dart';
 import '../theme/moa_design_tokens.dart';
+import '../utils/camera_capture_policy.dart';
 import '../utils/haptics.dart';
 import '../utils/quality_policy.dart';
 
@@ -149,6 +150,9 @@ class _CaptureScreenState extends State<CaptureScreen>
   static const int _targetRecordingMilliseconds = kTargetCaptureMs;
   Timer? _recordingTimer;
   Offset? _tapPosition;
+  Offset? _lastAppliedFocusPoint;
+  DateTime? _lastAppliedFocusAt;
+  bool _isFocusUpdateInFlight = false;
   late AnimationController _focusAnimController;
 
   double _exposureOffset = 0.0;
@@ -749,6 +753,31 @@ class _CaptureScreenState extends State<CaptureScreen>
       awbFallback:
           'exposureModeAuto+focusModeAuto+fixedWhiteBalanceUnavailable',
     );
+    await _configureVideoStabilization(controller);
+
+    _isFocusUpdateInFlight = true;
+    try {
+      await controller.setFocusPoint(kCameraFocusDefaultPoint);
+      await controller.setExposurePoint(kCameraFocusDefaultPoint);
+      _lastAppliedFocusAt = DateTime.now();
+      _lastAppliedFocusPoint = kCameraFocusDefaultPoint;
+      _logCamera3a(
+        event: 'baseline',
+        target: 'AF_AE',
+        status: 'success',
+        point: kCameraFocusDefaultPoint,
+      );
+    } catch (e) {
+      _logCamera3a(
+        event: 'baseline',
+        target: 'AF_AE',
+        status: 'unsupported',
+        reason: e.toString(),
+        point: kCameraFocusDefaultPoint,
+      );
+    } finally {
+      _isFocusUpdateInFlight = false;
+    }
 
     try {
       final minExposure = await controller.getMinExposureOffset();
@@ -773,6 +802,44 @@ class _CaptureScreenState extends State<CaptureScreen>
       });
     } catch (e) {
       debugPrint('[Capture] Post-preview exposure/zoom setup failed: $e');
+    }
+  }
+
+  Future<void> _configureVideoStabilization(CameraController controller) async {
+    try {
+      final supportedModes = await controller
+          .getSupportedVideoStabilizationModes();
+      final requestedMode = preferredVideoStabilizationMode(supportedModes);
+      if (requestedMode == VideoStabilizationMode.off) {
+        _logCamera3a(
+          event: 'request',
+          target: 'video_stabilization',
+          status: 'unsupported',
+          reason: 'device_reports_no_supported_video_stabilization_mode',
+        );
+        return;
+      }
+      _logCamera3a(
+        event: 'request',
+        target: 'video_stabilization',
+        status: 'requested',
+        reason: requestedMode.name,
+      );
+      await controller.setVideoStabilizationMode(requestedMode);
+      _logCamera3a(
+        event: 'request',
+        target: 'video_stabilization',
+        status: 'success',
+        reason: controller.value.videoStabilizationMode.name,
+      );
+    } catch (e) {
+      _logCamera3a(
+        event: 'request',
+        target: 'video_stabilization',
+        status: 'unsupported',
+        reason: e.toString(),
+      );
+      debugPrint('[Capture] setVideoStabilizationMode failed: $e');
     }
   }
 
@@ -896,6 +963,9 @@ class _CaptureScreenState extends State<CaptureScreen>
 
       _controller = newController;
       _cameraError = null;
+      _lastAppliedFocusAt = null;
+      _lastAppliedFocusPoint = null;
+      _isFocusUpdateInFlight = false;
       _focusAnimController.reset();
       _showExposureSlider = false;
       _flowState = _CaptureFlowState.idle;
@@ -1156,70 +1226,107 @@ class _CaptureScreenState extends State<CaptureScreen>
     }
 
     final Offset localPosition = d.localPosition;
-    final double x = localPosition.dx / c.maxWidth;
-    final double y = localPosition.dy / c.maxHeight;
-    final point = Offset(x, y);
-    try {
-      _logCamera3a(
-        event: 'request',
-        target: 'AF',
-        status: 'requested',
-        point: point,
-      );
-      await _controller!.setFocusPoint(point);
-      _logCamera3a(
-        event: 'converge',
-        target: 'AF',
-        status: 'success',
-        point: point,
-      );
-    } catch (e) {
-      _logCamera3a(
-        event: 'converge',
-        target: 'AF',
-        status: 'failed',
-        reason: e.toString(),
-        point: point,
-      );
-    }
-    try {
-      _logCamera3a(
-        event: 'request',
-        target: 'AE',
-        status: 'requested',
-        point: point,
-      );
-      await _controller!.setExposurePoint(point);
-      _logCamera3a(
-        event: 'converge',
-        target: 'AE',
-        status: 'success',
-        point: point,
-      );
-    } catch (e) {
-      _logCamera3a(
-        event: 'converge',
-        target: 'AE',
-        status: 'failed',
-        reason: e.toString(),
-        point: point,
-      );
-    }
-    _logCamera3a(
-      event: 'converge',
-      target: 'AWB',
-      status: 'unsupported',
-      reason: 'flutter_camera_api_no_awb_point_or_state_query',
-      awbFallback:
-          'exposureModeAuto+focusModeAuto+fixedWhiteBalanceUnavailable',
-      point: point,
+    final double x = c.maxWidth <= 0 ? 0.5 : localPosition.dx / c.maxWidth;
+    final double y = c.maxHeight <= 0 ? 0.5 : localPosition.dy / c.maxHeight;
+    final point = normalizeCameraFocusPoint(Offset(x, y));
+    final now = DateTime.now();
+    final skipFocusUpdate = shouldSkipCameraFocusUpdate(
+      isFocusUpdateInFlight: _isFocusUpdateInFlight,
+      now: now,
+      lastAppliedAt: _lastAppliedFocusAt,
+      lastAppliedPoint: _lastAppliedFocusPoint,
+      requestedPoint: point,
     );
-    setState(() {
-      _tapPosition = localPosition;
-      _showExposureSlider = true;
-    });
-    _focusAnimController.forward(from: 0.0);
-    _startExposureTimer();
+    if (skipFocusUpdate) {
+      _logCamera3a(
+        event: 'throttle',
+        target: 'AF_AE',
+        status: 'skipped',
+        reason: _isFocusUpdateInFlight
+            ? 'focus_update_in_flight'
+            : 'nearby_focus_request_within_smoothing_window',
+        point: point,
+      );
+      setState(() {
+        _tapPosition = localPosition;
+        _showExposureSlider = true;
+      });
+      _focusAnimController.forward(from: 0.0);
+      _startExposureTimer();
+      return;
+    }
+
+    _lastAppliedFocusAt = now;
+    _lastAppliedFocusPoint = point;
+    _isFocusUpdateInFlight = true;
+
+    try {
+      try {
+        _logCamera3a(
+          event: 'request',
+          target: 'AF',
+          status: 'requested',
+          point: point,
+        );
+        await _controller!.setFocusPoint(point);
+        _logCamera3a(
+          event: 'converge',
+          target: 'AF',
+          status: 'success',
+          point: point,
+        );
+        _lastAppliedFocusAt = DateTime.now();
+        _lastAppliedFocusPoint = point;
+      } catch (e) {
+        _logCamera3a(
+          event: 'converge',
+          target: 'AF',
+          status: 'failed',
+          reason: e.toString(),
+          point: point,
+        );
+      }
+      try {
+        _logCamera3a(
+          event: 'request',
+          target: 'AE',
+          status: 'requested',
+          point: point,
+        );
+        await _controller!.setExposurePoint(point);
+        _logCamera3a(
+          event: 'converge',
+          target: 'AE',
+          status: 'success',
+          point: point,
+        );
+      } catch (e) {
+        _logCamera3a(
+          event: 'converge',
+          target: 'AE',
+          status: 'failed',
+          reason: e.toString(),
+          point: point,
+        );
+      }
+      _logCamera3a(
+        event: 'converge',
+        target: 'AWB',
+        status: 'unsupported',
+        reason: 'flutter_camera_api_no_awb_point_or_state_query',
+        awbFallback:
+            'exposureModeAuto+focusModeAuto+fixedWhiteBalanceUnavailable',
+        point: point,
+      );
+      setState(() {
+        _tapPosition = localPosition;
+        _showExposureSlider = true;
+      });
+      _focusAnimController.forward(from: 0.0);
+      _startExposureTimer();
+    } finally {
+      _isFocusUpdateInFlight = false;
+    }
   }
 
   void _startExposureTimer() {

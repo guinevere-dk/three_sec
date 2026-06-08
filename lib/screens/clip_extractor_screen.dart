@@ -13,6 +13,8 @@ import '../managers/video_manager.dart';
 import '../managers/user_status_manager.dart';
 import '../models/clip_save_job_state.dart';
 import '../theme/moa_design_tokens.dart';
+import '../utils/clip_extraction_exit_policy.dart';
+import '../utils/media_import_order_policy.dart';
 
 class ClipExtractorScreen extends StatefulWidget {
   final File videoFile;
@@ -34,7 +36,7 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
   );
   static const int _fixedWindowMs = kTargetClipMs;
   static const int _minValidClipBytes = 8 * 1024;
-  static const int _minValidClipDurationMs = kTargetClipMs;
+  static const int _minValidClipDurationMs = kTargetClipMinAcceptableMs;
   static const int _minEstimatedFrameCount = 6;
   static const double _validationMinFps = 10.0;
   static const bool _allowParallelClipSave = bool.fromEnvironment(
@@ -49,6 +51,9 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
   bool _isInitialized = false;
   bool _isPlaying = false;
   bool _isExporting = false;
+  String _extractionProgressLabel = '대기 중';
+  String _extractionProgressDetail = '';
+  double _extractionProgressValue = 0.0;
   bool _isVideoInitializing = false;
   bool _isDisposing = false;
   bool _isDisposed = false;
@@ -115,6 +120,51 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
     );
     _clipQueueListenerAttached = false;
     _clipQueueListenerManager = null;
+  }
+
+  String get _extractionPercentText =>
+      '${(_extractionProgressValue.clamp(0.0, 1.0) * 100).round()}%';
+
+  bool get _isExtractionOrSaveActive {
+    final manager = _videoManager;
+    final saveState = manager?.clipSaveQueueStateNotifier.value;
+    return shouldBlockClipExtractionExit(
+      isExporting: _isExporting,
+      hasActiveTrackedSaves:
+          saveState != null &&
+          _activeExtractionJobIds.isNotEmpty &&
+          saveState.hasPendingOrActive,
+    );
+  }
+
+  void _setExtractionProgress({
+    required String label,
+    required double value,
+    String detail = '',
+    bool rebuild = true,
+  }) {
+    final clamped = value.clamp(0.0, 1.0).toDouble();
+    _extractionProgressLabel = label;
+    _extractionProgressValue = clamped;
+    _extractionProgressDetail = detail;
+    debugPrint(
+      '[ClipExtractor][Progress] label=$label percent=${(clamped * 100).round()} detail=$detail activeJobs=${_activeExtractionJobIds.length}',
+    );
+    if (rebuild && mounted && !_isDisposed) {
+      setState(() {});
+    }
+  }
+
+  void _handleBlockedBackDuringExtraction() {
+    _setExtractionProgress(
+      label: '저장 상태 확인 중',
+      value: _extractionProgressValue,
+      detail: '처리 중에는 완료 또는 오류 상태가 표시될 때까지 기다려주세요.',
+    );
+    debugPrint(
+      '[ClipExtractor][BackGuard] blocked active=$_isExtractionOrSaveActive label=$_extractionProgressLabel percent=$_extractionPercentText jobs=${_activeExtractionJobIds.length}',
+    );
+    Fluttertoast.showToast(msg: '클립을 저장 중입니다. 진행률을 확인해주세요.');
   }
 
   Future<void> _initVideoPlayer() async {
@@ -226,8 +276,21 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
         .where((job) => _activeExtractionJobIds.contains(job.id))
         .toList(growable: false);
     if (trackedJobs.isEmpty) return;
+    final terminalCount = trackedJobs.where(_isTerminalStatus).length;
+    final saveProgress = trackedJobs.isEmpty
+        ? 0.0
+        : terminalCount / trackedJobs.length;
+    _setExtractionProgress(
+      label: '클립 저장 중',
+      value: 0.72 + (saveProgress * 0.28),
+      detail: '${(saveProgress * 100).round()}% · ${state.progressText()}',
+      rebuild: false,
+    );
     final allDone = trackedJobs.every(_isTerminalStatus);
-    if (!allDone) return;
+    if (!allDone) {
+      if (mounted) setState(() {});
+      return;
+    }
 
     _clipQueueCompletionHandled = true;
     final successCount = trackedJobs
@@ -246,6 +309,15 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
     Fluttertoast.showToast(
       msg:
           '저장 완료: 성공 $successCount · 실패 $failedCount · 건너뜀 $skippedCount · 취소 $canceledCount',
+    );
+    _setExtractionProgress(
+      label: failedCount == 0 && skippedCount == 0 && canceledCount == 0
+          ? '저장 완료'
+          : '저장 결과 확인 필요',
+      value: 1.0,
+      detail:
+          '성공 $successCount · 실패 $failedCount · 건너뜀 $skippedCount · 취소 $canceledCount',
+      rebuild: false,
     );
 
     if (!_mountedAndReady) return;
@@ -492,8 +564,9 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
   Future<void> _issueWindowSeek(int targetMs, {required String reason}) async {
     if (!_mountedAndReady ||
         !_isFixedWindowMode ||
-        !_controller.value.isInitialized)
+        !_controller.value.isInitialized) {
       return;
+    }
     if (_isWindowSeekInFlight) return;
     final totalMs = _controller.value.duration.inMilliseconds;
     final clampedTargetMs = _clampWindowStartMs(targetMs, totalMs);
@@ -549,8 +622,9 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
   Future<void> _issueFreeSeek(int targetMs, {required String reason}) async {
     if (!_mountedAndReady ||
         _isFixedWindowMode ||
-        !_controller.value.isInitialized)
+        !_controller.value.isInitialized) {
       return;
+    }
     if (_isDisposing || _isVideoInitializing || _isFreeSeekInFlight) return;
 
     final totalMs = _controller.value.duration.inMilliseconds;
@@ -580,8 +654,9 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
   Future<void> _issueLoopSeek(int targetMs, {required String reason}) async {
     if (!_mountedAndReady ||
         !_controller.value.isInitialized ||
-        _isWindowDragging)
+        _isWindowDragging) {
       return;
+    }
     final now = DateTime.now();
     final clampedTargetMs = _clampWindowStartMs(
       targetMs,
@@ -656,8 +731,9 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
   void _updateWindowStartFromSlider(double newValue) {
     if (!_mountedAndReady ||
         !_isFixedWindowMode ||
-        !_controller.value.isInitialized)
+        !_controller.value.isInitialized) {
       return;
+    }
     final totalMs = _controller.value.duration.inMilliseconds;
     final next = _clampWindowStartMs(newValue.toInt(), totalMs);
     if (next == _windowStartMs) return;
@@ -777,8 +853,9 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
 
   Future<void> _extractClips() async {
     if (_selectedSegments.isEmpty) return;
-    if (!_mountedAndReady || _isExporting || !_controller.value.isInitialized)
+    if (!_mountedAndReady || _isExporting || !_controller.value.isInitialized) {
       return;
+    }
     final opToken = ++_extractOpToken;
     final videoManager =
         _videoManager ?? Provider.of<VideoManager>(context, listen: false);
@@ -822,6 +899,11 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
     }
 
     setState(() => _isExporting = true);
+    _setExtractionProgress(
+      label: '클립 추출 준비 중',
+      value: 0.05,
+      detail: '선택 구간 ${normalizedSegments.length}개 확인 중',
+    );
 
     final userStatusManager = UserStatusManager();
     final docDir = await videoManager
@@ -856,6 +938,11 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
 
     try {
       debugPrint('[ClipExtractor] 🎥 클립 추출 시작: ${segmentsPayload.length}개 구간');
+      _setExtractionProgress(
+        label: '클립 추출 중',
+        value: 0.18,
+        detail: '선택 구간 ${segmentsPayload.length}개를 잘라내는 중',
+      );
 
       final result = await _platform.invokeMethod('extractClips', {
         'inputPath': widget.videoFile.path,
@@ -868,6 +955,11 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
       if (!_mountedAndReady || !_isExtractOpActive(opToken)) return;
 
       if (result != null) {
+        _setExtractionProgress(
+          label: '추출 결과 확인 중',
+          value: 0.62,
+          detail: '생성된 클립 파일을 검증하는 중',
+        );
         // 결과는 생성된 파일 경로들의 리스트 (JSON String or List)
         // 네이티브 구현상 List<String> 반환 예상됨 (확인 필요) 혹은 성공 메시지일 수 있음.
         // MainActivity.kt의 extractClips를 보면 결과를 알 수 있음.
@@ -882,12 +974,19 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
         final expectedCount = segmentsPayload.length;
         final clipFiles = _collectNativeResultFiles(result, dir);
         final validClipFiles = <File>[];
-        for (final file in clipFiles) {
+        for (var index = 0; index < clipFiles.length; index++) {
+          final file = clipFiles[index];
           if (!_isExtractOpActive(opToken)) return;
           final valid = await _isClipFileValid(file);
           if (valid) {
             validClipFiles.add(file);
           }
+          _setExtractionProgress(
+            label: '추출 결과 확인 중',
+            value: 0.62 + (((index + 1) / clipFiles.length) * 0.1),
+            detail:
+                '검증 ${index + 1}/${clipFiles.length} · 유효 ${validClipFiles.length}',
+          );
         }
 
         validClipFiles.sort((a, b) {
@@ -902,11 +1001,23 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
           );
         }
 
+        final registrationSegments =
+            orderImportedClipSegmentsForAlbumRegistration(normalizedSegments);
+        final registrationFiles = validClipFiles
+            .take(registrationSegments.length)
+            .toList(growable: false)
+            .reversed
+            .toList(growable: false);
         final now = DateTime.now();
-        final jobs = validClipFiles
+        debugPrint(
+          '[ClipExtractor][SaveOrder] source=${p.basename(widget.videoFile.path)} '
+          'segments=${registrationSegments.join(",")} '
+          'files=${registrationFiles.map((file) => p.basename(file.path)).join(",")}',
+        );
+        final jobs = registrationFiles
             .asMap()
             .entries
-            .where((entry) => entry.key < normalizedSegments.length)
+            .where((entry) => entry.key < registrationSegments.length)
             .map(
               (entry) => ClipSaveJob.queued(
                 id: 'clip_save_${entry.key}_${entry.value.path.hashCode}_${now.microsecondsSinceEpoch}',
@@ -915,14 +1026,15 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
                   widget.targetAlbum,
                   p.basename(entry.value.path),
                 ),
-                startMs: normalizedSegments[entry.key],
-                endMs: (normalizedSegments[entry.key] + kTargetClipMs).clamp(
+                startMs: registrationSegments[entry.key],
+                endMs: (registrationSegments[entry.key] + kTargetClipMs).clamp(
                   0,
                   totalMs,
                 ),
                 durationMs: kTargetClipMs,
                 sourceVideoId: widget.videoFile.path,
                 maxRetry: VideoManager.clipSaveMaxRetry,
+                now: now.add(Duration(microseconds: entry.key)),
               ),
             )
             .toList(growable: false);
@@ -935,6 +1047,11 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
           ..clear()
           ..addAll(jobs.map((job) => job.id));
         _clipQueueCompletionHandled = false;
+        _setExtractionProgress(
+          label: '클립 저장 시작',
+          value: 0.72,
+          detail: '저장 작업 ${jobs.length}개를 큐에 등록하는 중',
+        );
         videoManager.enqueueClipSaveJobs(
           jobs,
           concurrency: _resolveClipSaveConcurrency(),
@@ -952,12 +1069,87 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
       }
     } catch (e) {
       debugPrint('[ClipExtractor] ✗ 추출 실패: $e');
+      _setExtractionProgress(
+        label: '클립 추출 실패',
+        value: _extractionProgressValue,
+        detail: e.toString(),
+      );
       Fluttertoast.showToast(msg: "클립 추출 실패: $e");
     } finally {
       if (_mountedAndReady && _isExtractOpActive(opToken)) {
         setState(() => _isExporting = false);
       }
     }
+  }
+
+  Widget _buildExtractionProgressBanner() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.white24),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: MoaDesignTokens.accentStrong,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    _extractionProgressLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                Text(
+                  _extractionPercentText,
+                  style: const TextStyle(
+                    color: MoaDesignTokens.accentStrong,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            LinearProgressIndicator(
+              value: _extractionProgressValue.clamp(0.0, 1.0),
+              minHeight: 5,
+              borderRadius: BorderRadius.circular(999),
+              color: MoaDesignTokens.accentStrong,
+              backgroundColor: Colors.white24,
+            ),
+            if (_extractionProgressDetail.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                _extractionProgressDetail,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white70, fontSize: 11),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -971,376 +1163,402 @@ class _ClipExtractorScreenState extends State<ClipExtractorScreen> {
       );
     }
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        leading: IconButton(
-          icon: const Icon(Icons.close, color: Colors.white),
-          onPressed: _isExporting
-              ? null
-              : () {
-                  final manager = _videoManager;
-                  if (manager != null && _activeExtractionJobIds.isNotEmpty) {
-                    manager.requestCancelClipSaveQueue();
-                  }
-                  Navigator.pop(context);
-                },
-        ),
-        title: const Text('원하는 장면 담기', style: TextStyle(color: Colors.white)),
-        actions: [
-          TextButton(
-            onPressed: _selectedSegments.isEmpty || _isExporting
-                ? null
-                : _extractClips,
-            child: Text(
-              _isExporting ? "저장 중..." : "완료 (${_selectedSegments.length})",
-              style: TextStyle(
-                color: _selectedSegments.isEmpty
-                    ? Colors.grey
-                    : MoaDesignTokens.accentStrong,
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-              ),
-            ),
+    return PopScope(
+      canPop: !_isExtractionOrSaveActive,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop || !_isExtractionOrSaveActive) return;
+        _handleBlockedBackDuringExtraction();
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          leading: IconButton(
+            icon: const Icon(Icons.close, color: Colors.white),
+            onPressed: () {
+              if (_isExtractionOrSaveActive) {
+                _handleBlockedBackDuringExtraction();
+                return;
+              }
+              final manager = _videoManager;
+              if (manager != null &&
+                  _activeExtractionJobIds.isNotEmpty &&
+                  manager.clipSaveQueueState.hasPendingOrActive) {
+                manager.requestCancelClipSaveQueue();
+              }
+              Navigator.pop(context);
+            },
           ),
-        ],
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            // 1. 비디오 프리뷰 (중앙)
-            Expanded(
-              child: Center(
-                child: AspectRatio(
-                  aspectRatio: _controller.value.aspectRatio,
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      VideoPlayer(_controller),
-                      _buildFixedWindowOverlay(),
-                      // 재생 오버레이
-                      if (!_isPlaying)
-                        Container(
-                          color: Colors.black26,
-                          child: const Icon(
-                            Icons.play_circle_fill,
-                            color: Colors.white70,
-                            size: 60,
-                          ),
-                        ),
-                      GestureDetector(
-                        onTap: _togglePlayPause,
-                        behavior: HitTestBehavior.opaque,
-                        child: const SizedBox.expand(),
-                      ),
-                    ],
-                  ),
+          title: const Text('원하는 장면 담기', style: TextStyle(color: Colors.white)),
+          actions: [
+            TextButton(
+              onPressed: _selectedSegments.isEmpty || _isExporting
+                  ? null
+                  : _extractClips,
+              child: Text(
+                _isExporting ? "저장 중..." : "완료 (${_selectedSegments.length})",
+                style: TextStyle(
+                  color: _selectedSegments.isEmpty
+                      ? Colors.grey
+                      : MoaDesignTokens.accentStrong,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
                 ),
               ),
-            ),
-
-            // 2. 컨트롤 컨트롤 (슬라이더 + 시간)
-            // 2. 컨트롤 컨트롤 (슬라이더 + 시간)
-            ValueListenableBuilder(
-              valueListenable: _controller,
-              builder: (context, VideoPlayerValue value, child) {
-                final duration = value.duration.inMilliseconds.toDouble();
-                final position = value.position.inMilliseconds.toDouble();
-                final totalMs = value.duration.inMilliseconds;
-                final startMs = _clampWindowStartMs(_windowStartMs, totalMs);
-                final sliderValue = _isFixedWindowMode
-                    ? startMs.toDouble()
-                    : position;
-                final sliderMax = _isFixedWindowMode
-                    ? (duration - _fixedWindowMs).clamp(1.0, duration)
-                    : duration;
-
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Row(
-                    children: [
-                      Text(
-                        _formatDuration(value.position),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                        ),
-                      ),
-                      Expanded(
-                        child: SliderTheme(
-                          data: SliderTheme.of(context).copyWith(
-                            trackHeight: 2.0,
-                            thumbShape: const RoundSliderThumbShape(
-                              enabledThumbRadius: 6.0,
-                            ),
-                            overlayShape: const RoundSliderOverlayShape(
-                              overlayRadius: 14.0,
-                            ),
-                            activeTrackColor: MoaDesignTokens.accentStrong,
-                            inactiveTrackColor: Colors.grey,
-                            thumbColor: Colors.white,
-                          ),
-                          child: Slider(
-                            value: sliderValue.clamp(0.0, sliderMax),
-                            min: 0.0,
-                            max: sliderMax,
-                            onChangeStart: (_) {
-                              if (_isFixedWindowMode) {
-                                _isWindowDragging = true;
-                              }
-                            },
-                            onChanged: (newValue) {
-                              if (_isFixedWindowMode) {
-                                _updateWindowStartFromSlider(newValue);
-                              } else {
-                                unawaited(
-                                  _issueFreeSeek(
-                                    newValue.toInt(),
-                                    reason: 'slider',
-                                  ),
-                                );
-                              }
-                            },
-                            onChangeEnd: (_) {
-                              if (_isFixedWindowMode) {
-                                _isWindowDragging = false;
-                                _flushWindowSeek();
-                              }
-                            },
-                          ),
-                        ),
-                      ),
-                      Text(
-                        _formatDuration(value.duration),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-
-            if (_isFixedWindowMode)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  '${_formatDurationWithMillis(Duration(milliseconds: _windowStartMs))} ~ ${_formatDurationWithMillis(Duration(milliseconds: _windowEndMs(_controller.value.duration.inMilliseconds)))}',
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-
-            const SizedBox(height: 10),
-
-            // 3. 메인 버튼 (Add Clip) - 예쁜 아이콘 버튼
-            Center(
-              child: SizedBox(
-                width: 70,
-                height: 70,
-                child: FloatingActionButton(
-                  onPressed: _addCurrentSegment,
-                  backgroundColor: Colors.white,
-                  elevation: 4,
-                  shape: const CircleBorder(),
-                  child: const Icon(
-                    Icons.add_a_photo_outlined,
-                    color: Colors.black,
-                    size: 32,
-                  ),
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 20),
-
-            // 4. 선택된 세그먼트 리스트 (가로 스크롤)
-            SizedBox(
-              height: 80,
-              child: _selectedSegments.isEmpty
-                  ? Center(
-                      child: Text(
-                        "위 버튼을 눌러 $kTargetClipSecForDisplay초 장면을 담아보세요",
-                        style: const TextStyle(color: Colors.white38),
-                      ),
-                    )
-                  : ListView.separated(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      scrollDirection: Axis.horizontal,
-                      itemCount: _selectedSegments.length,
-                      separatorBuilder: (_, index) => const SizedBox(width: 12),
-                      itemBuilder: (context, index) {
-                        final startTime = Duration(
-                          milliseconds: _selectedSegments[index],
-                        );
-                        return Stack(
-                          children: [
-                            Container(
-                              width: 100,
-                              decoration: BoxDecoration(
-                                color: Colors.grey[900],
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: Colors.white24),
-                              ),
-                              alignment: Alignment.center,
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  const Icon(
-                                    Icons.movie,
-                                    color: Colors.white54,
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    _formatDuration(startTime),
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Positioned(
-                              top: 2,
-                              right: 2,
-                              child: GestureDetector(
-                                onTap: () => _removeSegment(index),
-                                child: const Icon(
-                                  Icons.cancel,
-                                  color: Colors.redAccent,
-                                  size: 20,
-                                ),
-                              ),
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-            ),
-            const SizedBox(height: 20),
-
-            ValueListenableBuilder<ClipSaveJobState>(
-              valueListenable:
-                  (_videoManager ??
-                          Provider.of<VideoManager>(context, listen: false))
-                      .clipSaveQueueStateNotifier,
-              builder: (context, queueState, _) {
-                final jobs = _trackedJobs(queueState);
-                if (jobs.isEmpty) return const SizedBox.shrink();
-
-                final failedOrSkipped = jobs
-                    .where(
-                      (job) =>
-                          job.status == ClipSaveJobStatus.failed ||
-                          job.status == ClipSaveJobStatus.skipped ||
-                          job.status == ClipSaveJobStatus.canceled,
-                    )
-                    .toList(growable: false);
-
-                return Container(
-                  margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.white10,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.white24),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '저장 큐: ${jobs.length}개',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      ...jobs.take(4).map((job) {
-                        final statusText = switch (job.status) {
-                          ClipSaveJobStatus.queued => '대기',
-                          ClipSaveJobStatus.running => '저장중',
-                          ClipSaveJobStatus.retrying =>
-                            '재시도중 (${job.attempts}/${job.maxRetry})',
-                          ClipSaveJobStatus.success => '완료',
-                          ClipSaveJobStatus.failed => '실패',
-                          ClipSaveJobStatus.skipped => '건너뜀',
-                          ClipSaveJobStatus.canceled => '취소',
-                        };
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 6),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  '${p.basename(job.sourcePath)} · $statusText',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(color: Colors.white70),
-                                ),
-                              ),
-                              if (job.status == ClipSaveJobStatus.skipped)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                    vertical: 2,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: Colors.orange.withValues(alpha: 0.3),
-                                    borderRadius: BorderRadius.circular(6),
-                                  ),
-                                  child: const Text(
-                                    '건너뜀',
-                                    style: TextStyle(
-                                      color: Colors.orangeAccent,
-                                      fontSize: 11,
-                                    ),
-                                  ),
-                                ),
-                              if (job.status == ClipSaveJobStatus.failed ||
-                                  job.status == ClipSaveJobStatus.skipped ||
-                                  job.status == ClipSaveJobStatus.canceled)
-                                TextButton(
-                                  onPressed: () =>
-                                      (_videoManager ??
-                                              Provider.of<VideoManager>(
-                                                context,
-                                                listen: false,
-                                              ))
-                                          .retryClipSaveJob(job.id),
-                                  child: const Text('재시도'),
-                                ),
-                            ],
-                          ),
-                        );
-                      }),
-                      if (failedOrSkipped.isNotEmpty)
-                        Align(
-                          alignment: Alignment.centerRight,
-                          child: TextButton(
-                            onPressed: () =>
-                                (_videoManager ??
-                                        Provider.of<VideoManager>(
-                                          context,
-                                          listen: false,
-                                        ))
-                                    .retryFailedClipSaveJobs(),
-                            child: const Text('실패 항목 전체 재시도'),
-                          ),
-                        ),
-                    ],
-                  ),
-                );
-              },
             ),
           ],
+        ),
+        body: SafeArea(
+          child: Column(
+            children: [
+              if (_isExtractionOrSaveActive || _extractionProgressValue > 0.0)
+                _buildExtractionProgressBanner(),
+              // 1. 비디오 프리뷰 (중앙)
+              Expanded(
+                child: Center(
+                  child: AspectRatio(
+                    aspectRatio: _controller.value.aspectRatio,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        VideoPlayer(_controller),
+                        _buildFixedWindowOverlay(),
+                        // 재생 오버레이
+                        if (!_isPlaying)
+                          Container(
+                            color: Colors.black26,
+                            child: const Icon(
+                              Icons.play_circle_fill,
+                              color: Colors.white70,
+                              size: 60,
+                            ),
+                          ),
+                        GestureDetector(
+                          onTap: _togglePlayPause,
+                          behavior: HitTestBehavior.opaque,
+                          child: const SizedBox.expand(),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
+              // 2. 컨트롤 컨트롤 (슬라이더 + 시간)
+              // 2. 컨트롤 컨트롤 (슬라이더 + 시간)
+              ValueListenableBuilder(
+                valueListenable: _controller,
+                builder: (context, VideoPlayerValue value, child) {
+                  final duration = value.duration.inMilliseconds.toDouble();
+                  final position = value.position.inMilliseconds.toDouble();
+                  final totalMs = value.duration.inMilliseconds;
+                  final startMs = _clampWindowStartMs(_windowStartMs, totalMs);
+                  final sliderValue = _isFixedWindowMode
+                      ? startMs.toDouble()
+                      : position;
+                  final sliderMax = _isFixedWindowMode
+                      ? (duration - _fixedWindowMs).clamp(1.0, duration)
+                      : duration;
+
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Row(
+                      children: [
+                        Text(
+                          _formatDuration(value.position),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                          ),
+                        ),
+                        Expanded(
+                          child: SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              trackHeight: 2.0,
+                              thumbShape: const RoundSliderThumbShape(
+                                enabledThumbRadius: 6.0,
+                              ),
+                              overlayShape: const RoundSliderOverlayShape(
+                                overlayRadius: 14.0,
+                              ),
+                              activeTrackColor: MoaDesignTokens.accentStrong,
+                              inactiveTrackColor: Colors.grey,
+                              thumbColor: Colors.white,
+                            ),
+                            child: Slider(
+                              value: sliderValue.clamp(0.0, sliderMax),
+                              min: 0.0,
+                              max: sliderMax,
+                              onChangeStart: (_) {
+                                if (_isFixedWindowMode) {
+                                  _isWindowDragging = true;
+                                }
+                              },
+                              onChanged: (newValue) {
+                                if (_isFixedWindowMode) {
+                                  _updateWindowStartFromSlider(newValue);
+                                } else {
+                                  unawaited(
+                                    _issueFreeSeek(
+                                      newValue.toInt(),
+                                      reason: 'slider',
+                                    ),
+                                  );
+                                }
+                              },
+                              onChangeEnd: (_) {
+                                if (_isFixedWindowMode) {
+                                  _isWindowDragging = false;
+                                  _flushWindowSeek();
+                                }
+                              },
+                            ),
+                          ),
+                        ),
+                        Text(
+                          _formatDuration(value.duration),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+
+              if (_isFixedWindowMode)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    '${_formatDurationWithMillis(Duration(milliseconds: _windowStartMs))} ~ ${_formatDurationWithMillis(Duration(milliseconds: _windowEndMs(_controller.value.duration.inMilliseconds)))}',
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+
+              const SizedBox(height: 10),
+
+              // 3. 메인 버튼 (Add Clip) - 예쁜 아이콘 버튼
+              Center(
+                child: SizedBox(
+                  width: 70,
+                  height: 70,
+                  child: FloatingActionButton(
+                    onPressed: _addCurrentSegment,
+                    backgroundColor: Colors.white,
+                    elevation: 4,
+                    shape: const CircleBorder(),
+                    child: const Icon(
+                      Icons.add_a_photo_outlined,
+                      color: Colors.black,
+                      size: 32,
+                    ),
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 20),
+
+              // 4. 선택된 세그먼트 리스트 (가로 스크롤)
+              SizedBox(
+                height: 80,
+                child: _selectedSegments.isEmpty
+                    ? Center(
+                        child: Text(
+                          "위 버튼을 눌러 $kTargetClipSecForDisplay초 장면을 담아보세요",
+                          style: const TextStyle(color: Colors.white38),
+                        ),
+                      )
+                    : ListView.separated(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        scrollDirection: Axis.horizontal,
+                        itemCount: _selectedSegments.length,
+                        separatorBuilder: (_, index) =>
+                            const SizedBox(width: 12),
+                        itemBuilder: (context, index) {
+                          final startTime = Duration(
+                            milliseconds: _selectedSegments[index],
+                          );
+                          return Stack(
+                            children: [
+                              Container(
+                                width: 100,
+                                decoration: BoxDecoration(
+                                  color: Colors.grey[900],
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: Colors.white24),
+                                ),
+                                alignment: Alignment.center,
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    const Icon(
+                                      Icons.movie,
+                                      color: Colors.white54,
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      _formatDuration(startTime),
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Positioned(
+                                top: 2,
+                                right: 2,
+                                child: GestureDetector(
+                                  onTap: () => _removeSegment(index),
+                                  child: const Icon(
+                                    Icons.cancel,
+                                    color: Colors.redAccent,
+                                    size: 20,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+              ),
+              const SizedBox(height: 20),
+
+              ValueListenableBuilder<ClipSaveJobState>(
+                valueListenable:
+                    (_videoManager ??
+                            Provider.of<VideoManager>(context, listen: false))
+                        .clipSaveQueueStateNotifier,
+                builder: (context, queueState, _) {
+                  final jobs = _trackedJobs(queueState);
+                  if (jobs.isEmpty) return const SizedBox.shrink();
+
+                  final failedOrSkipped = jobs
+                      .where(
+                        (job) =>
+                            job.status == ClipSaveJobStatus.failed ||
+                            job.status == ClipSaveJobStatus.skipped ||
+                            job.status == ClipSaveJobStatus.canceled,
+                      )
+                      .toList(growable: false);
+
+                  return Container(
+                    margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white10,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '저장 큐: ${queueState.percentText()} · ${jobs.length}개',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        LinearProgressIndicator(
+                          value: queueState.progressValue,
+                          minHeight: 4,
+                          borderRadius: BorderRadius.circular(999),
+                          color: MoaDesignTokens.accentStrong,
+                          backgroundColor: Colors.white24,
+                        ),
+                        const SizedBox(height: 8),
+                        ...jobs.take(4).map((job) {
+                          final statusText = switch (job.status) {
+                            ClipSaveJobStatus.queued => '대기',
+                            ClipSaveJobStatus.running => '저장중',
+                            ClipSaveJobStatus.retrying =>
+                              '재시도중 (${job.attempts}/${job.maxRetry})',
+                            ClipSaveJobStatus.success => '완료',
+                            ClipSaveJobStatus.failed => '실패',
+                            ClipSaveJobStatus.skipped => '건너뜀',
+                            ClipSaveJobStatus.canceled => '취소',
+                          };
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    '${p.basename(job.sourcePath)} · $statusText',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                    ),
+                                  ),
+                                ),
+                                if (job.status == ClipSaveJobStatus.skipped)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.orange.withValues(
+                                        alpha: 0.3,
+                                      ),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: const Text(
+                                      '건너뜀',
+                                      style: TextStyle(
+                                        color: Colors.orangeAccent,
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ),
+                                if (job.status == ClipSaveJobStatus.failed ||
+                                    job.status == ClipSaveJobStatus.skipped ||
+                                    job.status == ClipSaveJobStatus.canceled)
+                                  TextButton(
+                                    onPressed: () =>
+                                        (_videoManager ??
+                                                Provider.of<VideoManager>(
+                                                  context,
+                                                  listen: false,
+                                                ))
+                                            .retryClipSaveJob(job.id),
+                                    child: const Text('재시도'),
+                                  ),
+                              ],
+                            ),
+                          );
+                        }),
+                        if (failedOrSkipped.isNotEmpty)
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: TextButton(
+                              onPressed: () =>
+                                  (_videoManager ??
+                                          Provider.of<VideoManager>(
+                                            context,
+                                            listen: false,
+                                          ))
+                                      .retryFailedClipSaveJobs(),
+                              child: const Text('실패 항목 전체 재시도'),
+                            ),
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );

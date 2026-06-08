@@ -8,10 +8,14 @@ import 'package:three_s/managers/video_manager.dart';
 import 'package:three_s/models/vlog_project.dart';
 import 'package:three_s/services/cloud_service.dart';
 import 'package:three_s/services/local_index_service.dart';
+import 'package:three_s/utils/brightness_adjustment_policy.dart';
+import 'package:three_s/utils/color_filter_preset_policy.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   const pathProviderChannel = MethodChannel('plugins.flutter.io/path_provider');
+  const videoEngineChannel = MethodChannel('com.dk.three_sec/video_engine');
+  const galChannel = MethodChannel('gal');
 
   late VideoManager manager;
   late Directory tempDir;
@@ -44,6 +48,10 @@ void main() {
     }
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(pathProviderChannel, null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(videoEngineChannel, null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(galChannel, null);
   });
 
   test('local file exists with no marker is localOnly', () async {
@@ -230,6 +238,59 @@ void main() {
     expect(manager.totalCloudClipCount, 1);
     expect(manager.totalClipCount, 2);
   });
+
+  test(
+    'loadClipsFromCurrentAlbum interleaves local and cloud-only clips by date',
+    () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProviderChannel, (call) async {
+            if (call.method == 'getApplicationDocumentsDirectory') {
+              return tempDir.path;
+            }
+            return null;
+          });
+      manager.currentAlbum = '일상';
+      manager.clipAlbums = <String>['일상'];
+
+      final albumDir = Directory(
+        '${tempDir.path}${Platform.pathSeparator}vlogs'
+        '${Platform.pathSeparator}raw_clips${Platform.pathSeparator}일상',
+      );
+      await albumDir.create(recursive: true);
+      final oldLocal = File(
+        '${albumDir.path}${Platform.pathSeparator}local_old.mp4',
+      );
+      final newLocal = File(
+        '${albumDir.path}${Platform.pathSeparator}local_new.mp4',
+      );
+      await oldLocal.writeAsBytes(<int>[1, 2, 3, 4], flush: true);
+      await newLocal.writeAsBytes(<int>[1, 2, 3, 4], flush: true);
+      await oldLocal.setLastModified(DateTime(2026, 6, 1, 10));
+      await newLocal.setLastModified(DateTime(2026, 6, 3, 10));
+
+      const cloudPath = 'cloud_only://일상/cloud-mid/cloud_mid.mp4';
+      manager.debugSetCloudMetadataForPath(
+        cloudPath,
+        VideoMetadata.fromMap('cloud-mid', const {
+          'uid': 'uid-redacted',
+          'fileName': 'cloud_mid.mp4',
+          'storagePath': 'storage/path/redacted',
+          'albumName': '일상',
+          'fileSize': 8,
+          'uploadStatus': 'completed',
+          'completedAt': '2026-06-02T10:00:00.000',
+        }),
+      );
+
+      await manager.loadClipsFromCurrentAlbum();
+
+      expect(manager.recordedVideoPaths, [
+        newLocal.path,
+        cloudPath,
+        oldLocal.path,
+      ]);
+    },
+  );
 
   test('trash album counts cloud-only trash placeholders', () async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -842,4 +903,287 @@ void main() {
     );
     expect(await file.exists(), isFalse);
   });
+
+  test('copyProjectToFolder preserves clip-specific brightness for reopen', () {
+    final now = DateTime(2026, 5, 21);
+    final project = VlogProject(
+      id: 'project-brightness-copy',
+      title: 'Brightness Copy',
+      clips: <VlogClip>[
+        VlogClip(
+          id: 'clip-a',
+          path: 'clip_a.mp4',
+          brightnessAdjustments: const {'brightness': 28},
+        ),
+        VlogClip(
+          id: 'clip-b',
+          path: 'clip_b.mp4',
+          brightnessAdjustments: const {'contrast': -18},
+        ),
+      ],
+      brightnessAdjustmentScope: kBrightnessAdjustmentScopeClipSpecific,
+      brightnessAdjustments: const {'exposure': 12},
+      createdAt: now,
+      updatedAt: now,
+    );
+
+    final copied = debugBuildCopiedProjectForFolder(
+      project: project,
+      targetFolder: '기본',
+      timestamp: now,
+    );
+    final reopened = VlogProject.fromJson(copied.toJson());
+
+    expect(
+      reopened.brightnessAdjustmentScope,
+      kBrightnessAdjustmentScopeClipSpecific,
+    );
+    expect(reopened.brightnessAdjustments['exposure'], 12);
+    expect(reopened.clips[0].brightnessAdjustments['brightness'], 28);
+    expect(reopened.clips[1].brightnessAdjustments['contrast'], -18);
+  });
+
+  test(
+    'exportVlog sends index-based audio changes for duplicate source paths',
+    () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProviderChannel, (call) async {
+            if (call.method == 'getApplicationDocumentsDirectory') {
+              return tempDir.path;
+            }
+            return null;
+          });
+
+      final clip = await createClip('duplicate_source.mp4');
+      final capturedMergeCalls = <Map<Object?, Object?>>[];
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(videoEngineChannel, (call) async {
+            if (call.method == 'mergeVideos') {
+              final args = Map<Object?, Object?>.from(
+                call.arguments as Map<Object?, Object?>,
+              );
+              capturedMergeCalls.add(args);
+              final outputPath = args['outputPath']! as String;
+              await File(outputPath).writeAsBytes(<int>[9, 8, 7, 6]);
+              return outputPath;
+            }
+            if (call.method == 'getVideoDurationMs') {
+              return 2000;
+            }
+            return null;
+          });
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(galChannel, (call) async {
+            if (call.method == 'requestAccess') {
+              return true;
+            }
+            if (call.method == 'putVideo') {
+              return null;
+            }
+            return null;
+          });
+
+      final result = await manager.exportVlog(
+        clips: <VlogClip>[
+          VlogClip(path: clip.path, volume: 0.25),
+          VlogClip(path: clip.path, volume: 0.75),
+        ],
+        audioConfig: <String, double>{clip.path: 0.75},
+        audioConfigByClipIndex: const <double>[0.25, 0.75],
+        bgmVolume: 0,
+      );
+
+      expect(result, isNotNull);
+      expect(capturedMergeCalls, hasLength(1));
+
+      final firstCall = capturedMergeCalls.single;
+      expect(firstCall['videoPaths'], <String>[clip.path, clip.path]);
+      expect(firstCall['audioChanges'], <String, double>{clip.path: 0.75});
+      expect(firstCall['audioChangesByClipIndex'], <double>[0.25, 0.75]);
+      expect(firstCall['forceMuteOriginal'], isFalse);
+    },
+  );
+
+  test(
+    'exportVlog sends clip-specific brightness and silent audio args',
+    () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProviderChannel, (call) async {
+            if (call.method == 'getApplicationDocumentsDirectory') {
+              return tempDir.path;
+            }
+            return null;
+          });
+
+      final firstClip = await createClip('brightness_first.mp4');
+      final secondClip = await createClip('brightness_second.mp4');
+      final capturedMergeCalls = <Map<Object?, Object?>>[];
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(videoEngineChannel, (call) async {
+            if (call.method == 'mergeVideos') {
+              final args = Map<Object?, Object?>.from(
+                call.arguments as Map<Object?, Object?>,
+              );
+              capturedMergeCalls.add(args);
+              final outputPath = args['outputPath']! as String;
+              await File(outputPath).writeAsBytes(<int>[1, 2, 3, 4]);
+              return outputPath;
+            }
+            if (call.method == 'getVideoDurationMs') {
+              return 2000;
+            }
+            return null;
+          });
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(galChannel, (call) async {
+            if (call.method == 'requestAccess') {
+              return true;
+            }
+            if (call.method == 'putVideo') {
+              return null;
+            }
+            return null;
+          });
+
+      final result = await manager.exportVlog(
+        clips: <VlogClip>[
+          VlogClip(
+            path: firstClip.path,
+            brightnessAdjustments: const <String, double>{'brightness': 30},
+          ),
+          VlogClip(
+            path: secondClip.path,
+            brightnessAdjustments: const <String, double>{'contrast': -20},
+          ),
+        ],
+        audioConfig: <String, double>{firstClip.path: 0, secondClip.path: 0},
+        audioConfigByClipIndex: const <double>[0, 0],
+        bgmPath: 'bgm_should_be_omitted.mp3',
+        bgmVolume: 0,
+        forceMuteOriginal: true,
+        brightnessAdjustments: const <String, double>{'brightness': 5},
+        colorFilterPresetId: kColorFilterPresetWarmSunset,
+        colorFilterIntensity: 0.75,
+      );
+
+      expect(result, isNotNull);
+      expect(capturedMergeCalls, hasLength(1));
+
+      final args = capturedMergeCalls.single;
+      expect(args['audioChangesByClipIndex'], <double>[0, 0]);
+      expect(args['forceMuteOriginal'], isTrue);
+      expect(args['bgmPath'], isNull);
+      expect(args['bgmVolume'], 0.0);
+
+      final globalVideoEffects = Map<Object?, Object?>.from(
+        args['videoEffects']! as Map,
+      );
+      expect(
+        globalVideoEffects['colorFilterPresetId'],
+        kColorFilterPresetWarmSunset,
+      );
+      expect(globalVideoEffects.containsKey('brightness'), isFalse);
+
+      final clipEffects = args['videoEffectsByClipIndex']! as List<Object?>;
+      expect(clipEffects, hasLength(2));
+
+      final firstEffects = Map<Object?, Object?>.from(clipEffects[0]! as Map);
+      final secondEffects = Map<Object?, Object?>.from(clipEffects[1]! as Map);
+      expect(firstEffects['brightness'], 30.0);
+      expect(firstEffects['colorFilterPresetId'], kColorFilterPresetWarmSunset);
+      expect(secondEffects['contrast'], -20.0);
+      expect(
+        secondEffects['colorFilterPresetId'],
+        kColorFilterPresetWarmSunset,
+      );
+    },
+  );
+
+  test(
+    'exportVlog sends clip-local color filters per clip when they differ',
+    () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProviderChannel, (call) async {
+            if (call.method == 'getApplicationDocumentsDirectory') {
+              return tempDir.path;
+            }
+            return null;
+          });
+
+      final firstClip = await createClip('color_first.mp4');
+      final secondClip = await createClip('color_second.mp4');
+      final capturedMergeCalls = <Map<Object?, Object?>>[];
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(videoEngineChannel, (call) async {
+            if (call.method == 'mergeVideos') {
+              final args = Map<Object?, Object?>.from(
+                call.arguments as Map<Object?, Object?>,
+              );
+              capturedMergeCalls.add(args);
+              final outputPath = args['outputPath']! as String;
+              await File(outputPath).writeAsBytes(<int>[1, 2, 3, 4]);
+              return outputPath;
+            }
+            if (call.method == 'getVideoDurationMs') {
+              return 2000;
+            }
+            return null;
+          });
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(galChannel, (call) async {
+            if (call.method == 'requestAccess') {
+              return true;
+            }
+            if (call.method == 'putVideo') {
+              return null;
+            }
+            return null;
+          });
+
+      final result = await manager.exportVlog(
+        clips: <VlogClip>[
+          VlogClip(
+            path: firstClip.path,
+            colorFilterPresetId: kColorFilterPresetClearSky,
+            colorFilterIntensity: 0.8,
+          ),
+          VlogClip(
+            path: secondClip.path,
+            colorFilterPresetId: kColorFilterPresetFilmGreen,
+            colorFilterIntensity: 0.35,
+          ),
+        ],
+        audioConfig: <String, double>{firstClip.path: 0, secondClip.path: 0},
+        audioConfigByClipIndex: const <double>[0, 0],
+        forceMuteOriginal: true,
+        colorFilterPresetId: kColorFilterPresetWarmSunset,
+        colorFilterIntensity: 0.75,
+      );
+
+      expect(result, isNotNull);
+      expect(capturedMergeCalls, hasLength(1));
+
+      final args = capturedMergeCalls.single;
+      final globalVideoEffects = Map<Object?, Object?>.from(
+        args['videoEffects']! as Map,
+      );
+      expect(globalVideoEffects.containsKey('colorFilterPresetId'), isFalse);
+
+      final clipEffects = args['videoEffectsByClipIndex']! as List<Object?>;
+      expect(clipEffects, hasLength(2));
+
+      final firstEffects = Map<Object?, Object?>.from(clipEffects[0]! as Map);
+      final secondEffects = Map<Object?, Object?>.from(clipEffects[1]! as Map);
+      expect(firstEffects['colorFilterPresetId'], kColorFilterPresetClearSky);
+      expect(firstEffects['colorFilterIntensity'], 0.8);
+      expect(secondEffects['colorFilterPresetId'], kColorFilterPresetFilmGreen);
+      expect(secondEffects['colorFilterIntensity'], 0.35);
+    },
+  );
 }

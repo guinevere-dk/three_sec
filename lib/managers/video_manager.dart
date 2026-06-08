@@ -3188,19 +3188,34 @@ class VideoManager extends ChangeNotifier {
         (clip) =>
             hasNonDefaultBrightnessAdjustments(clip.brightnessAdjustments),
       );
+      final hasClipSpecificColorFilterEffects = clips.any(
+        (clip) => colorFilterForExportVideoEffects(
+          presetId: clip.colorFilterPresetId,
+          intensity: clip.colorFilterIntensity,
+        ).isNotEmpty,
+      );
+      final useClipSpecificVideoEffects =
+          hasClipSpecificBrightnessEffects || hasClipSpecificColorFilterEffects;
       final videoEffects = <String, Object>{
         if (!hasClipSpecificBrightnessEffects)
           ...brightnessAdjustmentsForExportVideoEffects(brightnessAdjustments),
-        ...colorFilterEffects,
+        if (!hasClipSpecificColorFilterEffects) ...colorFilterEffects,
       };
-      final videoEffectsByClipIndex = hasClipSpecificBrightnessEffects
+      final videoEffectsByClipIndex = useClipSpecificVideoEffects
           ? <Map<String, Object>>[
               for (final clip in clips)
                 <String, Object>{
-                  ...brightnessAdjustmentsForExportVideoEffects(
-                    clip.brightnessAdjustments,
-                  ),
-                  ...colorFilterEffects,
+                  if (hasClipSpecificBrightnessEffects)
+                    ...brightnessAdjustmentsForExportVideoEffects(
+                      clip.brightnessAdjustments,
+                    ),
+                  if (hasClipSpecificColorFilterEffects)
+                    ...colorFilterForExportVideoEffects(
+                      presetId: clip.colorFilterPresetId,
+                      intensity: clip.colorFilterIntensity,
+                    )
+                  else
+                    ...colorFilterEffects,
                 },
             ]
           : const <Map<String, Object>>[];
@@ -3987,6 +4002,7 @@ class VideoManager extends ChangeNotifier {
     );
     recordedVideoPaths = files;
     await _mergeCloudOnlyPlaceholdersForCurrentAlbum();
+    _sortRecordedVideoPathsByCaptureDate();
     unawaited(_preloadClipDurationsForPaths(recordedVideoPaths));
     await _cleanupCloudSyncedPaths();
     await _cleanupClipOwnershipMetadata();
@@ -4028,6 +4044,7 @@ class VideoManager extends ChangeNotifier {
       }
       await _persistCloudSyncedPaths();
       await _mergeCloudOnlyPlaceholdersForCurrentAlbum();
+      _sortRecordedVideoPathsByCaptureDate();
       await _updateAlbumClipCounts();
       final thumbnailCounts = getCloudThumbnailDebugCounts();
       debugPrint(
@@ -4068,6 +4085,65 @@ class VideoManager extends ChangeNotifier {
         .toList(growable: false);
     if (placeholders.isEmpty) return;
     recordedVideoPaths.addAll(placeholders);
+  }
+
+  void _sortRecordedVideoPathsByCaptureDate() {
+    if (recordedVideoPaths.length < 2) return;
+
+    final indexedPaths = recordedVideoPaths.asMap().entries.toList()
+      ..sort((a, b) {
+        final aDate = _libraryClipCaptureDate(a.value);
+        final bDate = _libraryClipCaptureDate(b.value);
+        if (aDate != null && bDate != null) {
+          final byDate = bDate.compareTo(aDate);
+          if (byDate != 0) return byDate;
+        } else if (aDate != null) {
+          return -1;
+        } else if (bDate != null) {
+          return 1;
+        }
+        return a.key.compareTo(b.key);
+      });
+
+    recordedVideoPaths = indexedPaths
+        .map((entry) => entry.value)
+        .toList(growable: false);
+
+    final localCount = recordedVideoPaths
+        .where((path) => !_isCloudOnlyPlaceholderPath(path))
+        .length;
+    final cloudOnlyCount = recordedVideoPaths.length - localCount;
+    if (localCount == 0 || cloudOnlyCount == 0) return;
+
+    final orderSummary = recordedVideoPaths
+        .take(6)
+        .map((path) {
+          final type = _isCloudOnlyPlaceholderPath(path) ? 'cloud' : 'local';
+          final date =
+              _libraryClipCaptureDate(path)?.toIso8601String() ?? 'none';
+          return '$type@$date';
+        })
+        .join(',');
+    debugPrint(
+      '[VideoManager][LibrarySort] album=$currentAlbum total=${recordedVideoPaths.length} '
+      'local=$localCount cloudOnly=$cloudOnlyCount order=$orderSummary',
+    );
+  }
+
+  DateTime? _libraryClipCaptureDate(String path) {
+    final metadata = _cloudMetadataByPath[path];
+    if (metadata != null) {
+      return metadata.completedAt ?? metadata.createdAt ?? metadata.updatedAt;
+    }
+    if (_isCloudOnlyPlaceholderPath(path)) return null;
+
+    try {
+      final file = File(path);
+      if (!file.existsSync()) return null;
+      return file.lastModifiedSync();
+    } catch (_) {
+      return null;
+    }
   }
 
   bool _hasLocalClipMatchingCloudVideo(VideoMetadata video) {

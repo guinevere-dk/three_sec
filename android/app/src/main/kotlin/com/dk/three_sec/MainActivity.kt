@@ -22,6 +22,7 @@ import android.text.style.RelativeSizeSpan
 import androidx.activity.enableEdgeToEdge
 
 // Media3 Imports
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.VideoFrameProcessingException
@@ -154,6 +155,23 @@ class MainActivity: FlutterFragmentActivity() {
         return "<redacted-path-list:$count>"
     }
 
+    private fun audioConfigSummary(
+        audioChangesByClipIndex: List<Double>,
+        audioChanges: Map<String, Double>
+    ): String {
+        val values = if (audioChangesByClipIndex.isNotEmpty()) {
+            audioChangesByClipIndex
+        } else {
+            audioChanges.values.toList()
+        }
+        if (values.isEmpty()) return "<audio-config:empty>"
+        val mutedCount = values.count { it <= 0.0 }
+        val reducedCount = values.count { it > 0.0 && it < 1.0 }
+        val fullCount = values.size - mutedCount - reducedCount
+        val source = if (audioChangesByClipIndex.isNotEmpty()) "clipIndex" else "pathMap"
+        return "<audio-config:source=$source,count=${values.size},muted=$mutedCount,reduced=$reducedCount,full=$fullCount>"
+    }
+
     private fun validateReadableInput(inputPath: String): Pair<Uri, String?> {
         val uri = toMediaUri(inputPath)
         return when (uri.scheme?.lowercase()) {
@@ -276,7 +294,7 @@ class MainActivity: FlutterFragmentActivity() {
         forceAudioTrack: Boolean,
     ): Pair<EditedMediaItemSequence, String> {
         if (!forceAudioTrack) {
-            return EditedMediaItemSequence(videoItems) to "skipped_not_needed"
+            return EditedMediaItemSequence.Builder(videoItems).build() to "skipped_not_needed"
         }
 
         try {
@@ -286,7 +304,7 @@ class MainActivity: FlutterFragmentActivity() {
                 params.size == 1 && java.util.List::class.java.isAssignableFrom(params[0])
             } ?: run {
                 Log.w("3S_AUDIO", "⚠️ Sequence Builder 생성자 미발견: constructor(List) 없음")
-                return EditedMediaItemSequence(videoItems) to "builder_ctor_missing"
+                return EditedMediaItemSequence.Builder(videoItems).build() to "builder_ctor_missing"
             }
 
             val builder = ctor.newInstance(videoItems)
@@ -322,7 +340,7 @@ class MainActivity: FlutterFragmentActivity() {
             Log.w("3S_AUDIO", "⚠️ Sequence forceAudioTrack 적용 실패: ${e.message}")
         }
 
-        return EditedMediaItemSequence(videoItems) to "fallback_constructor"
+        return EditedMediaItemSequence.Builder(videoItems).build() to "fallback_constructor"
     }
 
     private fun createErrorDetails(
@@ -432,6 +450,7 @@ class MainActivity: FlutterFragmentActivity() {
                     // Flutter Args: videoPaths, audioChanges, bgmPath, bgmVolume, quality, outputPath
                     val paths = call.argument<List<String>>("videoPaths")
                     val audioChanges = call.argument<Map<String, Double>>("audioChanges") ?: emptyMap()
+                    val audioChangesByClipIndex = call.argument<List<Double>>("audioChangesByClipIndex") ?: emptyList()
                     val outputPath = call.argument<String>("outputPath")
                     
                     // Optional Args (Defaults)
@@ -449,6 +468,7 @@ class MainActivity: FlutterFragmentActivity() {
                     
                     // Video Effects
                     val videoEffects = call.argument<Map<String, Any>>("videoEffects") ?: emptyMap()
+                    val videoEffectsByClipIndex = call.argument<List<Map<String, Any>>>("videoEffectsByClipIndex") ?: emptyList()
                     
                     val startTimes = call.argument<List<Long>>("startTimes") ?: emptyList()
                     val endTimes = call.argument<List<Long>>("endTimes") ?: emptyList()
@@ -465,8 +485,10 @@ class MainActivity: FlutterFragmentActivity() {
                     Log.d("3S_4K", "  - paths: ${redactedPathList(paths)}")
                     Log.d("3S_4K", "  - trim: start=$startTimes, end=$endTimes") // Log trim info
                     Log.d("3S_4K", "  - outputPath: ${redactedPath(outputPath)}")
-                    Log.d("3S_4K", "  - audioConfig: $audioChanges (To be implemented)")
+                    Log.d("3S_4K", "  - audioConfig: ${audioConfigSummary(audioChangesByClipIndex, audioChanges)}")
+                    Log.d("3S_4K", "  - clipAudioConfig: ${audioChangesByClipIndex.size} items")
                     Log.d("3S_4K", "  - bgmPath: ${redactedPath(bgmPath)}, vol: $bgmVolume")
+                    Log.d("3S_4K", "  - clipVideoEffects: ${videoEffectsByClipIndex.size} items")
                     Log.w(
                         "3S_LIFECYCLE",
                         "[MergeArgs] sessionId=${mergeSessionId ?: "none"} traceId=${mergeTraceId ?: "none"} " +
@@ -485,6 +507,9 @@ class MainActivity: FlutterFragmentActivity() {
                             userTier,
                             canvasAspectRatioPreset,
                             videoEffects,
+                            videoEffectsByClipIndex,
+                            audioChanges,
+                            audioChangesByClipIndex,
                             bgmPath,
                             forceMuteOriginal,
                             enableNoiseSuppression,
@@ -817,7 +842,7 @@ class MainActivity: FlutterFragmentActivity() {
                 .build()
             val editedItems = arrayListOf(clippedEditedItem)
 
-            val sequence = EditedMediaItemSequence(editedItems)
+            val sequence = EditedMediaItemSequence.Builder(editedItems).build()
             val composition = Composition.Builder(listOf(sequence))
                 .setTransmuxAudio(false)
                 .setTransmuxVideo(false)
@@ -1070,6 +1095,9 @@ class MainActivity: FlutterFragmentActivity() {
         userTier: String,
         canvasAspectRatioPreset: String,
         videoEffects: Map<String, Any>,
+        videoEffectsByClipIndex: List<Map<String, Any>>,
+        audioChanges: Map<String, Double>,
+        audioChangesByClipIndex: List<Double>,
         bgmPath: String?,
         forceMuteOriginal: Boolean,
         enableNoiseSuppression: Boolean,
@@ -1105,6 +1133,8 @@ class MainActivity: FlutterFragmentActivity() {
         Log.d("3S_4K", "  - 캔버스: $canvasAspectRatioPreset")
         Log.d("3S_4K", "  - 자막: ${subtitles.size}개")
         Log.d("3S_4K", "  - 비디오 이펙트: ${videoEffects.keys}")
+        Log.d("3S_4K", "  - clipVideoEffects: ${videoEffectsByClipIndex.size} items")
+        Log.d("3S_AUDIO", "  - clipAudioConfig: ${audioChangesByClipIndex.size} items")
         Log.d("3S_AUDIO", "  - 원본 음소거: $forceMuteOriginal")
         Log.d("3S_AUDIO", "  - BGM: ${if (bgmPath == null) "없음" else redactedPath(bgmPath)}")
         Log.d("3S_AUDIO", "  - 노이즈 억제: $enableNoiseSuppression")
@@ -1157,17 +1187,13 @@ class MainActivity: FlutterFragmentActivity() {
         )
 
         // 2. 🎵 오디오 이펙트 준비
-        val audioProcessors = mutableListOf<AudioProcessor>()
         
         // 2-1. 노이즈 억제 (NoiseSuppressor)
         if (enableNoiseSuppression) {
-            val noiseSuppressor = NoiseSuppressorAudioProcessor(noiseThreshold = 0.15f)
-            audioProcessors.add(noiseSuppressor)
             Log.d("3S_AUDIO", "✓ 노이즈 억제 프로세서 추가 완료")
         }
 
         // 3. 🎨 GPU 필터 생성 (Premium)
-        val gpuFilters = createGpuFilters(videoEffects, userTier)
         val normalizedCanvasAspectPreset = normalizeEditCanvasAspectPreset(canvasAspectRatioPreset)
         val canvasAspectRatio = editCanvasAspectRatio(normalizedCanvasAspectPreset)
         
@@ -1176,6 +1202,15 @@ class MainActivity: FlutterFragmentActivity() {
         var forceAudioTrackEligibleCount = 0
         var forceAudioTrackAppliedItemCount = 0
         var forceAudioTrackFailedItemCount = 0
+        fun requestedOriginalVolume(index: Int, path: String): Float {
+            val indexedVolume = audioChangesByClipIndex.getOrNull(index)
+            return (indexedVolume ?: audioChanges[path] ?: 1.0).toFloat().coerceIn(0f, 1f)
+        }
+
+        fun removesOriginalAudio(index: Int, path: String): Boolean {
+            return forceMuteOriginal || requestedOriginalVolume(index, path) <= 0f
+        }
+
         for ((i, path) in paths.withIndex()) {
             val startTime = if (i < startTimes.size) startTimes[i] else 0L
             val endTime = if (i < endTimes.size) endTimes[i] else 0L
@@ -1196,6 +1231,17 @@ class MainActivity: FlutterFragmentActivity() {
             
             // 비디오 Effects (GPU 필터 + 오버레이)
             val allVideoEffects = mutableListOf<Any>()
+            val clipVideoEffects = videoEffectsByClipIndex.getOrNull(i) ?: videoEffects
+            val gpuFilters = createGpuFilters(clipVideoEffects, userTier)
+            val requestedClipVolume = requestedOriginalVolume(i, path)
+            val removeOriginalAudio = removesOriginalAudio(i, path)
+            val itemAudioProcessors = mutableListOf<AudioProcessor>()
+            if (!removeOriginalAudio && enableNoiseSuppression) {
+                itemAudioProcessors.add(NoiseSuppressorAudioProcessor(noiseThreshold = 0.15f))
+            }
+            if (!removeOriginalAudio && requestedClipVolume < 0.999f) {
+                itemAudioProcessors.add(VolumeAudioProcessor(requestedClipVolume))
+            }
             
             // GPU 필터 추가
             allVideoEffects.addAll(gpuFilters)
@@ -1213,19 +1259,19 @@ class MainActivity: FlutterFragmentActivity() {
             }
             
             // Effects 결합 (오디오 + 비디오)
-            val finalEffects = if (audioProcessors.isNotEmpty() && !forceMuteOriginal) {
+            val finalEffects = if (itemAudioProcessors.isNotEmpty()) {
                 // 노이즈 억제 + GPU 필터 + 오버레이
-                Effects(audioProcessors, allVideoEffects as List<androidx.media3.common.Effect>)
+                Effects(itemAudioProcessors, allVideoEffects as List<androidx.media3.common.Effect>)
             } else {
                 // GPU 필터 + 오버레이만
                 Effects(mutableListOf<AudioProcessor>(), allVideoEffects as List<androidx.media3.common.Effect>)
             }
 
             val itemBuilder = EditedMediaItem.Builder(mediaItem)
-                .setRemoveAudio(forceMuteOriginal)
+                .setRemoveAudio(removeOriginalAudio)
                 .setEffects(finalEffects)
 
-            if (!forceMuteOriginal && preflight != null && !preflight.hasAudio) {
+            if (!removeOriginalAudio && preflight != null && !preflight.hasAudio) {
                 forceAudioTrackEligibleCount += 1
                 val forceApplied = applyForceAudioTrackIfPossible(itemBuilder, true)
                 if (!forceApplied) {
@@ -1244,6 +1290,15 @@ class MainActivity: FlutterFragmentActivity() {
 
         if (forceMuteOriginal) {
             Log.d("3S_AUDIO", "✓ 원본 오디오 제거됨 (forceMuteOriginal=true)")
+        } else if (audioChangesByClipIndex.isNotEmpty() || audioChanges.isNotEmpty()) {
+            val appliedAudioVolumes = if (audioChangesByClipIndex.isNotEmpty()) {
+                audioChangesByClipIndex
+            } else {
+                audioChanges.values.toList()
+            }
+            val mutedCount = appliedAudioVolumes.count { it <= 0.0 }
+            val adjustedCount = appliedAudioVolumes.count { it > 0.0 && it < 1.0 }
+            Log.d("3S_AUDIO", "Original audio volume applied: adjusted=$adjustedCount muted=$mutedCount")
         } else if (enableNoiseSuppression) {
             Log.d("3S_AUDIO", "✓ 원본 오디오에 노이즈 억제 적용됨")
         }
@@ -1253,8 +1308,12 @@ class MainActivity: FlutterFragmentActivity() {
         
         // 4-1. 비디오 시퀀스 추가
         val firstInfo = preflightInfos.firstOrNull()
-        val hasAnyAudio = preflightInfos.any { it.hasAudio }
-        val hasMixedAudioPresence = missingAudioCount > 0 && hasAnyAudio
+        val effectiveAudioPresence = paths.mapIndexed { index, path ->
+            preflightInfos.getOrNull(index)?.hasAudio == true &&
+                !removesOriginalAudio(index, path)
+        }
+        val hasAnyAudio = effectiveAudioPresence.any { it }
+        val hasMixedAudioPresence = effectiveAudioPresence.any { !it } && hasAnyAudio
         val needSequenceForceAudio = !forceMuteOriginal && hasMixedAudioPresence
         val (builtVideoSequence, sequenceForceState) = buildVideoSequenceWithOptionalForceAudioTrack(
             videoItems = videoSequence,
@@ -1276,7 +1335,7 @@ class MainActivity: FlutterFragmentActivity() {
         sequences.add(builtVideoSequence)
         
         // 4-2. BGM 시퀀스 추가 (있는 경우)
-        if (bgmPath != null && File(bgmPath).exists()) {
+        if (bgmPath != null && bgmVolume > 0f && File(bgmPath).exists()) {
             try {
                 Log.d("3S_AUDIO", "✓ BGM 추가: ${redactedPath(bgmPath)}")
                 Log.d("3S_AUDIO", "  - 볼륨: ${(bgmVolume * 100).toInt()}%")
@@ -1298,10 +1357,12 @@ class MainActivity: FlutterFragmentActivity() {
                     totalDurationMs = bgmDurationMs
                 )
                 
-                // TODO: 볼륨 조절 프로세서 추가 (bgmVolume 적용)
-                // 현재는 Fade Out만 적용, 볼륨 조절은 추후 ChannelMixingAudioProcessor로 구현
-                
-                val bgmAudioProcessors = listOf<AudioProcessor>(fadeOutProcessor)
+                val bgmAudioProcessors = mutableListOf<AudioProcessor>()
+                val normalizedBgmVolume = bgmVolume.coerceIn(0f, 1f)
+                if (normalizedBgmVolume < 0.999f) {
+                    bgmAudioProcessors.add(VolumeAudioProcessor(normalizedBgmVolume))
+                }
+                bgmAudioProcessors.add(fadeOutProcessor)
                 val bgmEffects = Effects(bgmAudioProcessors, listOf())
                 
                 val bgmEditedItem = EditedMediaItem.Builder(bgmMediaItem)
@@ -1309,7 +1370,7 @@ class MainActivity: FlutterFragmentActivity() {
                     .setEffects(bgmEffects)
                     .build()
                 
-                sequences.add(EditedMediaItemSequence(listOf(bgmEditedItem)))
+                sequences.add(EditedMediaItemSequence.Builder(listOf(bgmEditedItem)).build())
                 
                 Log.d("3S_AUDIO", "✓ BGM Fade Out 프로세서 적용 완료")
                 
@@ -2606,7 +2667,7 @@ class MainActivity: FlutterFragmentActivity() {
                         .build()
                     
                     // 5. Composition 생성
-                    val sequence = EditedMediaItemSequence(listOf(editedMediaItem))
+                    val sequence = EditedMediaItemSequence.Builder(listOf(editedMediaItem)).build()
                     val composition = Composition.Builder(listOf(sequence)).build()
                     
                     // 5. Transformer 구성
@@ -2777,11 +2838,11 @@ class MainActivity: FlutterFragmentActivity() {
                 .setEffects(effects)
                 .build()
 
-            val sequence = EditedMediaItemSequence(listOf(editedMediaItem))
+            val sequence = EditedMediaItemSequence.Builder(listOf(editedMediaItem)).build()
 
             // 6. BGM 추가 (선택적)
             val sequences = mutableListOf(sequence)
-            if (bgmPath != null && File(bgmPath).exists()) {
+            if (bgmPath != null && bgmVolume > 0f && File(bgmPath).exists()) {
                 Log.d("3S_EDIT", "✓ BGM 추가: ${redactedPath(bgmPath)}")
                 
                 val retriever = MediaMetadataRetriever()
@@ -2796,13 +2857,19 @@ class MainActivity: FlutterFragmentActivity() {
                     totalDurationMs = bgmDurationMs
                 )
 
-                val bgmEffects = Effects(listOf<AudioProcessor>(fadeOutProcessor), listOf())
+                val bgmAudioProcessors = mutableListOf<AudioProcessor>()
+                val normalizedBgmVolume = bgmVolume.coerceIn(0f, 1f)
+                if (normalizedBgmVolume < 0.999f) {
+                    bgmAudioProcessors.add(VolumeAudioProcessor(normalizedBgmVolume))
+                }
+                bgmAudioProcessors.add(fadeOutProcessor)
+                val bgmEffects = Effects(bgmAudioProcessors, listOf())
                 val bgmEditedItem = EditedMediaItem.Builder(bgmMediaItem)
                     .setRemoveVideo(true)
                     .setEffects(bgmEffects)
                     .build()
 
-                sequences.add(EditedMediaItemSequence(listOf(bgmEditedItem)))
+                sequences.add(EditedMediaItemSequence.Builder(listOf(bgmEditedItem)).build())
             }
 
             // 7. Composition 생성
@@ -2863,15 +2930,38 @@ class MainActivity: FlutterFragmentActivity() {
 // 🎵 실전용 오디오 프로세서 (Media3 BaseAudioProcessor 기반)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/**
- * Fade Out 오디오 프로세서 (실전용)
- * 
- * BGM의 마지막 0.5초 동안 볼륨을 점진적으로 0으로 감소시켜 매끄러운 종료
- * BaseAudioProcessor를 상속하여 Media3와 완벽 호환
- * 
- * @param fadeOutDurationMs Fade Out 지속 시간 (기본 500ms)
- * @param totalDurationMs 전체 오디오 길이 (밀리초)
- */
+class VolumeAudioProcessor(
+    private val gain: Float
+) : BaseAudioProcessor() {
+    override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
+        if (inputAudioFormat.encoding != C.ENCODING_PCM_16BIT) {
+            throw AudioProcessor.UnhandledAudioFormatException(inputAudioFormat)
+        }
+        return inputAudioFormat
+    }
+
+    override fun queueInput(inputBuffer: ByteBuffer) {
+        val position = inputBuffer.position()
+        val limit = inputBuffer.limit()
+        val frameCount = (limit - position) / (2 * inputAudioFormat.channelCount)
+        val outputBuffer = replaceOutputBuffer(limit - position)
+        val normalizedGain = gain.coerceIn(0f, 1f)
+
+        for (i in 0 until frameCount) {
+            for (ch in 0 until inputAudioFormat.channelCount) {
+                val sample = inputBuffer.short
+                val processedSample = (sample * normalizedGain)
+                    .toInt()
+                    .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                    .toShort()
+                outputBuffer.putShort(processedSample)
+            }
+        }
+
+        outputBuffer.flip()
+    }
+}
+
 class FadeOutAudioProcessor(
     private val fadeOutDurationMs: Long = 500L,
     private val totalDurationMs: Long

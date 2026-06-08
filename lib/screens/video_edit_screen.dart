@@ -109,6 +109,7 @@ class EditorState {
   final int currentClipIndex;
   final String canvasAspectRatioPreset;
   final String canvasBackgroundMode;
+  final String brightnessAdjustmentScope;
   final Map<String, double> brightnessAdjustments;
   final String colorFilterPresetId;
   final double colorFilterIntensity;
@@ -125,6 +126,7 @@ class EditorState {
     this.currentClipIndex = 0,
     this.canvasAspectRatioPreset = 'r9_16',
     this.canvasBackgroundMode = 'crop_fill',
+    this.brightnessAdjustmentScope = kBrightnessAdjustmentScopeProjectWide,
     this.brightnessAdjustments = const <String, double>{},
     this.colorFilterPresetId = kColorFilterPresetNone,
     this.colorFilterIntensity = kColorFilterIntensityDefault,
@@ -143,6 +145,9 @@ class EditorState {
       currentClipIndex: currentClipIndex,
       canvasAspectRatioPreset: canvasAspectRatioPreset,
       canvasBackgroundMode: canvasBackgroundMode,
+      brightnessAdjustmentScope: normalizeBrightnessAdjustmentScope(
+        brightnessAdjustmentScope,
+      ),
       brightnessAdjustments: Map<String, double>.from(brightnessAdjustments),
       colorFilterPresetId: colorFilterPresetId,
       colorFilterIntensity: colorFilterIntensity,
@@ -472,6 +477,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   bool get _canUseTopClipNavigation => !_isExportUiBlocking;
 
+  bool get _usesClipSpecificBrightness =>
+      widget.project.brightnessAdjustmentScope ==
+      kBrightnessAdjustmentScopeClipSpecific;
+
   bool get _shouldShowProjectSaveStatusChip =>
       _saveUiState == _ProjectSaveUiState.saving ||
       _saveUiState == _ProjectSaveUiState.retrying ||
@@ -505,6 +514,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       currentClipIndex: state.currentClipIndex,
       canvasAspectRatioPreset: state.canvasAspectRatioPreset,
       canvasBackgroundMode: state.canvasBackgroundMode,
+      brightnessAdjustmentScope: normalizeBrightnessAdjustmentScope(
+        state.brightnessAdjustmentScope,
+      ),
       brightnessAdjustments: Map<String, double>.from(
         state.brightnessAdjustments,
       ),
@@ -531,6 +543,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       currentClipIndex: _currentClipIndex,
       canvasAspectRatioPreset: widget.project.canvasAspectRatioPreset,
       canvasBackgroundMode: widget.project.canvasBackgroundMode,
+      brightnessAdjustmentScope: normalizeBrightnessAdjustmentScope(
+        widget.project.brightnessAdjustmentScope,
+      ),
       brightnessAdjustments: normalizeBrightnessAdjustments(
         _brightnessAdjustments,
       ),
@@ -542,6 +557,129 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       ),
     ),
   );
+
+  Map<String, double> _brightnessAdjustmentsForClipIndex(int index) {
+    if (index < 0 || index >= _clips.length) {
+      return normalizeBrightnessAdjustments(_brightnessAdjustments);
+    }
+    return normalizeBrightnessAdjustments(_clips[index].brightnessAdjustments);
+  }
+
+  void _setCurrentClipBrightnessAdjustments(
+    Map<String, double> adjustments, {
+    bool markClipSpecific = true,
+  }) {
+    final normalized = normalizeBrightnessAdjustments(adjustments);
+    _brightnessAdjustments = normalized;
+    if (_currentClipIndex >= 0 && _currentClipIndex < _clips.length) {
+      _clips[_currentClipIndex] = _clips[_currentClipIndex].copyWith(
+        brightnessAdjustments: normalized,
+      );
+    }
+    if (markClipSpecific) {
+      widget.project.brightnessAdjustmentScope =
+          kBrightnessAdjustmentScopeClipSpecific;
+    }
+  }
+
+  void _loadBrightnessAdjustmentsForClipIndex(int index) {
+    _brightnessAdjustments = _brightnessAdjustmentsForClipIndex(index);
+    final propertyValue =
+        (_brightnessAdjustments[_selectedBrightnessProperty] ?? 0.0).clamp(
+          -100.0,
+          100.0,
+        );
+    _showBrightnessNumericLabel = propertyValue != 0.0;
+  }
+
+  String _colorFilterPresetIdForClipIndex(int index) {
+    if (index < 0 || index >= _clips.length) {
+      return normalizeColorFilterPresetId(_selectedColorFilterPresetId);
+    }
+    return normalizeColorFilterPresetId(_clips[index].colorFilterPresetId);
+  }
+
+  double _colorFilterIntensityForClipIndex(int index) {
+    if (index < 0 || index >= _clips.length) {
+      return normalizeColorFilterIntensity(_colorFilterIntensity);
+    }
+    return normalizeColorFilterIntensity(_clips[index].colorFilterIntensity);
+  }
+
+  void _setCurrentClipColorFilter({
+    required String presetId,
+    required double intensity,
+  }) {
+    final normalizedPresetId = normalizeColorFilterPresetId(presetId);
+    final normalizedIntensity = normalizeColorFilterIntensity(intensity);
+    _selectedColorFilterPresetId = normalizedPresetId;
+    _colorFilterIntensity = normalizedIntensity;
+    if (_currentClipIndex >= 0 && _currentClipIndex < _clips.length) {
+      _clips[_currentClipIndex] = _clips[_currentClipIndex].copyWith(
+        colorFilterPresetId: normalizedPresetId,
+        colorFilterIntensity: normalizedIntensity,
+      );
+    }
+  }
+
+  void _loadColorFilterForClipIndex(int index) {
+    _selectedColorFilterPresetId = _colorFilterPresetIdForClipIndex(index);
+    _colorFilterIntensity = _colorFilterIntensityForClipIndex(index);
+  }
+
+  void _syncProjectColorFilterFallbackIfProjectWide() {
+    if (hasActiveClipColorFilters(_clips)) return;
+    widget.project.colorFilterPresetId = normalizeColorFilterPresetId(
+      _selectedColorFilterPresetId,
+    );
+    widget.project.colorFilterIntensity = normalizeColorFilterIntensity(
+      _colorFilterIntensity,
+    );
+  }
+
+  void _hydrateClipColorFiltersFromProject() {
+    final fallbackPresetId = normalizeColorFilterPresetId(
+      widget.project.colorFilterPresetId,
+    );
+    final fallbackIntensity = normalizeColorFilterIntensity(
+      widget.project.colorFilterIntensity,
+    );
+    final hasClipLocalFilter = hasActiveClipColorFilters(_clips);
+    _clips = _clips
+        .map(
+          (clip) => hasClipLocalFilter
+              ? clip.copyWith()
+              : clip.copyWith(
+                  colorFilterPresetId: fallbackPresetId,
+                  colorFilterIntensity: fallbackIntensity,
+                ),
+        )
+        .toList();
+    final safeIndex = _clips.isEmpty
+        ? 0
+        : _currentClipIndex.clamp(0, _clips.length - 1).toInt();
+    _loadColorFilterForClipIndex(safeIndex);
+  }
+
+  void _hydrateClipBrightnessAdjustmentsFromProject() {
+    final fallback = normalizeBrightnessAdjustments(
+      widget.project.brightnessAdjustments,
+    );
+    final useClipSpecific = _usesClipSpecificBrightness;
+    _clips = _clips
+        .map(
+          (clip) => clip.copyWith(
+            brightnessAdjustments: useClipSpecific
+                ? clip.brightnessAdjustments
+                : fallback,
+          ),
+        )
+        .toList();
+    final safeIndex = _clips.isEmpty
+        ? 0
+        : _currentClipIndex.clamp(0, _clips.length - 1).toInt();
+    _loadBrightnessAdjustmentsForClipIndex(safeIndex);
+  }
 
   // 스티커 에셋 경로
   final List<String> _stickerAssets = [
@@ -1322,6 +1460,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       }
       await _nextController!.seekTo(nextClip.startTime);
     }
+    await _nextController?.setVolume(_videoVolume);
   }
 
   int? _findNextExistingClipIndex(int startIndex) {
@@ -1551,8 +1690,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
       final clipEnd = _getClipEndTime(clip);
       final hasPlayableClipRange = clipEnd > clip.startTime;
+      final isProjectPreviewMode =
+          _previewPlaybackMode == _PreviewPlaybackMode.project;
 
       if (_isLoopingVisualAdjustmentMode &&
+          !isProjectPreviewMode &&
           hasPlayableClipRange &&
           pos >= clipEnd) {
         _controller!.seekTo(clip.startTime);
@@ -1563,7 +1705,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         return;
       }
 
-      if (_isSoundPanelActive && hasPlayableClipRange && pos >= clipEnd) {
+      if (_isSoundPanelActive &&
+          !isProjectPreviewMode &&
+          hasPlayableClipRange &&
+          pos >= clipEnd) {
         if (effectiveIsPlaying) {
           _pausePlaybackForEditingMode();
           _controller!.seekTo(clip.startTime);
@@ -1579,7 +1724,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       // 1. Trim Mode: Loop or Pause logic
       if (_isTrimMode) {
         _requestTrimUiRebuild();
-        if (hasPlayableClipRange && pos >= clipEnd) {
+        if (!isProjectPreviewMode && hasPlayableClipRange && pos >= clipEnd) {
           _playbackStartPending = false;
           _controller!.pause();
           _controller!.seekTo(clip.startTime);
@@ -1589,7 +1734,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             });
           }
         }
-        return;
+        if (!isProjectPreviewMode) return;
       }
 
       // 2. Normal Mode: clip-only or full-project playback.
@@ -1622,11 +1767,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             oldController?.removeListener(_videoListener);
 
             // 3. Set up new controller
-            _currentClipIndex = (_currentClipIndex + 1).clamp(
-              0,
-              _clips.length - 1,
-            );
+            _currentClipIndex = (_currentClipIndex + 1)
+                .clamp(0, _clips.length - 1)
+                .toInt();
+            _loadBrightnessAdjustmentsForClipIndex(_currentClipIndex);
+            _loadColorFilterForClipIndex(_currentClipIndex);
             _controller!.addListener(_videoListener);
+            unawaited(_controller!.setVolume(_videoVolume));
             _controller!.play();
 
             // 4. Trigger rebuild LAST (old is already gone)
@@ -1683,6 +1830,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       _clips = List.from(widget.project.clips);
     }
     if (_clips.isNotEmpty) {
+      _hydrateClipBrightnessAdjustmentsFromProject();
+      _hydrateClipColorFiltersFromProject();
       await _loadClip(0);
     }
     debugPrint('[EditScreen] _initClips DONE');
@@ -1799,6 +1948,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     if (mounted && !_isDisposed) {
       setState(() {
         _currentClipIndex = index;
+        _loadBrightnessAdjustmentsForClipIndex(index);
+        _loadColorFilterForClipIndex(index);
         _isInitialized = true;
         _isPlaying = autoPlay;
         _isMissingFile = false;
@@ -1818,6 +1969,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     await _controller!.seekTo(clip.startTime);
     final clipSpeed = clip.playbackSpeed.clamp(0.25, 3.0);
     await _controller!.setPlaybackSpeed(clipSpeed);
+    await _controller!.setVolume(_videoVolume);
     await _bgmController?.setPlaybackSpeed(clipSpeed);
     if (_controller == null || _isDisposed || loadEpoch != _controllerEpoch) {
       return;
@@ -1942,10 +2094,19 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   void _updateVolumes() {
     _controller?.setVolume(_videoVolume);
+    _nextController?.setVolume(_videoVolume);
     _bgmController?.setVolume(_bgmVolume);
   }
 
   void _syncEditorStateToProject() {
+    _setCurrentClipBrightnessAdjustments(
+      _brightnessAdjustments,
+      markClipSpecific: false,
+    );
+    _setCurrentClipColorFilter(
+      presetId: _selectedColorFilterPresetId,
+      intensity: _colorFilterIntensity,
+    );
     widget.project.clips = _clips.map((clip) => clip.copyWith()).toList();
     widget.project.bgmPath = _bgmPath;
     widget.project.bgmVolume = _bgmVolume;
@@ -1953,16 +2114,15 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         _currentState.canvasAspectRatioPreset;
     widget.project.canvasBackgroundMode = _currentState.canvasBackgroundMode;
     widget.project.brightnessAdjustmentScope =
-        kBrightnessAdjustmentScopeProjectWide;
-    widget.project.brightnessAdjustments = normalizeBrightnessAdjustments(
-      _brightnessAdjustments,
-    );
-    widget.project.colorFilterPresetId = normalizeColorFilterPresetId(
-      _selectedColorFilterPresetId,
-    );
-    widget.project.colorFilterIntensity = normalizeColorFilterIntensity(
-      _colorFilterIntensity,
-    );
+        normalizeBrightnessAdjustmentScope(
+          widget.project.brightnessAdjustmentScope,
+        );
+    widget.project.brightnessAdjustments =
+        widget.project.brightnessAdjustmentScope ==
+            kBrightnessAdjustmentScopeClipSpecific
+        ? defaultBrightnessAdjustments()
+        : normalizeBrightnessAdjustments(_brightnessAdjustments);
+    _syncProjectColorFilterFallbackIfProjectWide();
   }
 
   double _canvasAspectRatioForPreset(String preset) {
@@ -2227,27 +2387,21 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   void _applyEditorState(EditorState state, {bool keepPlayback = false}) {
     final wasPlaying = keepPlayback ? _isPlaying : false;
     state = _sanitizeEditorStateForSupportedFeatures(state);
-    final previousIndex = _currentClipIndex.clamp(
-      0,
-      (_clips.isEmpty ? 0 : _clips.length - 1),
-    );
+    final previousIndex = _clips.isEmpty
+        ? 0
+        : _currentClipIndex.clamp(0, _clips.length - 1).toInt();
     final previousPath = previousIndex >= 0 && previousIndex < _clips.length
         ? _clips[previousIndex].path
         : null;
 
-    final nextIndex = state.currentClipIndex.clamp(
-      0,
-      (state.clips.isEmpty ? 0 : state.clips.length - 1),
-    );
-    final normalizedNextIndex = state.clips.isEmpty ? 0 : nextIndex;
+    final normalizedNextIndex = state.clips.isEmpty
+        ? 0
+        : state.currentClipIndex.clamp(0, state.clips.length - 1).toInt();
     setState(() {
       _subtitles = state.subtitles.map((e) => e.copy()).toList();
       _stickers = state.stickers.map((e) => e.copy()).toList();
       _selectedFilter = state.filter;
       _filterOpacity = state.filterOpacity;
-      _brightnessAdjustments = normalizeBrightnessAdjustments(
-        state.brightnessAdjustments,
-      );
       _selectedColorFilterPresetId = normalizeColorFilterPresetId(
         state.colorFilterPresetId,
       );
@@ -2259,19 +2413,18 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       _bgmVolume = state.bgmVolume;
       _clips = state.clips.map((e) => e.copyWith()).toList();
       _currentClipIndex = normalizedNextIndex;
+      _loadBrightnessAdjustmentsForClipIndex(normalizedNextIndex);
+      _loadColorFilterForClipIndex(normalizedNextIndex);
       widget.project.canvasAspectRatioPreset = state.canvasAspectRatioPreset;
       widget.project.canvasBackgroundMode = state.canvasBackgroundMode;
       widget.project.brightnessAdjustmentScope =
-          kBrightnessAdjustmentScopeProjectWide;
-      widget.project.brightnessAdjustments = normalizeBrightnessAdjustments(
-        _brightnessAdjustments,
-      );
-      widget.project.colorFilterPresetId = normalizeColorFilterPresetId(
-        _selectedColorFilterPresetId,
-      );
-      widget.project.colorFilterIntensity = normalizeColorFilterIntensity(
-        _colorFilterIntensity,
-      );
+          normalizeBrightnessAdjustmentScope(state.brightnessAdjustmentScope);
+      widget.project.brightnessAdjustments =
+          widget.project.brightnessAdjustmentScope ==
+              kBrightnessAdjustmentScopeClipSpecific
+          ? defaultBrightnessAdjustments()
+          : normalizeBrightnessAdjustments(_brightnessAdjustments);
+      _syncProjectColorFilterFallbackIfProjectWide();
       _recalculateTimelineMetrics();
     });
 
@@ -5032,11 +5185,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
     final oldState = _currentState.copy();
     setState(() {
-      _selectedColorFilterPresetId = normalized;
-      if (normalized != kColorFilterPresetNone &&
-          _colorFilterIntensity == 0.0) {
-        _colorFilterIntensity = kColorFilterIntensityDefault;
+      var nextIntensity = _colorFilterIntensity;
+      if (normalized != kColorFilterPresetNone && nextIntensity == 0.0) {
+        nextIntensity = kColorFilterIntensityDefault;
       }
+      _setCurrentClipColorFilter(
+        presetId: normalized,
+        intensity: nextIntensity,
+      );
     });
     final newState = _currentState.copy();
     _executeStateTransition(oldState, newState);
@@ -5148,8 +5304,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           ? null
                           : (value) {
                               setState(() {
-                                _colorFilterIntensity =
-                                    normalizeColorFilterIntensity(value);
+                                _setCurrentClipColorFilter(
+                                  presetId: _selectedColorFilterPresetId,
+                                  intensity: value,
+                                );
                                 _colorFilterGestureDirty = true;
                               });
                             },
@@ -5317,7 +5475,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         children: [
           _buildInlineSoundSliderRow(
             icon: Icons.volume_up,
-            label: '전체 사운드',
+            label: '원본 사운드',
             value: _videoVolume,
             onChanged: (val) {
               setState(() => _videoVolume = val);
@@ -5330,6 +5488,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 filter: _currentState.filter,
                 filterOpacity: _currentState.filterOpacity,
                 brightnessAdjustments: _currentState.brightnessAdjustments,
+                brightnessAdjustmentScope:
+                    _currentState.brightnessAdjustmentScope,
                 bgmPath: _currentState.bgmPath,
                 videoVolume: val,
                 bgmVolume: _currentState.bgmVolume,
@@ -5344,7 +5504,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           const SizedBox(height: 2),
           _buildInlineSoundSliderRow(
             icon: Icons.music_note,
-            label: '클립 사운드',
+            label: 'BGM 사운드',
             value: _bgmVolume,
             onChanged: (val) {
               setState(() => _bgmVolume = val);
@@ -5357,6 +5517,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 filter: _currentState.filter,
                 filterOpacity: _currentState.filterOpacity,
                 brightnessAdjustments: _currentState.brightnessAdjustments,
+                brightnessAdjustmentScope:
+                    _currentState.brightnessAdjustmentScope,
                 bgmPath: _currentState.bgmPath,
                 videoVolume: _currentState.videoVolume,
                 bgmVolume: val,
@@ -5831,7 +5993,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
               maxValue: maxValue,
               divisions: 200,
               onChanged: (val) {
-                _brightnessAdjustments[_selectedBrightnessProperty] = val;
+                final nextAdjustments = Map<String, double>.from(
+                  _brightnessAdjustments,
+                );
+                nextAdjustments[_selectedBrightnessProperty] = val;
+                _setCurrentClipBrightnessAdjustments(nextAdjustments);
                 _brightnessGestureDirty = true;
                 _traceBrightnessEvent(
                   'brightness_ruler_change',
@@ -6030,6 +6196,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             filter: baseState.filter,
             filterOpacity: baseState.filterOpacity,
             brightnessAdjustments: baseState.brightnessAdjustments,
+            brightnessAdjustmentScope: baseState.brightnessAdjustmentScope,
             bgmPath: baseState.bgmPath,
             videoVolume: baseState.videoVolume,
             bgmVolume: baseState.bgmVolume,
@@ -6254,405 +6421,457 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           builder: (context, snapshot) {
             final thumbs = snapshot.data ?? const <Uint8List>[];
             return Builder(
-              builder: (timelineContext) => Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  Positioned.fill(
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: thumbs.isEmpty
-                          ? Container(
-                              color: _editorSoftSurface,
-                              child: const Center(
-                                child: Icon(
-                                  Icons.movie,
-                                  color: _editorTextMuted,
+              builder: (timelineContext) {
+                void seekPlayheadToLocalX(double localX) {
+                  final state = _trimUiStateNotifier?.value ?? uiState;
+                  final targetMs = _trimTimelineMsFromLocalX(
+                    localX: localX,
+                    state: state,
+                    timelineWidth: itemWidth,
+                  );
+                  _trimUiStateNotifier?.value = state.copyWith(
+                    currentMs: targetMs,
+                  );
+                  _scheduleTrimPreviewSeek(
+                    Duration(milliseconds: targetMs.toInt()),
+                    reason: _TrimTimelineInteraction.playhead,
+                  );
+                  _requestTrimUiRebuild();
+                }
+
+                void seekPlayheadToGlobalPosition(Offset globalPosition) {
+                  final timelineBox =
+                      timelineContext.findRenderObject() as RenderBox?;
+                  if (timelineBox == null) return;
+                  seekPlayheadToLocalX(
+                    timelineBox.globalToLocal(globalPosition).dx,
+                  );
+                }
+
+                void startPlayheadTapAtLocalX(double localX) {
+                  if (_isTrimStartHandleDragging || _isTrimEndHandleDragging) {
+                    _commitTrimGesture();
+                    _isTrimStartHandleDragging = false;
+                    _isTrimEndHandleDragging = false;
+                  }
+                  _setTrimTimelineInteraction(
+                    _TrimTimelineInteraction.playhead,
+                  );
+                  _startTrimGesture();
+                  _isTrimPlayheadDragging = false;
+                  _isTrimStartHandleDragging = false;
+                  _isTrimEndHandleDragging = false;
+                  seekPlayheadToLocalX(localX);
+                }
+
+                void startPlayheadTapAtGlobalPosition(Offset globalPosition) {
+                  if (_isTrimStartHandleDragging || _isTrimEndHandleDragging) {
+                    _commitTrimGesture();
+                    _isTrimStartHandleDragging = false;
+                    _isTrimEndHandleDragging = false;
+                  }
+                  _setTrimTimelineInteraction(
+                    _TrimTimelineInteraction.playhead,
+                  );
+                  _startTrimGesture();
+                  _isTrimPlayheadDragging = false;
+                  _isTrimStartHandleDragging = false;
+                  _isTrimEndHandleDragging = false;
+                  seekPlayheadToGlobalPosition(globalPosition);
+                }
+
+                void finishPlayheadTap() {
+                  if (_activeTrimTimelineInteraction ==
+                      _TrimTimelineInteraction.playhead) {
+                    _isTrimPlayheadDragging = false;
+                    _commitTrimGesture();
+                  }
+                }
+
+                return Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Positioned.fill(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: thumbs.isEmpty
+                            ? Container(
+                                color: _editorSoftSurface,
+                                child: const Center(
+                                  child: Icon(
+                                    Icons.movie,
+                                    color: _editorTextMuted,
+                                  ),
                                 ),
-                              ),
-                            )
-                          : Row(
-                              children: thumbs
-                                  .map(
-                                    (thumb) => Expanded(
-                                      child: Container(
-                                        color: Colors.black,
-                                        child: Image.memory(
-                                          thumb,
-                                          fit: BoxFit.contain,
+                              )
+                            : Row(
+                                children: thumbs
+                                    .map(
+                                      (thumb) => Expanded(
+                                        child: Container(
+                                          color: Colors.black,
+                                          child: Image.memory(
+                                            thumb,
+                                            fit: BoxFit.contain,
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                  )
-                                  .toList(),
-                            ),
-                    ),
-                  ),
-                  Positioned.fill(
-                    child: Row(
-                      children: [
-                        Container(
-                          width: itemWidth * startPercent,
-                          height: trackHeight,
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.58),
-                            borderRadius: const BorderRadius.horizontal(
-                              left: Radius.circular(12),
-                            ),
-                          ),
-                        ),
-                        const Spacer(),
-                        Container(
-                          width: itemWidth * (1 - endPercent),
-                          height: trackHeight,
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.58),
-                            borderRadius: const BorderRadius.horizontal(
-                              right: Radius.circular(12),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Positioned(
-                    left: itemWidth * startPercent,
-                    width: itemWidth * (endPercent - startPercent),
-                    height: trackHeight,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        border: Border.all(
-                          color: const Color(0xFFF2F20D),
-                          width: 3,
-                        ),
-                        borderRadius: BorderRadius.circular(8),
+                                    )
+                                    .toList(),
+                              ),
                       ),
                     ),
-                  ),
-                  Positioned(
-                    left: itemWidth * startPercent - (trimHandleWidth / 2),
-                    top: 0,
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onHorizontalDragStart: (details) {
-                        if (_activeTrimTimelineInteraction ==
-                            _TrimTimelineInteraction.playhead) {
-                          return;
-                        }
-                        if (_isTrimPlayheadDragging) {
-                          return;
-                        }
-                        if (_activeTrimTimelineInteraction ==
-                            _TrimTimelineInteraction.endHandle) {
-                          _commitTrimGesture();
-                        }
-                        _setTrimTimelineInteraction(
-                          _TrimTimelineInteraction.startHandle,
-                        );
-                        _isTrimStartHandleDragging = true;
-                        _isTrimEndHandleDragging = false;
-                        _startTrimGesture();
-                      },
-                      onHorizontalDragUpdate: (details) {
-                        if (_activeTrimTimelineInteraction !=
-                            _TrimTimelineInteraction.startHandle) {
-                          return;
-                        }
-                        final state = _trimUiStateNotifier?.value ?? uiState;
-                        double newStartMs =
-                            state.startMs +
-                            (details.delta.dx / itemWidth * state.maxMs);
-                        newStartMs = newStartMs.clamp(0.0, state.endMs - 100);
-                        if ((newStartMs - clip.startTime.inMilliseconds).abs() <
-                            4) {
-                          return;
-                        }
-                        final newStart = Duration(
-                          milliseconds: newStartMs.toInt(),
-                        );
-                        if (newStart == clip.startTime) return;
-                        clip.startTime = newStart;
-                        _trimGestureDirty = true;
-                        final currentClamped = state.currentMs < newStartMs
-                            ? newStartMs
-                            : state.currentMs;
-                        _trimUiStateNotifier?.value = state.copyWith(
-                          startMs: newStartMs,
-                          currentMs: currentClamped,
-                        );
-                        _scheduleTrimPreviewSeek(
-                          newStart,
-                          reason: _TrimTimelineInteraction.startHandle,
-                        );
-                        _requestTrimUiRebuild();
-                      },
-                      onHorizontalDragEnd: (_) {
-                        if (_activeTrimTimelineInteraction !=
-                            _TrimTimelineInteraction.startHandle) {
-                          return;
-                        }
-                        _isTrimStartHandleDragging = false;
-                        _setTrimTimelineInteraction(
-                          _TrimTimelineInteraction.none,
-                        );
-                        _commitTrimGesture();
-                      },
+                    Positioned.fill(
+                      child: Row(
+                        children: [
+                          Container(
+                            width: itemWidth * startPercent,
+                            height: trackHeight,
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.58),
+                              borderRadius: const BorderRadius.horizontal(
+                                left: Radius.circular(12),
+                              ),
+                            ),
+                          ),
+                          const Spacer(),
+                          Container(
+                            width: itemWidth * (1 - endPercent),
+                            height: trackHeight,
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.58),
+                              borderRadius: const BorderRadius.horizontal(
+                                right: Radius.circular(12),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Positioned(
+                      left: itemWidth * startPercent,
+                      width: itemWidth * (endPercent - startPercent),
+                      height: trackHeight,
                       child: Container(
-                        width: trimHandleWidth,
-                        height: trackHeight,
-                        decoration: const BoxDecoration(
-                          color: Color(0xFFF2F20D),
-                          borderRadius: BorderRadius.horizontal(
-                            left: Radius.circular(8),
+                        decoration: BoxDecoration(
+                          border: Border.all(
+                            color: const Color(0xFFF2F20D),
+                            width: 3,
                           ),
-                        ),
-                        child: const Center(
-                          child: Icon(Icons.chevron_left, size: 16),
+                          borderRadius: BorderRadius.circular(8),
                         ),
                       ),
                     ),
-                  ),
-                  Positioned(
-                    left: itemWidth * endPercent - (trimHandleWidth / 2),
-                    top: 0,
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onHorizontalDragStart: (details) {
-                        if (_activeTrimTimelineInteraction ==
-                            _TrimTimelineInteraction.playhead) {
-                          return;
-                        }
-                        if (_isTrimPlayheadDragging) {
-                          return;
-                        }
-                        if (_activeTrimTimelineInteraction ==
-                            _TrimTimelineInteraction.startHandle) {
-                          _commitTrimGesture();
-                        }
-
-                        _setTrimTimelineInteraction(
-                          _TrimTimelineInteraction.endHandle,
-                        );
-                        _isTrimEndHandleDragging = true;
-                        _isTrimStartHandleDragging = false;
-                        _startTrimGesture();
-                      },
-                      onHorizontalDragUpdate: (details) {
-                        if (_activeTrimTimelineInteraction !=
-                            _TrimTimelineInteraction.endHandle) {
-                          return;
-                        }
-                        final state = _trimUiStateNotifier?.value ?? uiState;
-                        double newEndMs =
-                            state.endMs +
-                            (details.delta.dx / itemWidth * state.maxMs);
-                        newEndMs = newEndMs.clamp(
-                          state.startMs + 100,
-                          state.maxMs,
-                        );
-                        if ((newEndMs - clip.endTime.inMilliseconds).abs() <
-                            4) {
-                          return;
-                        }
-                        final newEnd = Duration(milliseconds: newEndMs.toInt());
-                        if (newEnd == clip.endTime) return;
-                        clip.endTime = newEnd;
-                        _trimGestureDirty = true;
-                        final currentClamped = state.currentMs > newEndMs
-                            ? newEndMs
-                            : state.currentMs;
-                        _trimUiStateNotifier?.value = state.copyWith(
-                          endMs: newEndMs,
-                          currentMs: currentClamped,
-                        );
-                        _scheduleTrimPreviewSeek(
-                          newEnd,
-                          reason: _TrimTimelineInteraction.endHandle,
-                        );
-                        _requestTrimUiRebuild();
-                      },
-                      onHorizontalDragEnd: (_) {
-                        if (_activeTrimTimelineInteraction !=
-                            _TrimTimelineInteraction.endHandle) {
-                          return;
-                        }
-                        _isTrimEndHandleDragging = false;
-                        _setTrimTimelineInteraction(
-                          _TrimTimelineInteraction.none,
-                        );
-                        _commitTrimGesture();
-                      },
-                      child: Container(
-                        width: trimHandleWidth,
-                        height: trackHeight,
-                        decoration: const BoxDecoration(
-                          color: Color(0xFFF2F20D),
-                          borderRadius: BorderRadius.horizontal(
-                            right: Radius.circular(8),
-                          ),
+                    Positioned.fill(
+                      child: GestureDetector(
+                        key: const ValueKey(
+                          'selected_trim_timeline_tap_target',
                         ),
-                        child: const Center(
-                          child: Icon(Icons.chevron_right, size: 16),
-                        ),
+                        behavior: HitTestBehavior.opaque,
+                        onTapUp: (details) {
+                          startPlayheadTapAtLocalX(details.localPosition.dx);
+                          finishPlayheadTap();
+                        },
+                        child: const SizedBox.expand(),
                       ),
                     ),
-                  ),
-                  Positioned(
-                    left:
-                        (itemWidth * scrubberPercent) - (trimPlayheadWidth / 2),
-                    top: 0,
-                    bottom: 0,
-                    child: IgnorePointer(
-                      ignoring: !playheadReceivesPointer,
+                    Positioned(
+                      left: itemWidth * startPercent - (trimHandleWidth / 2),
+                      top: 0,
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
                         onHorizontalDragStart: (details) {
                           if (_activeTrimTimelineInteraction ==
-                              _TrimTimelineInteraction.startHandle) {
-                            _commitTrimGesture();
+                              _TrimTimelineInteraction.playhead) {
+                            return;
+                          }
+                          if (_isTrimPlayheadDragging) {
+                            return;
                           }
                           if (_activeTrimTimelineInteraction ==
                               _TrimTimelineInteraction.endHandle) {
                             _commitTrimGesture();
                           }
-
-                          final state = _trimUiStateNotifier?.value ?? uiState;
                           _setTrimTimelineInteraction(
-                            _TrimTimelineInteraction.playhead,
+                            _TrimTimelineInteraction.startHandle,
                           );
-                          _startTrimGesture();
-                          _isTrimPlayheadDragging = true;
-                          _isTrimStartHandleDragging = false;
+                          _isTrimStartHandleDragging = true;
                           _isTrimEndHandleDragging = false;
-
-                          final timelineBox =
-                              timelineContext.findRenderObject() as RenderBox?;
-                          if (timelineBox == null) return;
-                          final localX = timelineBox
-                              .globalToLocal(details.globalPosition)
-                              .dx;
-                          final nextCurrentMs = _trimTimelineMsFromLocalX(
-                            localX: localX,
-                            state: state,
-                            timelineWidth: itemWidth,
-                          );
-                          _trimUiStateNotifier?.value = state.copyWith(
-                            currentMs: nextCurrentMs,
-                          );
-                          _scheduleTrimPreviewSeek(
-                            Duration(milliseconds: nextCurrentMs.toInt()),
-                            reason: _TrimTimelineInteraction.playhead,
-                          );
-                          _requestTrimUiRebuild();
+                          _startTrimGesture();
                         },
                         onHorizontalDragUpdate: (details) {
                           if (_activeTrimTimelineInteraction !=
-                              _TrimTimelineInteraction.playhead) {
+                              _TrimTimelineInteraction.startHandle) {
                             return;
                           }
                           final state = _trimUiStateNotifier?.value ?? uiState;
-                          final timelineBox =
-                              timelineContext.findRenderObject() as RenderBox?;
-                          if (timelineBox == null) return;
-                          final localX = timelineBox
-                              .globalToLocal(details.globalPosition)
-                              .dx;
-                          final nextCurrentMs = _trimTimelineMsFromLocalX(
-                            localX: localX,
-                            state: state,
-                            timelineWidth: itemWidth,
+                          double newStartMs =
+                              state.startMs +
+                              (details.delta.dx / itemWidth * state.maxMs);
+                          newStartMs = newStartMs.clamp(0.0, state.endMs - 100);
+                          if ((newStartMs - clip.startTime.inMilliseconds)
+                                  .abs() <
+                              4) {
+                            return;
+                          }
+                          final newStart = Duration(
+                            milliseconds: newStartMs.toInt(),
                           );
+                          if (newStart == clip.startTime) return;
+                          clip.startTime = newStart;
+                          _trimGestureDirty = true;
+                          final currentClamped = state.currentMs < newStartMs
+                              ? newStartMs
+                              : state.currentMs;
                           _trimUiStateNotifier?.value = state.copyWith(
-                            currentMs: nextCurrentMs,
+                            startMs: newStartMs,
+                            currentMs: currentClamped,
                           );
                           _scheduleTrimPreviewSeek(
-                            Duration(milliseconds: nextCurrentMs.toInt()),
-                            reason: _TrimTimelineInteraction.playhead,
+                            newStart,
+                            reason: _TrimTimelineInteraction.startHandle,
                           );
                           _requestTrimUiRebuild();
                         },
                         onHorizontalDragEnd: (_) {
                           if (_activeTrimTimelineInteraction !=
+                              _TrimTimelineInteraction.startHandle) {
+                            return;
+                          }
+                          _isTrimStartHandleDragging = false;
+                          _setTrimTimelineInteraction(
+                            _TrimTimelineInteraction.none,
+                          );
+                          _commitTrimGesture();
+                        },
+                        child: Container(
+                          width: trimHandleWidth,
+                          height: trackHeight,
+                          decoration: const BoxDecoration(
+                            color: Color(0xFFF2F20D),
+                            borderRadius: BorderRadius.horizontal(
+                              left: Radius.circular(8),
+                            ),
+                          ),
+                          child: const Center(
+                            child: Icon(Icons.chevron_left, size: 16),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: itemWidth * endPercent - (trimHandleWidth / 2),
+                      top: 0,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onHorizontalDragStart: (details) {
+                          if (_activeTrimTimelineInteraction ==
                               _TrimTimelineInteraction.playhead) {
                             return;
                           }
-                          _isTrimPlayheadDragging = false;
-                          _commitTrimGesture();
-                        },
-                        onTapDown: (details) {
-                          if (_isTrimStartHandleDragging ||
-                              _isTrimEndHandleDragging) {
-                            _commitTrimGesture();
-                            _isTrimStartHandleDragging = false;
-                            _isTrimEndHandleDragging = false;
+                          if (_isTrimPlayheadDragging) {
+                            return;
                           }
+                          if (_activeTrimTimelineInteraction ==
+                              _TrimTimelineInteraction.startHandle) {
+                            _commitTrimGesture();
+                          }
+
                           _setTrimTimelineInteraction(
-                            _TrimTimelineInteraction.playhead,
+                            _TrimTimelineInteraction.endHandle,
                           );
-                          _startTrimGesture();
-                          _isTrimPlayheadDragging = false;
+                          _isTrimEndHandleDragging = true;
                           _isTrimStartHandleDragging = false;
-                          _isTrimEndHandleDragging = false;
+                          _startTrimGesture();
+                        },
+                        onHorizontalDragUpdate: (details) {
+                          if (_activeTrimTimelineInteraction !=
+                              _TrimTimelineInteraction.endHandle) {
+                            return;
+                          }
                           final state = _trimUiStateNotifier?.value ?? uiState;
-                          final timelineBox =
-                              timelineContext.findRenderObject() as RenderBox?;
-                          if (timelineBox == null) return;
-                          final localX = timelineBox
-                              .globalToLocal(details.globalPosition)
-                              .dx;
-                          final targetMs = _trimTimelineMsFromLocalX(
-                            localX: localX,
-                            state: state,
-                            timelineWidth: itemWidth,
+                          double newEndMs =
+                              state.endMs +
+                              (details.delta.dx / itemWidth * state.maxMs);
+                          newEndMs = newEndMs.clamp(
+                            state.startMs + 100,
+                            state.maxMs,
                           );
+                          if ((newEndMs - clip.endTime.inMilliseconds).abs() <
+                              4) {
+                            return;
+                          }
+                          final newEnd = Duration(
+                            milliseconds: newEndMs.toInt(),
+                          );
+                          if (newEnd == clip.endTime) return;
+                          clip.endTime = newEnd;
+                          _trimGestureDirty = true;
+                          final currentClamped = state.currentMs > newEndMs
+                              ? newEndMs
+                              : state.currentMs;
                           _trimUiStateNotifier?.value = state.copyWith(
-                            currentMs: targetMs,
+                            endMs: newEndMs,
+                            currentMs: currentClamped,
                           );
                           _scheduleTrimPreviewSeek(
-                            Duration(milliseconds: targetMs.toInt()),
-                            reason: _TrimTimelineInteraction.playhead,
+                            newEnd,
+                            reason: _TrimTimelineInteraction.endHandle,
                           );
                           _requestTrimUiRebuild();
                         },
-                        onTapUp: (_) {
-                          if (_activeTrimTimelineInteraction ==
-                              _TrimTimelineInteraction.playhead) {
-                            _isTrimPlayheadDragging = false;
-                            _commitTrimGesture();
+                        onHorizontalDragEnd: (_) {
+                          if (_activeTrimTimelineInteraction !=
+                              _TrimTimelineInteraction.endHandle) {
+                            return;
                           }
-                        },
-                        onTapCancel: () {
-                          if (_activeTrimTimelineInteraction ==
-                              _TrimTimelineInteraction.playhead) {
-                            _isTrimPlayheadDragging = false;
-                            _commitTrimGesture();
-                          }
+                          _isTrimEndHandleDragging = false;
+                          _setTrimTimelineInteraction(
+                            _TrimTimelineInteraction.none,
+                          );
+                          _commitTrimGesture();
                         },
                         child: Container(
-                          width: trimPlayheadWidth,
-                          alignment: Alignment.center,
-                          child: Center(
-                            child: Container(
-                              width: 2,
-                              height: trackHeight,
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(999),
-                                boxShadow: const [
-                                  BoxShadow(
-                                    color: Colors.black45,
-                                    blurRadius: 3,
-                                    offset: Offset(0, 1),
-                                  ),
-                                ],
+                          width: trimHandleWidth,
+                          height: trackHeight,
+                          decoration: const BoxDecoration(
+                            color: Color(0xFFF2F20D),
+                            borderRadius: BorderRadius.horizontal(
+                              right: Radius.circular(8),
+                            ),
+                          ),
+                          child: const Center(
+                            child: Icon(Icons.chevron_right, size: 16),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left:
+                          (itemWidth * scrubberPercent) -
+                          (trimPlayheadWidth / 2),
+                      top: 0,
+                      bottom: 0,
+                      child: IgnorePointer(
+                        ignoring: !playheadReceivesPointer,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onHorizontalDragStart: (details) {
+                            if (_activeTrimTimelineInteraction ==
+                                _TrimTimelineInteraction.startHandle) {
+                              _commitTrimGesture();
+                            }
+                            if (_activeTrimTimelineInteraction ==
+                                _TrimTimelineInteraction.endHandle) {
+                              _commitTrimGesture();
+                            }
+
+                            final state =
+                                _trimUiStateNotifier?.value ?? uiState;
+                            _setTrimTimelineInteraction(
+                              _TrimTimelineInteraction.playhead,
+                            );
+                            _startTrimGesture();
+                            _isTrimPlayheadDragging = true;
+                            _isTrimStartHandleDragging = false;
+                            _isTrimEndHandleDragging = false;
+
+                            final timelineBox =
+                                timelineContext.findRenderObject()
+                                    as RenderBox?;
+                            if (timelineBox == null) return;
+                            final localX = timelineBox
+                                .globalToLocal(details.globalPosition)
+                                .dx;
+                            final nextCurrentMs = _trimTimelineMsFromLocalX(
+                              localX: localX,
+                              state: state,
+                              timelineWidth: itemWidth,
+                            );
+                            _trimUiStateNotifier?.value = state.copyWith(
+                              currentMs: nextCurrentMs,
+                            );
+                            _scheduleTrimPreviewSeek(
+                              Duration(milliseconds: nextCurrentMs.toInt()),
+                              reason: _TrimTimelineInteraction.playhead,
+                            );
+                            _requestTrimUiRebuild();
+                          },
+                          onHorizontalDragUpdate: (details) {
+                            if (_activeTrimTimelineInteraction !=
+                                _TrimTimelineInteraction.playhead) {
+                              return;
+                            }
+                            final state =
+                                _trimUiStateNotifier?.value ?? uiState;
+                            final timelineBox =
+                                timelineContext.findRenderObject()
+                                    as RenderBox?;
+                            if (timelineBox == null) return;
+                            final localX = timelineBox
+                                .globalToLocal(details.globalPosition)
+                                .dx;
+                            final nextCurrentMs = _trimTimelineMsFromLocalX(
+                              localX: localX,
+                              state: state,
+                              timelineWidth: itemWidth,
+                            );
+                            _trimUiStateNotifier?.value = state.copyWith(
+                              currentMs: nextCurrentMs,
+                            );
+                            _scheduleTrimPreviewSeek(
+                              Duration(milliseconds: nextCurrentMs.toInt()),
+                              reason: _TrimTimelineInteraction.playhead,
+                            );
+                            _requestTrimUiRebuild();
+                          },
+                          onHorizontalDragEnd: (_) {
+                            if (_activeTrimTimelineInteraction !=
+                                _TrimTimelineInteraction.playhead) {
+                              return;
+                            }
+                            _isTrimPlayheadDragging = false;
+                            _commitTrimGesture();
+                          },
+                          onTapDown: (details) {
+                            startPlayheadTapAtGlobalPosition(
+                              details.globalPosition,
+                            );
+                          },
+                          onTapUp: (_) {
+                            finishPlayheadTap();
+                          },
+                          onTapCancel: finishPlayheadTap,
+                          child: Container(
+                            width: trimPlayheadWidth,
+                            alignment: Alignment.center,
+                            child: Center(
+                              child: Container(
+                                key: const ValueKey(
+                                  'selected_trim_timeline_playhead',
+                                ),
+                                width: 2,
+                                height: trackHeight,
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(999),
+                                  boxShadow: const [
+                                    BoxShadow(
+                                      color: Colors.black45,
+                                      blurRadius: 3,
+                                      offset: Offset(0, 1),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-                ],
-              ),
+                  ],
+                );
+              },
             );
           },
         ),
@@ -7170,25 +7389,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
     try {
       // Sync State to Project before Export
-      // widget.project.clips is already updated via reference in _clips (if we modified objects directly)
-      // If _clips are copies, we'd need to sync back.
-      // Assuming _clips are references or we need to update project.clips:
-      widget.project.clips = _clips.map((clip) => clip.copyWith()).toList();
-
-      widget.project.bgmPath = _currentState.bgmPath;
-      widget.project.bgmVolume = _currentState.bgmVolume;
+      _syncEditorStateToProject();
       widget.project.quality = finalQuality;
-      widget.project.brightnessAdjustmentScope =
-          kBrightnessAdjustmentScopeProjectWide;
-      widget.project.brightnessAdjustments = normalizeBrightnessAdjustments(
-        _brightnessAdjustments,
-      );
-      widget.project.colorFilterPresetId = normalizeColorFilterPresetId(
-        _selectedColorFilterPresetId,
-      );
-      widget.project.colorFilterIntensity = normalizeColorFilterIntensity(
-        _colorFilterIntensity,
-      );
 
       await _runExportPreflight(
         videoManager: videoManager,
@@ -7229,11 +7431,27 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         progress: _defaultExportProgressForPhase('rendering'),
       );
 
+      final exportOriginalAudioVolume = _currentState.videoVolume
+          .clamp(0.0, 1.0)
+          .toDouble();
+      final exportAudioConfigByClipIndex = <double>[
+        for (final clip in exportClips)
+          (exportOriginalAudioVolume * clip.volume).clamp(0.0, 1.0).toDouble(),
+      ];
+      final exportAudioConfig = <String, double>{
+        for (var index = 0; index < exportClips.length; index++)
+          exportClips[index].path: exportAudioConfigByClipIndex[index],
+      };
+
       final resultPath = await videoManager.exportVlog(
         clips: exportClips,
-        audioConfig: widget.project.audioConfig,
+        audioConfig: exportAudioConfig,
+        audioConfigByClipIndex: exportAudioConfigByClipIndex,
         bgmPath: widget.project.bgmPath,
         bgmVolume: widget.project.bgmVolume,
+        forceMuteOriginal: exportAudioConfigByClipIndex.every(
+          (volume) => volume <= 0.0,
+        ),
         quality: widget.project.quality,
         userTier: userTierKey,
         canvasAspectRatioPreset: widget.project.canvasAspectRatioPreset,
@@ -7425,6 +7643,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                             filterOpacity: _currentState.filterOpacity,
                             brightnessAdjustments:
                                 _currentState.brightnessAdjustments,
+                            brightnessAdjustmentScope:
+                                _currentState.brightnessAdjustmentScope,
                             bgmPath: _currentState.bgmPath,
                             videoVolume: 1.0,
                             bgmVolume: 0.5,
@@ -7499,6 +7719,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                               filterOpacity: _currentState.filterOpacity,
                               brightnessAdjustments:
                                   _currentState.brightnessAdjustments,
+                              brightnessAdjustmentScope:
+                                  _currentState.brightnessAdjustmentScope,
                               bgmPath: path,
                               videoVolume: _currentState.videoVolume,
                               bgmVolume: _currentState.bgmVolume,
@@ -7529,6 +7751,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                               filterOpacity: _currentState.filterOpacity,
                               brightnessAdjustments:
                                   _currentState.brightnessAdjustments,
+                              brightnessAdjustmentScope:
+                                  _currentState.brightnessAdjustmentScope,
                               bgmPath: null,
                               videoVolume: _currentState.videoVolume,
                               bgmVolume: _currentState.bgmVolume,
@@ -7562,7 +7786,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   const SizedBox(height: 16),
                   _buildAudioSliderRow(
                     icon: Icons.graphic_eq,
-                    label: 'Original',
+                    label: '원본 사운드',
                     value: _videoVolume,
                     color: _primaryColor,
                     onChanged: (val) {
@@ -7577,6 +7801,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         filterOpacity: _currentState.filterOpacity,
                         brightnessAdjustments:
                             _currentState.brightnessAdjustments,
+                        brightnessAdjustmentScope:
+                            _currentState.brightnessAdjustmentScope,
                         bgmPath: _currentState.bgmPath,
                         videoVolume: val,
                         bgmVolume: _currentState.bgmVolume,
@@ -7592,7 +7818,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   const SizedBox(height: 20),
                   _buildAudioSliderRow(
                     icon: Icons.music_note,
-                    label: 'BGM',
+                    label: 'BGM 사운드',
                     value: _bgmVolume,
                     color: _editorSecondaryAccent,
                     onChanged: (val) {
@@ -7607,6 +7833,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         filterOpacity: _currentState.filterOpacity,
                         brightnessAdjustments:
                             _currentState.brightnessAdjustments,
+                        brightnessAdjustmentScope:
+                            _currentState.brightnessAdjustmentScope,
                         bgmPath: _currentState.bgmPath,
                         videoVolume: _currentState.videoVolume,
                         bgmVolume: val,
@@ -7816,6 +8044,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     filter: filter,
                     filterOpacity: _currentState.filterOpacity,
                     brightnessAdjustments: _currentState.brightnessAdjustments,
+                    brightnessAdjustmentScope:
+                        _currentState.brightnessAdjustmentScope,
                     bgmPath: _currentState.bgmPath,
                     videoVolume: _currentState.videoVolume,
                     bgmVolume: _currentState.bgmVolume,
@@ -7908,6 +8138,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         filter: _currentState.filter,
         filterOpacity: _currentState.filterOpacity,
         brightnessAdjustments: _currentState.brightnessAdjustments,
+        brightnessAdjustmentScope: _currentState.brightnessAdjustmentScope,
         bgmPath: _currentState.bgmPath,
         videoVolume: _currentState.videoVolume,
         bgmVolume: _currentState.bgmVolume,
@@ -7972,6 +8203,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       filter: _currentState.filter,
       filterOpacity: _currentState.filterOpacity,
       brightnessAdjustments: _currentState.brightnessAdjustments,
+      brightnessAdjustmentScope: _currentState.brightnessAdjustmentScope,
       bgmPath: _currentState.bgmPath,
       videoVolume: _currentState.videoVolume,
       bgmVolume: _currentState.bgmVolume,
