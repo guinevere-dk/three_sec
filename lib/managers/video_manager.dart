@@ -3988,8 +3988,12 @@ class VideoManager extends ChangeNotifier {
   }
 
   Future<void> loadClipsFromCurrentAlbum() async {
-    recordedVideoPaths = [];
-    final albumDir = await _rawAlbumDir(currentAlbum);
+    await loadClipsFromAlbum(currentAlbum);
+  }
+
+  Future<void> loadClipsFromAlbum(String albumName) async {
+    final requestedAlbum = _normalizeCloudAlbumName(albumName);
+    final albumDir = await _rawAlbumDir(requestedAlbum);
     final files = albumDir
         .listSync()
         .whereType<File>()
@@ -4000,13 +4004,55 @@ class VideoManager extends ChangeNotifier {
       (a, b) =>
           File(b).lastModifiedSync().compareTo(File(a).lastModifiedSync()),
     );
-    recordedVideoPaths = files;
-    await _mergeCloudOnlyPlaceholdersForCurrentAlbum();
-    _sortRecordedVideoPathsByCaptureDate();
+    final loadedPaths = <String>[...files];
+    final localSortedPaths = _sortLibraryClipPathsByCaptureDate(
+      loadedPaths,
+      albumName: requestedAlbum,
+    );
+    if (currentAlbum != requestedAlbum) {
+      debugPrint(
+        '[VideoManager][LibraryLoad] stale_album_result_ignored '
+        'requested=$requestedAlbum current=$currentAlbum',
+      );
+      return;
+    }
+    recordedVideoPaths = localSortedPaths;
     unawaited(_preloadClipDurationsForPaths(recordedVideoPaths));
-    await _cleanupCloudSyncedPaths();
-    await _cleanupClipOwnershipMetadata();
     notifyListeners();
+
+    loadedPaths.addAll(
+      await _cloudOnlyPlaceholdersForAlbum(
+        requestedAlbum,
+        localPaths: loadedPaths,
+      ),
+    );
+    final sortedPaths = _sortLibraryClipPathsByCaptureDate(
+      loadedPaths,
+      albumName: requestedAlbum,
+    );
+    if (currentAlbum != requestedAlbum) {
+      debugPrint(
+        '[VideoManager][LibraryLoad] stale_album_result_ignored '
+        'requested=$requestedAlbum current=$currentAlbum',
+      );
+      return;
+    }
+    recordedVideoPaths = sortedPaths;
+    unawaited(_preloadClipDurationsForPaths(recordedVideoPaths));
+    unawaited(_cleanupLibraryAlbumLoadMetadata());
+    notifyListeners();
+  }
+
+  Future<void> _cleanupLibraryAlbumLoadMetadata() async {
+    try {
+      await _cleanupCloudSyncedPaths();
+      await _cleanupClipOwnershipMetadata();
+    } catch (error) {
+      debugPrint(
+        '[VideoManager][LibraryLoad] metadata_cleanup_failed '
+        'errorType=${error.runtimeType}',
+      );
+    }
   }
 
   Future<void> syncCloudMetadataToLibrary({String trigger = 'manual'}) async {
@@ -4063,6 +4109,18 @@ class VideoManager extends ChangeNotifier {
   }
 
   Future<void> _mergeCloudOnlyPlaceholdersForCurrentAlbum() async {
+    final placeholders = await _cloudOnlyPlaceholdersForAlbum(
+      currentAlbum,
+      localPaths: recordedVideoPaths,
+    );
+    if (placeholders.isEmpty) return;
+    recordedVideoPaths.addAll(placeholders);
+  }
+
+  Future<List<String>> _cloudOnlyPlaceholdersForAlbum(
+    String albumName, {
+    required List<String> localPaths,
+  }) async {
     if (_cloudMetadataByPath.isEmpty &&
         !AuthService().isGuest &&
         UserStatusManager().canReadExistingCloudClips()) {
@@ -4076,21 +4134,32 @@ class VideoManager extends ChangeNotifier {
       }
     }
 
-    final placeholders = _cloudMetadataByPath.entries
+    final requestedAlbum = _sanitizeRawClipAlbumName(albumName);
+    return _cloudMetadataByPath.entries
         .where((entry) => !entry.value.isDeleted && !entry.value.isTombstone)
-        .where((entry) => _cloudPlaceholderAlbum(entry.key) == currentAlbum)
-        .where((entry) => !recordedVideoPaths.contains(entry.key))
-        .where((entry) => !_hasLocalClipMatchingCloudVideo(entry.value))
+        .where((entry) => _cloudPlaceholderAlbum(entry.key) == requestedAlbum)
+        .where((entry) => !localPaths.contains(entry.key))
+        .where(
+          (entry) => !_hasLocalPathMatchingCloudVideo(localPaths, entry.value),
+        )
         .map((entry) => entry.key)
         .toList(growable: false);
-    if (placeholders.isEmpty) return;
-    recordedVideoPaths.addAll(placeholders);
   }
 
   void _sortRecordedVideoPathsByCaptureDate() {
-    if (recordedVideoPaths.length < 2) return;
+    recordedVideoPaths = _sortLibraryClipPathsByCaptureDate(
+      recordedVideoPaths,
+      albumName: currentAlbum,
+    );
+  }
 
-    final indexedPaths = recordedVideoPaths.asMap().entries.toList()
+  List<String> _sortLibraryClipPathsByCaptureDate(
+    List<String> paths, {
+    required String albumName,
+  }) {
+    if (paths.length < 2) return List<String>.from(paths);
+
+    final indexedPaths = paths.asMap().entries.toList()
       ..sort((a, b) {
         final aDate = _libraryClipCaptureDate(a.value);
         final bDate = _libraryClipCaptureDate(b.value);
@@ -4105,17 +4174,17 @@ class VideoManager extends ChangeNotifier {
         return a.key.compareTo(b.key);
       });
 
-    recordedVideoPaths = indexedPaths
+    final sortedPaths = indexedPaths
         .map((entry) => entry.value)
         .toList(growable: false);
 
-    final localCount = recordedVideoPaths
+    final localCount = sortedPaths
         .where((path) => !_isCloudOnlyPlaceholderPath(path))
         .length;
-    final cloudOnlyCount = recordedVideoPaths.length - localCount;
-    if (localCount == 0 || cloudOnlyCount == 0) return;
+    final cloudOnlyCount = sortedPaths.length - localCount;
+    if (localCount == 0 || cloudOnlyCount == 0) return sortedPaths;
 
-    final orderSummary = recordedVideoPaths
+    final orderSummary = sortedPaths
         .take(6)
         .map((path) {
           final type = _isCloudOnlyPlaceholderPath(path) ? 'cloud' : 'local';
@@ -4125,9 +4194,10 @@ class VideoManager extends ChangeNotifier {
         })
         .join(',');
     debugPrint(
-      '[VideoManager][LibrarySort] album=$currentAlbum total=${recordedVideoPaths.length} '
+      '[VideoManager][LibrarySort] album=$albumName total=${sortedPaths.length} '
       'local=$localCount cloudOnly=$cloudOnlyCount order=$orderSummary',
     );
+    return sortedPaths;
   }
 
   DateTime? _libraryClipCaptureDate(String path) {
@@ -4144,10 +4214,6 @@ class VideoManager extends ChangeNotifier {
     } catch (_) {
       return null;
     }
-  }
-
-  bool _hasLocalClipMatchingCloudVideo(VideoMetadata video) {
-    return _hasLocalPathMatchingCloudVideo(recordedVideoPaths, video);
   }
 
   String _cloudPlaceholderPath(String albumName, VideoMetadata video) {
@@ -4497,12 +4563,57 @@ class VideoManager extends ChangeNotifier {
 
   /// 특정 앨범의 클립 목록 반환 (캐시 우선)
   List<String> getClipsInAlbum(String albumName) {
-    // 현재 앨범이면 캐시된 데이터 사용
-    if (currentAlbum == albumName) {
-      return recordedVideoPaths;
+    if (_sanitizeRawClipAlbumName(currentAlbum) !=
+        _sanitizeRawClipAlbumName(albumName)) {
+      return [];
     }
-    // 다른 앨범은 빈 리스트 (UI에서는 getClipCountSync 사용)
-    return [];
+    return recordedVideoPaths
+        .where((path) => isClipPathInAlbum(path, albumName))
+        .toList(growable: false);
+  }
+
+  bool isClipPathInAlbum(String path, String albumName) {
+    final safeAlbumName = _sanitizeRawClipAlbumName(albumName);
+    if (_isCloudOnlyPlaceholderPath(path)) {
+      final placeholderAlbum = _cloudPlaceholderAlbum(path).trim();
+      if (placeholderAlbum.isNotEmpty) {
+        return placeholderAlbum == safeAlbumName;
+      }
+      final metadata = _cloudMetadataByPath[path];
+      if (metadata == null) return false;
+      return _sanitizeRawClipAlbumName(_cloudAlbumNameForLibrary(metadata)) ==
+          safeAlbumName;
+    }
+
+    final parentAlbum = _normalizePathAlbumSegment(p.basename(p.dirname(path)));
+    if (parentAlbum == safeAlbumName) return true;
+
+    final segments = path
+        .split(RegExp(r'[\\/]'))
+        .map(_decodePathSegment)
+        .toList(growable: false);
+    for (var index = 0; index < segments.length - 2; index++) {
+      if (segments[index] != _rawBaseName) continue;
+      final albumSegment = _normalizePathAlbumSegment(segments[index + 1]);
+      if (albumSegment == safeAlbumName) return true;
+    }
+    return false;
+  }
+
+  String _normalizePathAlbumSegment(String segment) {
+    final decoded = _decodePathSegment(segment).trim();
+    if (decoded.isEmpty) return decoded;
+    return _sanitizeRawClipAlbumName(decoded);
+  }
+
+  String _decodePathSegment(String segment) {
+    try {
+      return Uri.decodeComponent(segment);
+    } on FormatException {
+      return segment;
+    } on ArgumentError {
+      return segment;
+    }
   }
 
   /// 특정 앨범의 클립 수를 실시간 조회 (동기적, 파일 시스템)

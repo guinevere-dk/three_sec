@@ -1,0 +1,5 @@
+Improved Library folder and update prompt reliability.
+
+- Fixed Library folders so each folder shows only its own clips.
+- Prevented stale clip lists from a previous folder after quick folder switching.
+- Improved update prompts so they are based only on builds actually published on Play Store.

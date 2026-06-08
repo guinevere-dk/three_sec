@@ -307,21 +307,28 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
   }
 
-  Future<void> _loadClipsFromCurrentAlbum() async {
-    final album = videoManager.currentAlbum;
+  Future<void> _loadClipsFromCurrentAlbum([String? expectedAlbum]) async {
+    final album = expectedAlbum ?? videoManager.currentAlbum;
     final startedAt = DateTime.now();
     debugPrint('$_traceTag load_clips_start album=$album');
     setState(() {
       videoManager.recordedVideoPaths.clear();
     });
     try {
-      await videoManager.loadClipsFromCurrentAlbum();
+      await videoManager.loadClipsFromAlbum(album);
       final elapsedMs = DateTime.now().difference(startedAt).inMilliseconds;
+      if (!mounted || !_isInAlbumDetail || videoManager.currentAlbum != album) {
+        debugPrint(
+          '$_traceTag load_clips_stale_ignored album=$album '
+          'current=${videoManager.currentAlbum} elapsedMs=$elapsedMs',
+        );
+        return;
+      }
       debugPrint(
         '$_traceTag load_clips_success album=$album '
         'count=${videoManager.recordedVideoPaths.length} elapsedMs=$elapsedMs',
       );
-      if (mounted) setState(() {});
+      setState(() {});
     } catch (error) {
       final elapsedMs = DateTime.now().difference(startedAt).inMilliseconds;
       debugPrint(
@@ -550,7 +557,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                 _selectedClipPaths.clear();
                                 _isClipSelectionMode = false;
                               });
-                              _loadClipsFromCurrentAlbum();
+                              _loadClipsFromCurrentAlbum(albumName);
                             }
                           },
                           onLongPress: canSelect
@@ -608,7 +615,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   List<String> _visibleClipPathsForCurrentFilter() {
-    return videoManager.recordedVideoPaths
+    return videoManager
+        .getClipsInAlbum(videoManager.currentAlbum)
         .where(
           (path) =>
               videoManager.isClipVisibleByStorageFilter(path, _storageFilter),
@@ -1094,7 +1102,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   void _toggleSelectAllClips() {
-    final visibleClipPaths = videoManager.recordedVideoPaths
+    final visibleClipPaths = videoManager
+        .getClipsInAlbum(videoManager.currentAlbum)
         .where(
           (path) =>
               videoManager.isClipVisibleByStorageFilter(path, _storageFilter),

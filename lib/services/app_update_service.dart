@@ -62,6 +62,9 @@ class AppUpdateConfig {
   final SemanticVersion? minimumRequiredVersion;
   final int? latestBuildNumber;
   final int? minimumRequiredBuildNumber;
+  final SemanticVersion? latestCandidateVersion;
+  final int? latestCandidateBuildNumber;
+  final String? candidateStatus;
   final String? playStoreUrl;
   final String? message;
 
@@ -70,40 +73,107 @@ class AppUpdateConfig {
     this.minimumRequiredVersion,
     this.latestBuildNumber,
     this.minimumRequiredBuildNumber,
+    this.latestCandidateVersion,
+    this.latestCandidateBuildNumber,
+    this.candidateStatus,
     this.playStoreUrl,
     this.message,
   });
 
   factory AppUpdateConfig.fromJson(Map<String, dynamic> json) {
-    final latest = _stringValue(
-      json['latestVersion'] ?? json['latest_version'],
+    final latestPublished = _stringValue(
+      json['latestPublishedVersion'] ??
+          json['latest_published_version'] ??
+          json['latestVersion'] ??
+          json['latest_version'],
     );
-    final minimum = _stringValue(
-      json['minimumRequiredVersion'] ?? json['minimum_required_version'],
+    final hasModernMinimumBuildPolicy = _hasAnyValue(json, [
+      'minSupportedBuild',
+      'min_supported_build',
+      'forceUpdateMinBuild',
+      'force_update_min_build',
+    ]);
+    final minimum = hasModernMinimumBuildPolicy
+        ? null
+        : _stringValue(
+            json['minimumRequiredVersion'] ?? json['minimum_required_version'],
+          );
+    final latestCandidate = _stringValue(
+      json['latestCandidateVersion'] ??
+          json['candidateVersion'] ??
+          json['latest_candidate_version'] ??
+          json['candidate_version'],
     );
+    final minimumBuildNumber =
+        _maxBuildValue([
+          json['minSupportedBuild'],
+          json['min_supported_build'],
+          json['forceUpdateMinBuild'],
+          json['force_update_min_build'],
+        ]) ??
+        _maxBuildValue([
+          json['minimumRequiredBuildNumber'],
+          json['minimumRequiredVersionCode'],
+          json['minimum_required_build_number'],
+          json['minimum_required_version_code'],
+        ]);
     return AppUpdateConfig(
-      latestVersion: _parseNullableVersion(latest, 'latestVersion'),
+      latestVersion: _parseNullableVersion(
+        latestPublished,
+        'latestPublishedVersion',
+      ),
       minimumRequiredVersion: _parseNullableVersion(
         minimum,
         'minimumRequiredVersion',
       ),
       latestBuildNumber: _intValue(
-        json['latestBuildNumber'] ??
+        json['latestPublishedBuild'] ??
+            json['latestPublishedBuildNumber'] ??
+            json['latest_published_build'] ??
+            json['latest_published_build_number'] ??
+            json['latestBuildNumber'] ??
             json['latestVersionCode'] ??
             json['latest_build_number'] ??
             json['latest_version_code'],
       ),
-      minimumRequiredBuildNumber: _intValue(
-        json['minimumRequiredBuildNumber'] ??
-            json['minimumRequiredVersionCode'] ??
-            json['minimum_required_build_number'] ??
-            json['minimum_required_version_code'],
+      minimumRequiredBuildNumber: minimumBuildNumber,
+      latestCandidateVersion: _parseNullableVersion(
+        latestCandidate,
+        'latestCandidateVersion',
+      ),
+      latestCandidateBuildNumber: _intValue(
+        json['latestCandidateBuild'] ??
+            json['candidateBuild'] ??
+            json['latestCandidateBuildNumber'] ??
+            json['latest_candidate_build'] ??
+            json['candidate_build'] ??
+            json['latest_candidate_build_number'],
+      ),
+      candidateStatus: _stringValue(
+        json['candidateStatus'] ?? json['candidate_status'],
       ),
       playStoreUrl: _stringValue(
         json['playStoreUrl'] ?? json['play_store_url'],
       ),
       message: _stringValue(json['message']),
     );
+  }
+
+  static int? _maxBuildValue(List<dynamic> values) {
+    int? max;
+    for (final value in values) {
+      final parsed = _intValue(value);
+      if (parsed == null) continue;
+      if (max == null || parsed > max) max = parsed;
+    }
+    return max;
+  }
+
+  static bool _hasAnyValue(Map<String, dynamic> json, List<String> keys) {
+    for (final key in keys) {
+      if (json.containsKey(key) && json[key] != null) return true;
+    }
+    return false;
   }
 
   static String? _stringValue(dynamic value) {
@@ -272,7 +342,7 @@ class AppUpdateService {
     );
     debugPrint(
       '[AppUpdate] current=$currentVersion+$currentBuildNumber '
-      'latest=${config?.latestVersion}+${config?.latestBuildNumber} '
+      'published=${config?.latestVersion}+${config?.latestBuildNumber} '
       'minimum=${config?.minimumRequiredVersion}+${config?.minimumRequiredBuildNumber} '
       'playAvailability=${playUpdateInfo?.updateAvailability.name} '
       'playAvailableVersionCode=${playUpdateInfo?.availableVersionCode} '
@@ -386,7 +456,7 @@ class AppUpdateService {
             builder: (dialogContext, setDialogState) => PopScope(
               canPop: !isForced && !isStartingUpdate,
               child: AlertDialog(
-                title: Text(isForced ? '업데이트가 필요합니다' : '새 버전이 있습니다'),
+                title: Text(isForced ? '업데이트가 필요합니다' : '업데이트할 수 있습니다'),
                 content: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -394,7 +464,7 @@ class AppUpdateService {
                     Text(
                       isForced
                           ? '계속 사용하려면 최신 버전으로 업데이트해야 합니다.'
-                          : '더 안정적인 이용을 위해 최신 버전으로 업데이트할 수 있습니다.',
+                          : 'Google Play에 배포된 버전으로 업데이트할 수 있습니다.',
                     ),
                     const SizedBox(height: 10),
                     Text('현재 버전: $currentText'),

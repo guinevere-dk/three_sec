@@ -292,6 +292,130 @@ void main() {
     },
   );
 
+  test(
+    'loadClipsFromCurrentAlbum isolates consecutive library albums',
+    () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProviderChannel, (call) async {
+            if (call.method == 'getApplicationDocumentsDirectory') {
+              return tempDir.path;
+            }
+            return null;
+          });
+      manager.clipAlbums = <String>['일상', '고덕스테이', '휴지통'];
+
+      final dailyDir = Directory(
+        '${tempDir.path}${Platform.pathSeparator}vlogs'
+        '${Platform.pathSeparator}raw_clips${Platform.pathSeparator}일상',
+      );
+      final lodgeDir = Directory(
+        '${tempDir.path}${Platform.pathSeparator}vlogs'
+        '${Platform.pathSeparator}raw_clips${Platform.pathSeparator}고덕스테이',
+      );
+      await dailyDir.create(recursive: true);
+      await lodgeDir.create(recursive: true);
+
+      final dailyLocal = File(
+        '${dailyDir.path}${Platform.pathSeparator}daily_local.mp4',
+      );
+      final lodgeLocal = File(
+        '${lodgeDir.path}${Platform.pathSeparator}lodge_local.mp4',
+      );
+      await dailyLocal.writeAsBytes(<int>[1, 2, 3, 4], flush: true);
+      await lodgeLocal.writeAsBytes(<int>[5, 6, 7, 8], flush: true);
+
+      const dailyCloud = 'cloud_only://일상/daily-cloud/daily_cloud.mp4';
+      const lodgeCloud = 'cloud_only://고덕스테이/lodge-cloud/lodge_cloud.mp4';
+      manager.debugSetCloudMetadataForPath(
+        dailyCloud,
+        VideoMetadata.fromMap('daily-cloud', const {
+          'uid': 'uid-redacted',
+          'fileName': 'daily_cloud.mp4',
+          'storagePath': 'storage/path/redacted/daily',
+          'albumName': '일상',
+          'fileSize': 8,
+          'uploadStatus': 'completed',
+          'completedAt': '2026-06-01T10:00:00.000',
+        }),
+      );
+      manager.debugSetCloudMetadataForPath(
+        lodgeCloud,
+        VideoMetadata.fromMap('lodge-cloud', const {
+          'uid': 'uid-redacted',
+          'fileName': 'lodge_cloud.mp4',
+          'storagePath': 'storage/path/redacted/lodge',
+          'albumName': '고덕스테이',
+          'fileSize': 8,
+          'uploadStatus': 'completed',
+          'completedAt': '2026-06-02T10:00:00.000',
+        }),
+      );
+
+      manager.currentAlbum = '일상';
+      await manager.loadClipsFromCurrentAlbum();
+      expect(manager.getClipsInAlbum('일상'), contains(dailyLocal.path));
+      expect(manager.getClipsInAlbum('일상'), contains(dailyCloud));
+      expect(manager.getClipsInAlbum('일상'), isNot(contains(lodgeLocal.path)));
+      expect(manager.getClipsInAlbum('일상'), isNot(contains(lodgeCloud)));
+
+      manager.currentAlbum = '고덕스테이';
+      expect(
+        manager.getClipsInAlbum('고덕스테이'),
+        isNot(contains(dailyLocal.path)),
+        reason: 'Opening 고덕스테이 must not render stale 일상 local clips.',
+      );
+      expect(
+        manager.getClipsInAlbum('고덕스테이'),
+        isNot(contains(dailyCloud)),
+        reason: 'Opening 고덕스테이 must not render stale 일상 cloud clips.',
+      );
+
+      await manager.loadClipsFromCurrentAlbum();
+      expect(manager.getClipsInAlbum('고덕스테이'), contains(lodgeLocal.path));
+      expect(manager.getClipsInAlbum('고덕스테이'), contains(lodgeCloud));
+      expect(
+        manager.getClipsInAlbum('고덕스테이'),
+        isNot(contains(dailyLocal.path)),
+      );
+      expect(manager.getClipsInAlbum('고덕스테이'), isNot(contains(dailyCloud)));
+
+      manager.currentAlbum = '일상';
+      expect(
+        manager.getClipsInAlbum('일상'),
+        isNot(contains(lodgeLocal.path)),
+        reason: 'Reopening 일상 must not render stale 고덕스테이 local clips.',
+      );
+      expect(
+        manager.getClipsInAlbum('일상'),
+        isNot(contains(lodgeCloud)),
+        reason: 'Reopening 일상 must not render stale 고덕스테이 cloud clips.',
+      );
+
+      await manager.loadClipsFromCurrentAlbum();
+      expect(manager.getClipsInAlbum('일상'), contains(dailyLocal.path));
+      expect(manager.getClipsInAlbum('일상'), contains(dailyCloud));
+      expect(manager.getClipsInAlbum('일상'), isNot(contains(lodgeLocal.path)));
+      expect(manager.getClipsInAlbum('일상'), isNot(contains(lodgeCloud)));
+    },
+  );
+
+  test('isClipPathInAlbum recognizes raw clip album path segments', () {
+    const posixLodgePath =
+        '/data/user/0/com.dk.three_sec/app_flutter/vlogs/raw_clips/고덕스테이/moa_qa_lodge.mp4';
+    const encodedLodgePath =
+        '/data/user/0/com.dk.three_sec/app_flutter/vlogs/raw_clips/%EA%B3%A0%EB%8D%95%EC%8A%A4%ED%85%8C%EC%9D%B4/moa_qa_lodge.mp4';
+    const windowsLodgePath =
+        r'C:\tmp\moa\vlogs\raw_clips\고덕스테이\moa_qa_lodge.mp4';
+    const dailyPath =
+        '/data/user/0/com.dk.three_sec/app_flutter/vlogs/raw_clips/일상/daily.mp4';
+
+    expect(manager.isClipPathInAlbum(posixLodgePath, '고덕스테이'), isTrue);
+    expect(manager.isClipPathInAlbum(encodedLodgePath, '고덕스테이'), isTrue);
+    expect(manager.isClipPathInAlbum(windowsLodgePath, '고덕스테이'), isTrue);
+    expect(manager.isClipPathInAlbum(dailyPath, '고덕스테이'), isFalse);
+    expect(manager.isClipPathInAlbum(posixLodgePath, '일상'), isFalse);
+  });
+
   test('trash album counts cloud-only trash placeholders', () async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(pathProviderChannel, (call) async {

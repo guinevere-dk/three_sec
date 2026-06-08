@@ -12,16 +12,21 @@
 - Firebase project id, alias, 앱 등록, 서비스 계정은 변경하지 않습니다.
 - Hosting public 경로는 `firebase/hosting`입니다.
 - 앱 업데이트 JSON 경로는 `firebase/hosting/app-update.json`입니다.
-- 현재 앱 버전 기준값은 `pubspec.yaml`의 `1.3.5+135`에서 build number를 제외한 `1.3.5`입니다.
+- 현재 운영 기준은 Play Store에 실제 공개된 버전과 검토/출시 후보 버전을 분리하는 것입니다.
 
-현재 기본 JSON은 강제 업데이트를 실수로 발생시키지 않도록 `latestVersion`과 `minimumRequiredVersion`을 모두 현재 버전과 동일한 `1.3.5`로 둡니다.
+현재 JSON은 Play Store에 공개된 버전만 `latestPublished*`에 두고, 검토 중인 빌드는 `latestCandidate*`에만 둡니다. 앱의 사용자 노출 업데이트 판단은 `latestCandidate*`를 사용하지 않습니다.
 
 ```json
 {
-  "latestVersion": "1.3.5",
-  "minimumRequiredVersion": "1.3.5",
+  "latestPublishedVersion": "2.1.8",
+  "latestPublishedBuild": 218,
+  "latestCandidateVersion": "2.1.9",
+  "latestCandidateBuild": 219,
+  "candidateStatus": "in_review",
+  "minSupportedBuild": 218,
+  "forceUpdateMinBuild": 0,
   "playStoreUrl": "https://play.google.com/store/apps/details?id=com.dk.three_sec",
-  "message": "MOA의 안정적인 이용을 위해 최신 버전으로 업데이트해 주세요."
+  "message": "Google Play에 배포된 최신 버전으로 업데이트할 수 있습니다."
 }
 ```
 
@@ -65,12 +70,19 @@
 
 | 필드 | 의미 | 운영 주의사항 |
 |---|---|---|
-| `latestVersion` | 선택 업데이트 안내 기준 버전 | 현재 앱 버전보다 높으면 선택 업데이트 알림이 뜰 수 있습니다. |
-| `minimumRequiredVersion` | 강제 업데이트 기준 최저 버전 | 현재 앱 버전보다 높이면 강제 업데이트가 발생합니다. 신중히 변경합니다. |
+| `latestPublishedVersion` | Play Store에 실제 공개된 최신 버전명 | 이 값만 선택 업데이트 안내 기준입니다. 검토 중 빌드로 올리지 않습니다. |
+| `latestPublishedBuild` | Play Store에 실제 공개된 최신 versionCode | 현재 앱 build보다 높으면 선택 업데이트 안내가 가능합니다. |
+| `latestCandidateVersion` | 업로드/검토/게시 대기 중인 후보 버전명 | 운영 추적용입니다. 앱 사용자에게 업데이트 기준으로 노출하지 않습니다. |
+| `latestCandidateBuild` | 후보 versionCode | 운영 추적용입니다. 앱 사용자에게 업데이트 기준으로 노출하지 않습니다. |
+| `candidateStatus` | 후보 상태(`in_review`, `ready_to_publish`, `rolled_out` 등) | Play Console 상태 기록용입니다. |
+| `minSupportedBuild` | 앱 사용을 허용하는 최소 build | 현재 앱 build가 이 값보다 낮으면 강제 업데이트 대상입니다. |
+| `forceUpdateMinBuild` | 긴급 강제 업데이트 최소 build | 평상시 `0`으로 두고, 긴급 차단이 필요할 때만 올립니다. |
 | `playStoreUrl` | 업데이트 버튼이 여는 Play Store URL | Android applicationId `com.dk.three_sec`를 유지합니다. |
 | `message` | 업데이트 다이얼로그 안내 문구 | 사용자에게 노출되는 문구입니다. |
 
-버전 문자열은 앱 코드의 파서에 맞춰 `major.minor.patch` 형식으로 작성합니다. 예: `1.3.6`.
+버전 문자열은 앱 코드의 파서에 맞춰 `major.minor.patch` 형식으로 작성합니다. 예: `2.1.9`.
+
+레거시 `latestVersion`, `latestVersionCode`, `minimumRequiredVersionCode`는 구버전 JSON 호환 fallback으로만 유지합니다. 새 운영 JSON에서는 사용하지 않습니다.
 
 ## 5. 배포 방법
 
@@ -112,8 +124,9 @@ curl https://fir-3s-8edb9.web.app/app-update.json
 
 - HTTP 200으로 응답합니다.
 - JSON root가 object입니다.
-- `latestVersion`, `minimumRequiredVersion`이 `major.minor.patch` 형식입니다.
-- `minimumRequiredVersion`이 의도치 않게 현재 배포 앱 버전보다 높지 않습니다.
+- `latestPublishedVersion`, `latestCandidateVersion`이 있으면 `major.minor.patch` 형식입니다.
+- Play Store에 실제 공개되기 전에는 `latestPublishedBuild`를 후보 build로 올리지 않습니다.
+- `minSupportedBuild` 또는 `forceUpdateMinBuild`가 의도치 않게 현재 배포 앱 build보다 높지 않습니다.
 
 ## 7. Flutter 릴리스 빌드에 URL 주입
 
@@ -137,54 +150,69 @@ flutter build apk --release --dart-define=APP_UPDATE_CONFIG_URL=https://fir-3s-8
 
 ### 8.1 업데이트 없음
 
-현재 앱이 `1.3.5`일 때:
+현재 공개 버전이 `2.1.8+218`이고 `2.1.9+219`가 검토 중일 때:
 
 ```json
 {
-  "latestVersion": "1.3.5",
-  "minimumRequiredVersion": "1.3.5",
+  "latestPublishedVersion": "2.1.8",
+  "latestPublishedBuild": 218,
+  "latestCandidateVersion": "2.1.9",
+  "latestCandidateBuild": 219,
+  "candidateStatus": "in_review",
+  "minSupportedBuild": 218,
+  "forceUpdateMinBuild": 0,
   "playStoreUrl": "https://play.google.com/store/apps/details?id=com.dk.three_sec",
-  "message": "MOA의 안정적인 이용을 위해 최신 버전으로 업데이트해 주세요."
+  "message": "Google Play에 배포된 최신 버전으로 업데이트할 수 있습니다."
 }
 ```
 
-결과: 업데이트 다이얼로그가 뜨지 않습니다.
+결과: `2.1.8+218` 사용자에게 업데이트 다이얼로그가 뜨지 않습니다. 후보 버전은 운영자만 추적합니다.
 
 ### 8.2 선택 업데이트
 
-현재 앱이 `1.3.5`이고 Play Store에 `1.3.6`이 배포된 뒤:
+Play Store에 `2.1.9+219`가 실제 공개되고 스토어 반영을 확인한 뒤:
 
 ```json
 {
-  "latestVersion": "1.3.6",
-  "minimumRequiredVersion": "1.3.5",
+  "latestPublishedVersion": "2.1.9",
+  "latestPublishedBuild": 219,
+  "latestCandidateVersion": null,
+  "latestCandidateBuild": null,
+  "candidateStatus": null,
+  "minSupportedBuild": 218,
+  "forceUpdateMinBuild": 0,
   "playStoreUrl": "https://play.google.com/store/apps/details?id=com.dk.three_sec",
-  "message": "새 버전이 준비되었습니다. 더 안정적인 MOA를 사용하려면 업데이트해 주세요."
+  "message": "Google Play에 배포된 최신 버전으로 업데이트할 수 있습니다."
 }
 ```
 
-결과: `1.3.5` 사용자는 선택 업데이트 안내를 받을 수 있습니다.
+결과: `2.1.8+218` 사용자는 선택 업데이트 안내를 받을 수 있습니다.
 
 ### 8.3 강제 업데이트
 
-심각한 장애 또는 정책 이슈로 `1.3.6` 미만을 막아야 할 때:
+심각한 장애 또는 정책 이슈로 `2.1.8+218` 미만을 막아야 할 때:
 
 ```json
 {
-  "latestVersion": "1.3.6",
-  "minimumRequiredVersion": "1.3.6",
+  "latestPublishedVersion": "2.1.9",
+  "latestPublishedBuild": 219,
+  "latestCandidateVersion": null,
+  "latestCandidateBuild": null,
+  "candidateStatus": null,
+  "minSupportedBuild": 218,
+  "forceUpdateMinBuild": 218,
   "playStoreUrl": "https://play.google.com/store/apps/details?id=com.dk.three_sec",
   "message": "중요한 안정성 개선이 포함되어 있습니다. 계속 사용하려면 업데이트가 필요합니다."
 }
 ```
 
-결과: `1.3.5` 이하는 강제 업데이트 대상이 됩니다. Play Store에 해당 버전이 실제로 배포되고 충분히 전파된 뒤 적용합니다.
+결과: build `217` 이하는 강제 업데이트 대상이 됩니다. Play Store에 사용자가 받을 수 있는 빌드가 실제 배포되고 충분히 전파된 뒤 적용합니다.
 
 ## 9. 롤백 방법과 주의사항
 
 ### 9.1 JSON 값 롤백
 
-강제 업데이트를 잘못 켠 경우 `minimumRequiredVersion`을 즉시 현재 운영 앱 버전 이하로 낮추고 Hosting만 재배포합니다.
+강제 업데이트를 잘못 켠 경우 `minSupportedBuild`와 `forceUpdateMinBuild`를 즉시 현재 운영 앱 build 이하로 낮추고 Hosting만 재배포합니다.
 
 ```bash
 firebase deploy --only hosting
@@ -205,11 +233,12 @@ Firebase Console에서 Hosting 릴리스 히스토리를 열고 직전 정상 �
 - Firebase Console에서 Hosting 활성화 여부 확인.
 - Firebase CLI 로그인 및 대상 프로젝트 확인.
 - 필요 시 Hosting site id/target 운영 정책 결정.
-- `firebase/hosting/app-update.json`의 버전과 메시지 운영값 검토.
+- `firebase/hosting/app-update.json`의 published/candidate/강제 업데이트 운영값 검토.
 - `firebase deploy --only hosting` 실행.
 - 배포 URL에서 JSON 응답 확인.
 - Flutter 릴리스 빌드 명령에 `--dart-define=APP_UPDATE_CONFIG_URL=<배포된 JSON URL>` 추가.
-- Play Store 배포 상태와 JSON의 `latestVersion`, `minimumRequiredVersion` 정합성 확인.
+- Play Store 배포 상태와 JSON의 `latestPublishedBuild`, `latestCandidateBuild`, `minSupportedBuild` 정합성 확인.
+- 출시 순서는 빌드 업로드 → Play 검토 → 검토 승인 → staged rollout/게시 → 실제 스토어 반영 확인 → `latestPublishedBuild` 갱신입니다.
 
 ## 11. 변경 금지 및 승인 필요 항목
 

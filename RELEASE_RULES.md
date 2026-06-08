@@ -119,3 +119,20 @@ firebase deploy --only functions
 - Functions 배포 전 직전 정상 버전, endpoint, env/config를 기록합니다.
 - DB/Storage schema 또는 데이터 변경은 사전 export, 샘플 uid dry-run, rollback script 없이 수행하지 않습니다.
 - 앱 릴리스 후 crash, 로그인 실패, 저장/불러오기 실패, 결제 검증 실패, 클라우드 권한 실패가 확인되면 즉시 rollout 중단 또는 이전 빌드 유지 전략을 적용합니다.
+
+## 8. `100%출시해라` 운영 순서
+
+사용자가 `100%출시해라`라고 요청하면 먼저 아래 순서를 명시하고, 가능한 단계부터 순서대로 진행합니다.
+
+1. 출시를 위한 버전업
+2. push
+3. 빌드 생성
+4. 빌드 업로드
+5. Play 검토
+6. 검토 승인
+7. staged rollout 시작
+8. 실제 스토어 반영 확인
+9. `latestPublishedBuild` 갱신
+10. 앱 업데이트 팝업 활성화
+
+Play 검토, 검토 승인, 스토어 반영은 Google Play 외부 상태입니다. 빌드 업로드 후에는 사용자에게 출시 완료 또는 스토어 반영 확인 시점을 알려 달라고 요청하고, 그 신호를 받은 뒤 `latestPublishedBuild`와 Hosting 업데이트 팝업을 활성화합니다.
