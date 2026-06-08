@@ -5,7 +5,7 @@
 - Version: `2.1.9+219`
 - Package: `com.dk.three_sec`
 - Track: Google Play production
-- Rollout: 5% staged rollout
+- Rollout: 100% production release
 
 ## App Update Policy
 
@@ -36,6 +36,8 @@
   - `build/app/outputs/mapping/release/mapping.txt` (82MB)
 - Play API `validate-only` passed for production versionCode `219` before release commit.
 - Play API commit succeeded for production release `MOA 2.1.9 (219)` with rollout `0.05`.
+- Play API rollout update succeeded for production release `MOA 2.1.9 (219)` with status `completed`.
+- Production track verification returned only `MOA 2.1.9 (219)` with `status: completed`.
 - `firebase deploy --only hosting --project fir-3s-8edb9` completed.
 - Live `https://fir-3s-8edb9.web.app/app-update.json` returned `latestVersion: 2.1.9` and `latestVersionCode: 219`.
 
