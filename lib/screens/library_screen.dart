@@ -188,6 +188,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
   String? _previewingPath;
   String _storageFilter = 'all';
   bool _showFavoritesOnly = false;
+  String? _loadingAlbumName;
+  int? _loadingAlbumExpectedCount;
 
   final GlobalKey _clipGridKey = GlobalKey(debugLabel: 'clipGrid');
   final GlobalKey _albumGridKey = GlobalKey(debugLabel: 'albumGrid');
@@ -257,6 +259,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _previewingPath = null;
     _storageFilter = 'all';
     _showFavoritesOnly = false;
+    _loadingAlbumName = null;
+    _loadingAlbumExpectedCount = null;
     _selectedClipPaths.clear();
     _selectedAlbumNames.clear();
     _lastAlbumDetailVisible = false;
@@ -312,7 +316,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
     final startedAt = DateTime.now();
     debugPrint('$_traceTag load_clips_start album=$album');
     setState(() {
-      videoManager.recordedVideoPaths.clear();
+      _loadingAlbumName = album;
+      _loadingAlbumExpectedCount = videoManager.albumCounts[album] ?? 0;
+      videoManager.recordedVideoPaths = <String>[];
     });
     try {
       await videoManager.loadClipsFromAlbum(album);
@@ -328,18 +334,33 @@ class _LibraryScreenState extends State<LibraryScreen> {
         '$_traceTag load_clips_success album=$album '
         'count=${videoManager.recordedVideoPaths.length} elapsedMs=$elapsedMs',
       );
-      setState(() {});
+      setState(() {
+        if (_loadingAlbumName == album) {
+          _loadingAlbumName = null;
+          _loadingAlbumExpectedCount = null;
+        }
+      });
     } catch (error) {
       final elapsedMs = DateTime.now().difference(startedAt).inMilliseconds;
       debugPrint(
         '$_traceTag load_clips_error album=$album elapsedMs=$elapsedMs '
         'errorType=${error.runtimeType}',
       );
+      if (mounted && _loadingAlbumName == album) {
+        setState(() {
+          _loadingAlbumName = null;
+          _loadingAlbumExpectedCount = null;
+        });
+      }
       rethrow;
     }
   }
 
-  void _traceDetailRender(List<String> visibleClipPaths) {
+  void _traceDetailRender(
+    List<String> visibleClipPaths, {
+    required int displayCount,
+    required bool isLoading,
+  }) {
     final firstPath = visibleClipPaths.isNotEmpty
         ? visibleClipPaths.first
         : 'none';
@@ -352,6 +373,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
       _showFavoritesOnly,
       _gridColumnCount,
       visibleClipPaths.length,
+      displayCount,
+      isLoading,
       firstPath,
       lastPath,
     ].join('|');
@@ -360,8 +383,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
     debugPrint(
       '$_traceTag clip_list_render album=${videoManager.currentAlbum} '
       'filter=$_storageFilter favoritesOnly=$_showFavoritesOnly '
-      'count=${visibleClipPaths.length} '
-      'grid=$_gridColumnCount first=$firstPath last=$lastPath',
+      'count=$displayCount visibleCount=${visibleClipPaths.length} '
+      'loading=$isLoading grid=$_gridColumnCount '
+      'first=$firstPath last=$lastPath',
     );
   }
 
@@ -556,6 +580,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                 _isInAlbumDetail = true;
                                 _selectedClipPaths.clear();
                                 _isClipSelectionMode = false;
+                                _storageFilter = 'all';
+                                _showFavoritesOnly = false;
                               });
                               _loadClipsFromCurrentAlbum(albumName);
                             }
@@ -630,11 +656,24 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   Widget _buildDetailView() {
     final visibleClipPaths = _visibleClipPathsForCurrentFilter();
-    _traceDetailRender(visibleClipPaths);
     final showStandardBadge = _userStatusManager.currentTier == UserTier.free;
 
     // Determine subtitle
-    final int count = visibleClipPaths.length;
+    final isCurrentAlbumLoading =
+        _loadingAlbumName == videoManager.currentAlbum;
+    final usePendingAlbumCount =
+        isCurrentAlbumLoading &&
+        visibleClipPaths.isEmpty &&
+        _storageFilter == 'all' &&
+        !_showFavoritesOnly;
+    final int count = usePendingAlbumCount
+        ? (_loadingAlbumExpectedCount ?? 0)
+        : visibleClipPaths.length;
+    _traceDetailRender(
+      visibleClipPaths,
+      displayCount: count,
+      isLoading: isCurrentAlbumLoading,
+    );
     final String subtitle = "$count Clips";
     final selectionState = _resolveSelectionActionState();
     final showTransferButton = _shouldShowTransferButton(selectionState);
@@ -753,7 +792,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
             ),
 
             // Clip Grid
-            if (visibleClipPaths.isEmpty)
+            if (visibleClipPaths.isEmpty && isCurrentAlbumLoading)
+              SliverFillRemaining(
+                child: Center(
+                  key: widget.keyFirstClip,
+                  child: const CircularProgressIndicator(),
+                ),
+              )
+            else if (visibleClipPaths.isEmpty)
               SliverFillRemaining(
                 child: Center(
                   key: widget.keyFirstClip,

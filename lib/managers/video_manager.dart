@@ -4030,10 +4030,22 @@ class VideoManager extends ChangeNotifier {
       );
       return;
     }
+    _reconcileLoadedAlbumClipCounts(requestedAlbum, sortedPaths);
     recordedVideoPaths = sortedPaths;
     unawaited(_preloadClipDurationsForPaths(recordedVideoPaths));
     unawaited(_cleanupLibraryAlbumLoadMetadata());
     notifyListeners();
+  }
+
+  void _reconcileLoadedAlbumClipCounts(String albumName, List<String> paths) {
+    final localCount = paths
+        .where((path) => !_isCloudOnlyPlaceholderPath(path))
+        .length;
+    albumCounts = <String, int>{...albumCounts, albumName: paths.length};
+    albumLocalCounts = <String, int>{
+      ...albumLocalCounts,
+      albumName: localCount,
+    };
   }
 
   Future<void> _cleanupLibraryAlbumLoadMetadata() async {

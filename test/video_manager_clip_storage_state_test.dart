@@ -26,6 +26,17 @@ void main() {
     return file;
   }
 
+  Future<File> createRawAlbumClip(String albumName, String name) async {
+    final albumDir = Directory(
+      '${tempDir.path}${Platform.pathSeparator}vlogs'
+      '${Platform.pathSeparator}raw_clips${Platform.pathSeparator}$albumName',
+    );
+    await albumDir.create(recursive: true);
+    final file = File('${albumDir.path}${Platform.pathSeparator}$name');
+    await file.writeAsBytes(<int>[0, 1, 2, 3], flush: true);
+    return file;
+  }
+
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
     manager = VideoManager();
@@ -238,6 +249,203 @@ void main() {
     expect(manager.totalCloudClipCount, 1);
     expect(manager.totalClipCount, 2);
   });
+
+  test(
+    'reported count fixture keeps profile totals, folder tiles, and detail counts consistent',
+    () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProviderChannel, (call) async {
+            if (call.method == 'getApplicationDocumentsDirectory') {
+              return tempDir.path;
+            }
+            return null;
+          });
+      manager.clipAlbums = <String>['일상', '고덕스테이', '휴지통'];
+
+      final dailyLocalPaths = <String>[];
+      for (var i = 0; i < 7; i++) {
+        dailyLocalPaths.add(
+          (await createRawAlbumClip('일상', 'daily_local_$i.mp4')).path,
+        );
+      }
+      final lodgeLocalPaths = <String>[];
+      for (var i = 0; i < 15; i++) {
+        lodgeLocalPaths.add(
+          (await createRawAlbumClip('고덕스테이', 'lodge_local_$i.mp4')).path,
+        );
+      }
+      final trashLocal = await createRawAlbumClip('휴지통', 'trash_local.mp4');
+
+      final dailyCloudPaths = <String>[];
+      for (var i = 0; i < 8; i++) {
+        final videoId = 'daily-cloud-$i';
+        final path = 'cloud_only://일상/$videoId/daily_cloud_$i.mp4';
+        dailyCloudPaths.add(path);
+        manager.debugSetCloudMetadataForPath(
+          path,
+          VideoMetadata.fromMap(videoId, {
+            'uid': 'uid-redacted',
+            'fileName': 'daily_cloud_$i.mp4',
+            'storagePath': 'storage/path/redacted/$videoId',
+            'albumName': '일상',
+            'fileSize': 8,
+            'uploadStatus': 'completed',
+            'completedAt':
+                '2026-06-${(i + 1).toString().padLeft(2, '0')}T10:00:00.000',
+          }),
+        );
+      }
+
+      await manager.debugRefreshAlbumClipCounts();
+
+      expect(manager.albumCounts['일상'], 15);
+      expect(manager.albumCounts['고덕스테이'], 15);
+      expect(manager.albumCounts['휴지통'], 1);
+      expect(manager.albumLocalCounts['일상'], 7);
+      expect(manager.albumLocalCounts['고덕스테이'], 15);
+      expect(manager.albumLocalCounts['휴지통'], 1);
+      expect(manager.totalDeviceClipCount, 23);
+      expect(manager.totalCloudClipCount, 8);
+      expect(manager.totalClipCount, 31);
+
+      manager.currentAlbum = '일상';
+      await manager.loadClipsFromAlbum('일상');
+      final dailyDetail = manager.getClipsInAlbum('일상');
+      expect(dailyDetail, hasLength(15));
+      expect(dailyDetail, containsAll(dailyLocalPaths));
+      expect(dailyDetail, containsAll(dailyCloudPaths));
+      expect(dailyDetail, isNot(contains(trashLocal.path)));
+      for (final path in lodgeLocalPaths) {
+        expect(dailyDetail, isNot(contains(path)));
+      }
+      expect(
+        dailyDetail.where(
+          (path) => manager.isClipVisibleByStorageFilter(path, 'all'),
+        ),
+        hasLength(15),
+      );
+      expect(
+        dailyDetail.where(
+          (path) => manager.isClipVisibleByStorageFilter(path, 'device'),
+        ),
+        hasLength(7),
+      );
+      expect(
+        dailyDetail.where(
+          (path) => manager.isClipVisibleByStorageFilter(path, 'cloud'),
+        ),
+        hasLength(8),
+      );
+
+      manager.currentAlbum = '고덕스테이';
+      await manager.loadClipsFromAlbum('고덕스테이');
+      final lodgeDetail = manager.getClipsInAlbum('고덕스테이');
+      expect(lodgeDetail, hasLength(15));
+      expect(lodgeDetail, containsAll(lodgeLocalPaths));
+      for (final path in dailyLocalPaths.followedBy(dailyCloudPaths)) {
+        expect(lodgeDetail, isNot(contains(path)));
+      }
+      expect(lodgeDetail, isNot(contains(trashLocal.path)));
+      expect(
+        lodgeDetail.where(
+          (path) => manager.isClipVisibleByStorageFilter(path, 'all'),
+        ),
+        hasLength(15),
+      );
+      expect(
+        lodgeDetail.where(
+          (path) => manager.isClipVisibleByStorageFilter(path, 'device'),
+        ),
+        hasLength(15),
+      );
+      expect(
+        lodgeDetail.where(
+          (path) => manager.isClipVisibleByStorageFilter(path, 'cloud'),
+        ),
+        isEmpty,
+      );
+
+      manager.currentAlbum = '휴지통';
+      await manager.loadClipsFromAlbum('휴지통');
+      final trashDetail = manager.getClipsInAlbum('휴지통');
+      expect(trashDetail, [trashLocal.path]);
+      for (final path in dailyLocalPaths.followedBy(dailyCloudPaths)) {
+        expect(trashDetail, isNot(contains(path)));
+      }
+      for (final path in lodgeLocalPaths) {
+        expect(trashDetail, isNot(contains(path)));
+      }
+      expect(
+        trashDetail.where(
+          (path) => manager.isClipVisibleByStorageFilter(path, 'all'),
+        ),
+        hasLength(1),
+      );
+      expect(
+        trashDetail.where(
+          (path) => manager.isClipVisibleByStorageFilter(path, 'device'),
+        ),
+        hasLength(1),
+      );
+      expect(
+        trashDetail.where(
+          (path) => manager.isClipVisibleByStorageFilter(path, 'cloud'),
+        ),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
+    'loadClipsFromAlbum reconciles stale aggregate counts for opened album',
+    () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProviderChannel, (call) async {
+            if (call.method == 'getApplicationDocumentsDirectory') {
+              return tempDir.path;
+            }
+            return null;
+          });
+      manager.clipAlbums = <String>['일상', '고덕스테이', '휴지통'];
+      final dailyLocal = await createRawAlbumClip('일상', 'daily_local.mp4');
+      manager.albumCounts = <String, int>{'일상': 1, '고덕스테이': 15, '휴지통': 1};
+      manager.albumLocalCounts = <String, int>{'일상': 1, '고덕스테이': 15, '휴지통': 1};
+      manager.debugSetCloudMetadataForPath(
+        'cloud_only://일상/seed-cloud/seed_cloud.mp4',
+        VideoMetadata.fromMap('seed-cloud', const {
+          'uid': 'uid-redacted',
+          'fileName': 'seed_cloud.mp4',
+          'storagePath': 'storage/path/redacted/seed-cloud',
+          'albumName': '일상',
+          'fileSize': 8,
+          'uploadStatus': 'completed',
+          'lifecycleState': 'tombstone',
+          'cloudState': 'tombstone',
+        }),
+      );
+
+      manager.currentAlbum = '고덕스테이';
+      await manager.loadClipsFromAlbum('고덕스테이');
+
+      expect(manager.getClipsInAlbum('고덕스테이'), isEmpty);
+      expect(
+        manager.albumCounts['고덕스테이'],
+        0,
+        reason:
+            'Opening an album with no visible clips must reconcile the root '
+            'tile count instead of leaving a stale aggregate value.',
+      );
+      expect(manager.albumLocalCounts['고덕스테이'], 0);
+      expect(manager.totalDeviceClipCount, 2);
+      expect(manager.totalCloudClipCount, 0);
+
+      manager.currentAlbum = '일상';
+      await manager.loadClipsFromAlbum('일상');
+      expect(manager.getClipsInAlbum('일상'), [dailyLocal.path]);
+      expect(manager.albumCounts['일상'], 1);
+      expect(manager.albumLocalCounts['일상'], 1);
+    },
+  );
 
   test(
     'loadClipsFromCurrentAlbum interleaves local and cloud-only clips by date',
