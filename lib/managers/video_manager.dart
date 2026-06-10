@@ -4005,10 +4005,6 @@ class VideoManager extends ChangeNotifier {
           File(b).lastModifiedSync().compareTo(File(a).lastModifiedSync()),
     );
     final loadedPaths = <String>[...files];
-    final localSortedPaths = _sortLibraryClipPathsByCaptureDate(
-      loadedPaths,
-      albumName: requestedAlbum,
-    );
     if (currentAlbum != requestedAlbum) {
       debugPrint(
         '[VideoManager][LibraryLoad] stale_album_result_ignored '
@@ -4016,9 +4012,6 @@ class VideoManager extends ChangeNotifier {
       );
       return;
     }
-    recordedVideoPaths = localSortedPaths;
-    unawaited(_preloadClipDurationsForPaths(recordedVideoPaths));
-    notifyListeners();
 
     loadedPaths.addAll(
       await _cloudOnlyPlaceholdersForAlbum(

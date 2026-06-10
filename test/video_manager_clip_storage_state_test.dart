@@ -293,6 +293,122 @@ void main() {
   );
 
   test(
+    'loadClipsFromCurrentAlbum publishes all-source album paths in one notification',
+    () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProviderChannel, (call) async {
+            if (call.method == 'getApplicationDocumentsDirectory') {
+              return tempDir.path;
+            }
+            return null;
+          });
+      manager.currentAlbum = '일상';
+      manager.clipAlbums = <String>['일상'];
+
+      final albumDir = Directory(
+        '${tempDir.path}${Platform.pathSeparator}vlogs'
+        '${Platform.pathSeparator}raw_clips${Platform.pathSeparator}일상',
+      );
+      await albumDir.create(recursive: true);
+      final local = File('${albumDir.path}${Platform.pathSeparator}local.mp4');
+      await local.writeAsBytes(<int>[1, 2, 3, 4], flush: true);
+      await local.setLastModified(DateTime(2026, 6, 2, 10));
+
+      const cloudPath = 'cloud_only://일상/cloud-new/cloud_new.mp4';
+      manager.debugSetCloudMetadataForPath(
+        cloudPath,
+        VideoMetadata.fromMap('cloud-new', const {
+          'uid': 'uid-redacted',
+          'fileName': 'cloud_new.mp4',
+          'storagePath': 'storage/path/redacted',
+          'albumName': '일상',
+          'fileSize': 8,
+          'uploadStatus': 'completed',
+          'completedAt': '2026-06-03T10:00:00.000',
+        }),
+      );
+
+      final publishedPaths = <List<String>>[];
+      void recordPublishedPaths() {
+        publishedPaths.add(List<String>.from(manager.recordedVideoPaths));
+      }
+
+      manager.addListener(recordPublishedPaths);
+      try {
+        await manager.loadClipsFromCurrentAlbum();
+      } finally {
+        manager.removeListener(recordPublishedPaths);
+      }
+
+      expect(manager.recordedVideoPaths, [cloudPath, local.path]);
+      expect(
+        publishedPaths,
+        everyElement(containsAll(<String>[cloudPath, local.path])),
+        reason:
+            'Library detail must not publish the local-only count before the '
+            'cloud-only placeholders are merged.',
+      );
+      expect(
+        publishedPaths,
+        isNotEmpty,
+        reason:
+            'The album load should still notify the UI when the list lands.',
+      );
+    },
+  );
+
+  test('loadClipsFromCurrentAlbum publishes local-only albums once', () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(pathProviderChannel, (call) async {
+          if (call.method == 'getApplicationDocumentsDirectory') {
+            return tempDir.path;
+          }
+          return null;
+        });
+    manager.currentAlbum = '고덕스테이';
+    manager.clipAlbums = <String>['고덕스테이'];
+
+    final albumDir = Directory(
+      '${tempDir.path}${Platform.pathSeparator}vlogs'
+      '${Platform.pathSeparator}raw_clips${Platform.pathSeparator}고덕스테이',
+    );
+    await albumDir.create(recursive: true);
+    final local = File('${albumDir.path}${Platform.pathSeparator}local.mp4');
+    await local.writeAsBytes(<int>[1, 2, 3, 4], flush: true);
+    manager.debugSetCloudMetadataForPath(
+      'cloud_only://일상/other-album/other.mp4',
+      VideoMetadata.fromMap('other-album', const {
+        'uid': 'uid-redacted',
+        'fileName': 'other.mp4',
+        'storagePath': 'storage/path/redacted',
+        'albumName': '일상',
+        'fileSize': 8,
+        'uploadStatus': 'completed',
+      }),
+    );
+
+    var publishCount = 0;
+    void countPublish() {
+      publishCount++;
+    }
+
+    manager.addListener(countPublish);
+    try {
+      await manager.loadClipsFromCurrentAlbum();
+    } finally {
+      manager.removeListener(countPublish);
+    }
+
+    expect(manager.recordedVideoPaths, [local.path]);
+    expect(
+      publishCount,
+      1,
+      reason:
+          'A local-only album should not emit duplicate detail-count updates.',
+    );
+  });
+
+  test(
     'loadClipsFromCurrentAlbum isolates consecutive library albums',
     () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

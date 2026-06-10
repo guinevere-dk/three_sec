@@ -1,0 +1,5 @@
+Improved Library and Profile clip count consistency.
+
+- Fixed Library folder counts and the opened folder All count to use the same source of truth.
+- Prevented folders with cloud-only clips from briefly showing only the local clip count.
+- Added regression coverage while preserving the existing device and cloud count semantics.
