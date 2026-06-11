@@ -1,0 +1,3 @@
+Fixed clip count mismatches between Library, album details, and Profile.
+Improved Local, Cloud, and All clip count synchronization inside albums.
+Improved clip save state handling and Library loading stability.

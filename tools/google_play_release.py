@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import httplib2
+from google_auth_httplib2 import AuthorizedHttp
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -30,6 +32,7 @@ EXPECTED_SERVICE_ACCOUNT = (
 ANDROID_PUBLISHER_SCOPE = "https://www.googleapis.com/auth/androidpublisher"
 DEFAULT_AAB = Path("build/app/outputs/bundle/release/app-release.aab")
 DEFAULT_MAPPING = Path("build/app/outputs/mapping/release/mapping.txt")
+HTTP_TIMEOUT_SECONDS = 300
 LOCAL_SERVICE_ACCOUNT_CANDIDATES = (
     Path(r"C:\Users\Guiny\Documents\Python_Project\secrets\ fir-3s-8edb9-06e4953d6e02.json"),
     Path(r"C:\Users\Guiny\Documents\Python_Project\secrets\fir-3s-8edb9-06e4953d6e02.json"),
@@ -185,7 +188,16 @@ def run() -> int:
     try:
         release = validate_inputs(args, root)
         credentials = load_credentials()
-        service = build("androidpublisher", "v3", credentials=credentials, cache_discovery=False)
+        authorized_http = AuthorizedHttp(
+            credentials,
+            http=httplib2.Http(timeout=HTTP_TIMEOUT_SECONDS),
+        )
+        service = build(
+            "androidpublisher",
+            "v3",
+            http=authorized_http,
+            cache_discovery=False,
+        )
 
         edit = service.edits().insert(packageName=args.package_name, body={}).execute()
         edit_id = edit["id"]
