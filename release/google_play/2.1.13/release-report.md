@@ -27,8 +27,8 @@
 - Auth-included release AAB build succeeded for `build\\app\\outputs\\bundle\\release\\app-release.aab`.
 - AAB artifact size at submission: `61,514,795` bytes.
 - Play API `validate-only` passed for production versionCode `223`, rollout `1.0`, release `MOA 2.1.13 (223)`; validation edit id `01627630920618857670`.
-- Pending: Play API production commit for release `MOA 2.1.13 (223)` with rollout `1.0`.
-- Pending: production track verification.
+- Play API commit succeeded for production release `MOA 2.1.13 (223)` with rollout `1.0`; commit edit id `02810439403053281405`.
+- Production track verification returned `MOA 2.1.13 (223)` with versionCode `223` and `status: completed`.
 
 ## Release Tool Safety
 
