@@ -1,0 +1,3 @@
+Improved Help & Feedback in Profile.
+Added in-app Help and Feedback choices before opening email.
+Added detailed help sections for recording, library, Vlog editing, cloud backup, and account/subscription basics.

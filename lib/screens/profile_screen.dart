@@ -8,7 +8,6 @@ import 'package:intl/intl.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../services/auth_service.dart';
 import '../services/cloud_service.dart';
 import '../services/app_update_service.dart';
@@ -18,6 +17,7 @@ import '../theme/moa_design_tokens.dart';
 import '../utils/cloud_cost_policy.dart';
 import 'announcements_screen.dart';
 import 'cloud_backup_screen.dart';
+import 'help_feedback_screen.dart';
 import 'notifications_screen.dart';
 import 'subscription_management_screen.dart';
 
@@ -70,7 +70,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     required String reasonCode,
     required int durationMs,
   }) {
-    print(
+    debugPrint(
       '[EntitlementRefresh] '
       'trigger=$trigger '
       'source=$source '
@@ -142,7 +142,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _initializeProfileState() async {
     final initStopwatch = Stopwatch()..start();
     final beforeInitTier = _userStatusManager.currentTier;
-    print(
+    debugPrint(
       '[ProfileScreen][Diag] initialize start '
       'tier(beforeInit)=${_userStatusManager.currentTier} '
       'nextTier(beforeInit)=${_userStatusManager.nextTier} '
@@ -164,7 +164,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       durationMs: initStopwatch.elapsedMilliseconds,
     );
 
-    print(
+    debugPrint(
       '[ProfileScreen][Diag] initialize after userStatus.initialize '
       'tier=${_userStatusManager.currentTier} '
       'productId=${_userStatusManager.productId} '
@@ -244,7 +244,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _refreshProfile() async {
     final initStopwatch = Stopwatch()..start();
     final beforeInitTier = _userStatusManager.currentTier;
-    print(
+    debugPrint(
       '[ProfileScreen][Diag] refresh start '
       'tier(beforeInit)=${_userStatusManager.currentTier} '
       'nextTier(beforeInit)=${_userStatusManager.nextTier}',
@@ -263,7 +263,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       durationMs: initStopwatch.elapsedMilliseconds,
     );
 
-    print(
+    debugPrint(
       '[ProfileScreen][Diag] refresh after userStatus.initialize '
       'tier=${_userStatusManager.currentTier} '
       'productId=${_userStatusManager.productId} '
@@ -377,7 +377,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _openEditProfileDialog() async {
     if (_authService.isGuest) {
-      print('[ProfileScreen] guest_edit_blocked: edit_profile blocked');
+      debugPrint('[ProfileScreen] guest_edit_blocked: edit_profile blocked');
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('게스트 모드에서는 프로필 편집 및 클라우드 관련 기능이 비활성입니다. 로그인 후 이용해주세요.'),
@@ -586,21 +586,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
     await Share.share('MOA와 함께 2초씩 빠르게 Vlog를 기록해보세요!');
   }
 
-  Future<void> _openHelp() async {
-    final supportEmail = Uri.parse(
-      'mailto:dongkwon81@gmail.com?subject=MOA%20Support',
+  Future<void> _openHelpFeedback() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const HelpFeedbackScreen()),
     );
-    final ok = await launchUrl(supportEmail);
-    if (!ok && mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('메일 앱을 열 수 없습니다.')));
-    }
   }
 
   Future<void> _confirmSignOut() async {
     if (_authService.isGuest) {
-      print(
+      debugPrint(
         '[ProfileScreen] guest_action_blocked: sign_out blocked by guest_mode',
       );
       await _showGuestActionUnavailableDialog(
@@ -644,7 +639,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _confirmDeleteAccount() async {
     if (_authService.isGuest) {
-      print(
+      debugPrint(
         '[ProfileScreen] guest_action_blocked: delete_account blocked by guest_mode',
       );
       await _showGuestActionUnavailableDialog(
@@ -849,7 +844,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     final user = _authService.currentUser;
     final tier = _userStatusManager.currentTier;
-    print(
+    debugPrint(
       '[ProfileScreen][Diag] build '
       'tier=$tier '
       'productId=${_userStatusManager.productId} '
@@ -962,7 +957,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       'Help & Feedback',
                       iconBgColor: const Color(0xFFF1F5F9),
                       iconColor: const Color(0xFF475569),
-                      onTap: _openHelp,
+                      onTap: _openHelpFeedback,
                     ),
                     _buildMenuItem(
                       Icons.ios_share,
@@ -1320,8 +1315,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (pending == 0 && _syncSummary.failedCount == 0) return '';
     final parts = <String>[];
     if (pending > 0) parts.add('대기 $pending');
-    if (_syncSummary.failedCount > 0)
+    if (_syncSummary.failedCount > 0) {
       parts.add('실패 ${_syncSummary.failedCount}');
+    }
     return parts.join(' · ');
   }
 
